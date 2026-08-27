@@ -1,0 +1,42 @@
+import { useState, type ReactNode, type CSSProperties } from 'react';
+
+interface Props {
+  label: ReactNode;
+  message: string;
+  onConfirm: () => void;
+  confirmLabel?: string;
+  className?: string;
+  style?: CSSProperties;
+  disabled?: boolean;
+}
+
+// A destructive action that confirms in place instead of relying on the
+// native window.confirm() dialog — that dialog was found to silently not
+// fire in at least one spot in this app, so buttons that must reliably
+// confirm (clearing accumulated data) use this pattern instead.
+export function ConfirmButton({ label, message, onConfirm, confirmLabel = 'Confirm', className, style, disabled }: Props) {
+  const [confirming, setConfirming] = useState(false);
+
+  if (confirming) {
+    return (
+      <div className="confirm-btn-group" onClick={e => e.stopPropagation()}>
+        <span className="confirm-btn-msg">{message}</span>
+        <button className="confirm-btn confirm-btn--yes" onClick={() => { onConfirm(); setConfirming(false); }}>
+          {confirmLabel}
+        </button>
+        <button className="confirm-btn confirm-btn--no" onClick={() => setConfirming(false)}>Cancel</button>
+      </div>
+    );
+  }
+
+  return (
+    <button
+      className={className}
+      style={style}
+      disabled={disabled}
+      onClick={e => { e.stopPropagation(); setConfirming(true); }}
+    >
+      {label}
+    </button>
+  );
+}

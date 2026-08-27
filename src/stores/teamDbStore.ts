@@ -1,0 +1,271 @@
+import { create } from 'zustand';
+import { persist, createJSONStorage } from 'zustand/middleware';
+import type { Player, StaffMember } from '../types/tournament';
+import { useUndoStore } from './undoStore';
+import { useMatchScheduleStore } from './matchScheduleStore';
+import { useCanvasStore } from './canvasStore';
+
+/** A named alternate kit (e.g. "Home"/"Away") with its own per-player
+ *  jersey-number overrides — authored in the Team DB, picked per match in
+ *  the Player List widget (see effectiveJerseyNo in src/lib/jerseySets.ts). */
+export interface JerseySet {
+  id: string;
+  name: string;
+  /** playerId → overridden jerseyNo for this set; a player missing here,
+   *  or mapped to '', falls back to their own base Player.jerseyNo. */
+  numbers: Record<string, string>;
+}
+
+// Reusable team profiles — the source of truth for team identity (name,
+// short name, color, logo), roster (players) and staff. A team optionally
+// belongs to a Tournament (tournamentId) which now acts as a competition/
+// league container that can hold any number of teams; widgets reference a
+// specific team by id rather than a fixed "Team A / Team B" slot.
+export interface SavedTeam {
+  id: string;
+  name: string;
+  shortName?: string;
+  color: string;
+  logo?: string;
+  players: Player[];
+  staff?: StaffMember[];
+  tournamentId?: string;
+  /** Marks a team as sitting out ('bye') or withdrawn/forfeiting ('walkover')
+   *  for the rest of the tournament — setting this auto-applies the same
+   *  status to that team's not-yet-completed fixtures in the Schedule tab. */
+  status?: 'bye' | 'walkover';
+  /** Which preliminary-draw/pool group this team is in (e.g. "Pool A") —
+   *  must match a name in Tournament.groups, or unset for no group. Set
+   *  either manually or by the live draw (see Tournament.pots). */
+  group?: string;
+  /** Explicit 1-based slot within `group` (e.g. 2 → "A2") — optional; when
+   *  unset the slot is auto-computed by list order. If two teams in the
+   *  same group are both given the same explicit position, that slot is
+   *  left blank in the group list push rather than guessing which wins. */
+  groupPosition?: number;
+  /** Seeding pot for the live draw (e.g. "Pot 1") — must match a name in
+   *  Tournament.pots. Assigned before drawing; unrelated to `group`, which
+   *  is the draw's OUTPUT. */
+  pot?: string;
+  /** Competition category (e.g. "Men", "Women", "U21") — must match a name
+   *  in Tournament.categories, or unset for none. A club entering multiple
+   *  categories gets a separate SavedTeam per category (see duplicateTeam)
+   *  since each category's roster is independent. */
+  category?: string;
+  /** Which team on the tournament's linked external roster API (see
+   *  Tournament.externalRoster, src/lib/externalRoster.ts) this one was last
+   *  pulled from — remembered the first time "Pull from API" is used, so
+   *  the periodic auto-sync knows which external team to keep re-pulling
+   *  without a human re-picking it every cycle. Unset = never linked, so
+   *  auto-sync leaves this team alone entirely. */
+  externalTeamSlug?: string;
+  /** Where this team's player stat fields (tries/conversions/penalties/
+   *  dropGoals/yellowCards/redCards/appearances) come from — 'api' (default,
+   *  including unset) keeps letting the external roster auto-sync overwrite
+   *  them; 'local' stops that and instead has the app track them itself:
+   *  tries/conversions/penalties/dropGoals are recomputed from this team's
+   *  own saved match history (see src/lib/localPlayerStats.ts), and
+   *  yellowCards/redCards are incremented live the moment a card is given in
+   *  the Player List widget (see giveCard in PlayerListWidget.tsx).
+   *  Appearances has no local source yet, so it stays whatever it already
+   *  was (manual entry or a prior API pull) regardless of this setting. */
+  statsSource?: 'api' | 'local';
+  /** Alternate jersey-number kits for this team — see JerseySet. Unset or
+   *  empty means every player just shows their own base jerseyNo, exactly
+   *  as before this feature existed. */
+  jerseySets?: JerseySet[];
+}
+
+interface TeamDbStore {
+  teams: SavedTeam[];
+  /** Ids removed locally since the last successful cloud push, so the cloud
+   *  copy actually gets deleted too instead of a push only ever being able
+   *  to add/update (see matchScheduleStore's identical convention). */
+  pendingDeletedIds: string[];
+  addTeam: (team: Omit<SavedTeam, 'id' | 'players'>) => string;
+  updateTeam: (id: string, patch: Partial<Omit<SavedTeam, 'id' | 'players'>>) => void;
+  deleteTeam: (id: string) => void;
+  /** Copies a team's identity (name/short/color/logo) into a fresh team in
+   *  the same tournament — empty roster/staff and no group/pot/category, so
+   *  the same club can field a separate, independently-rostered entry in
+   *  another category. Returns the new team's id, or undefined if not found. */
+  duplicateTeam: (id: string) => string | undefined;
+
+  addPlayer: (teamId: string, player: Omit<Player, 'id'>) => string;
+  updatePlayer: (teamId: string, playerId: string, patch: Partial<Omit<Player, 'id'>>) => void;
+  deletePlayer: (teamId: string, playerId: string) => void;
+  replaceTeamPlayers: (teamId: string, players: Omit<Player, 'id'>[]) => void;
+  updateStaffMember: (teamId: string, staffId: string, name: string) => void;
+
+  addJerseySet: (teamId: string, name: string) => string;
+  updateJerseySet: (teamId: string, setId: string, patch: Partial<Omit<JerseySet, 'id'>>) => void;
+  deleteJerseySet: (teamId: string, setId: string) => void;
+  setJerseySetNumber: (teamId: string, setId: string, playerId: string, jerseyNo: string) => void;
+
+  restoreTeams: (teams: unknown[]) => void;
+  /** Consumes (removes) the given ids from pendingDeletedIds — called by
+   *  cloudSync.ts once they've actually been pushed to the cloud. */
+  clearPendingDeletedIds: (ids: string[]) => void;
+}
+
+export const useTeamDbStore = create<TeamDbStore>()(
+  persist(
+    (set, get) => ({
+      teams: [],
+      pendingDeletedIds: [],
+
+      addTeam: (team) => {
+        const id = crypto.randomUUID();
+        set(s => ({ teams: [...s.teams, { ...team, id, players: [] }] }));
+        return id;
+      },
+
+      updateTeam: (id, patch) => {
+        const before = get().teams.find(t => t.id === id);
+        set(s => ({ teams: s.teams.map(t => t.id === id ? { ...t, ...patch } : t) }));
+        // Cascade an identity change (name/shortName/color/logo) into this
+        // team's own existing fixtures — see matchScheduleStore's
+        // syncTeamIdentity for why a fixture wouldn't otherwise notice —
+        // and into any scoreboard widget that already has this team loaded
+        // (matched by id, not name, since a scoreboard's copied fields
+        // don't otherwise notice an edit made after it was loaded either).
+        if (before && (patch.name !== undefined || patch.shortName !== undefined || patch.color !== undefined || patch.logo !== undefined)) {
+          const after = { ...before, ...patch };
+          useMatchScheduleStore.getState().syncTeamIdentity(before.tournamentId, before.name, before.category, {
+            name: after.name, shortName: after.shortName, color: after.color, logo: after.logo,
+          });
+          useCanvasStore.getState().syncScoreboardTeamIdentity(id, {
+            name: after.name, shortName: after.shortName, color: after.color, logo: after.logo,
+          });
+        }
+      },
+
+      deleteTeam: (id) => {
+        const team = get().teams.find(t => t.id === id);
+        set(s => ({ teams: s.teams.filter(t => t.id !== id), pendingDeletedIds: [...s.pendingDeletedIds, id] }));
+        if (team) useUndoStore.getState().pushUndo(`Deleted team "${team.name}"`, () =>
+          useTeamDbStore.setState(s => ({
+            teams: [...s.teams, team],
+            pendingDeletedIds: s.pendingDeletedIds.filter(x => x !== id),
+          })));
+      },
+
+      duplicateTeam: (id) => {
+        const src = get().teams.find(t => t.id === id);
+        if (!src) return undefined;
+        const newId = crypto.randomUUID();
+        set(s => ({
+          teams: [...s.teams, {
+            id: newId,
+            name: src.name,
+            shortName: src.shortName,
+            color: src.color,
+            logo: src.logo,
+            players: [],
+            staff: [],
+            tournamentId: src.tournamentId,
+          }],
+        }));
+        return newId;
+      },
+
+      addPlayer: (teamId, player) => {
+        const playerId = crypto.randomUUID();
+        set(s => ({
+          teams: s.teams.map(t => t.id === teamId
+            ? { ...t, players: [...t.players, { ...player, id: playerId }] }
+            : t),
+        }));
+        return playerId;
+      },
+
+      updatePlayer: (teamId, playerId, patch) => set(s => ({
+        teams: s.teams.map(t => t.id === teamId
+          ? { ...t, players: t.players.map(p => p.id === playerId ? { ...p, ...patch } : p) }
+          : t),
+      })),
+
+      deletePlayer: (teamId, playerId) => {
+        const team = get().teams.find(t => t.id === teamId);
+        const player = team?.players.find(p => p.id === playerId);
+        set(s => ({
+          teams: s.teams.map(t => t.id === teamId
+            ? { ...t, players: t.players.filter(p => p.id !== playerId) }
+            : t),
+        }));
+        if (player) useUndoStore.getState().pushUndo(`Deleted player "${player.name}"`, () =>
+          useTeamDbStore.setState(s => ({
+            teams: s.teams.map(t => t.id === teamId ? { ...t, players: [...t.players, player] } : t),
+          })));
+      },
+
+      replaceTeamPlayers: (teamId, players) => set(s => ({
+        teams: s.teams.map(t => t.id === teamId
+          ? { ...t, players: players.map(p => ({ ...p, id: crypto.randomUUID() })) }
+          : t),
+      })),
+
+      updateStaffMember: (teamId, staffId, name) => set(s => ({
+        teams: s.teams.map(t => {
+          if (t.id !== teamId) return t;
+          const next: StaffMember[] = (t.staff ?? []).map(m => m.id === staffId ? { ...m, name } : m);
+          return { ...t, staff: next };
+        }),
+      })),
+
+      addJerseySet: (teamId, name) => {
+        const setId = crypto.randomUUID();
+        set(s => ({
+          teams: s.teams.map(t => t.id === teamId
+            ? { ...t, jerseySets: [...(t.jerseySets ?? []), { id: setId, name, numbers: {} }] }
+            : t),
+        }));
+        return setId;
+      },
+
+      updateJerseySet: (teamId, setId, patch) => set(s => ({
+        teams: s.teams.map(t => t.id === teamId
+          ? { ...t, jerseySets: (t.jerseySets ?? []).map(js => js.id === setId ? { ...js, ...patch } : js) }
+          : t),
+      })),
+
+      deleteJerseySet: (teamId, setId) => {
+        const team = get().teams.find(t => t.id === teamId);
+        const jerseySet = team?.jerseySets?.find(j => j.id === setId);
+        set(s => ({
+          teams: s.teams.map(t => t.id === teamId
+            ? { ...t, jerseySets: (t.jerseySets ?? []).filter(j => j.id !== setId) }
+            : t),
+        }));
+        if (jerseySet) useUndoStore.getState().pushUndo(`Deleted jersey set "${jerseySet.name}"`, () =>
+          useTeamDbStore.setState(s => ({
+            teams: s.teams.map(t => t.id === teamId ? { ...t, jerseySets: [...(t.jerseySets ?? []), jerseySet] } : t),
+          })));
+      },
+
+      setJerseySetNumber: (teamId, setId, playerId, jerseyNo) => set(s => ({
+        teams: s.teams.map(t => t.id === teamId
+          ? { ...t, jerseySets: (t.jerseySets ?? []).map(js => js.id === setId
+              ? { ...js, numbers: { ...js.numbers, [playerId]: jerseyNo } }
+              : js) }
+          : t),
+      })),
+
+      restoreTeams: (teams) => set({ teams: teams as SavedTeam[] }),
+
+      clearPendingDeletedIds: (ids) => set(s => ({ pendingDeletedIds: s.pendingDeletedIds.filter(id => !ids.includes(id)) })),
+    }),
+    {
+      name: 'gomolab-teamdb-v1',
+      storage: createJSONStorage(() =>
+        typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+          ? localStorage
+          : sessionStorage
+      ),
+      // Remote/browser clients always load the host's live data via
+      // FULL_STATE — never persist locally, or a reload could show stale
+      // data before (or instead of) the synced copy.
+      partialize: (s) => (typeof window !== 'undefined' && !('__TAURI_INTERNALS__' in window)) ? {} : { teams: s.teams, pendingDeletedIds: s.pendingDeletedIds },
+    }
+  )
+);
