@@ -14,6 +14,8 @@ interface Props {
   config: Record<string, any>;
   w: number;
   h: number;
+  /** Hides the action row — see WidgetRenderer's own doc. */
+  outputOnly?: boolean;
 }
 
 interface SinBinPlayer {
@@ -26,7 +28,7 @@ interface SinBinPlayer {
   remainingMs: number;
 }
 
-export function SinBinLowerThirdWidget({ widgetId, config }: Props) {
+export function SinBinLowerThirdWidget({ widgetId, config, outputOnly }: Props) {
   const { pages, returnPlayerFromSinBin } = useCanvasStore();
   const { teams: teamDbTeams } = useTeamDbStore();
   const { client, vmixState, overlayIn, overlayOut, vmixSyncVersion } = useVmixStore();
@@ -279,40 +281,42 @@ export function SinBinLowerThirdWidget({ widgetId, config }: Props) {
       </div>
 
       {/* ── Actions ───────────────────────────────────────────────────────── */}
-      <div className="wgt-sblt-actions">
-        <button
-          className="wgt-sblt-pick-btn"
-          onPointerDown={(e) => { e.stopPropagation(); e.currentTarget.setPointerCapture(e.pointerId); setShowPicker(true); }}
-          onClick={(e) => e.stopPropagation()}
-          disabled={activePlayers.length === 0}
-          title="Pick player"
-          style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
-        ><ChevronDown size={12} strokeWidth={2} /> Pick</button>
-        <button
-          className="wgt-sblt-btn wgt-sblt-btn--send"
-          onPointerDown={(e) => { e.stopPropagation(); e.currentTarget.setPointerCapture(e.pointerId); sendToVmix(selected); }}
-          onClick={(e) => e.stopPropagation()}
-          disabled={!client || !hasInput || !selected}
-          title="Send to vMix"
-          style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
-        ><ArrowUp size={12} strokeWidth={2} /> Send</button>
-        <button
-          className={`wgt-sblt-btn wgt-sblt-btn--show${overlayActive ? ' wgt-sblt-btn--active' : ''}`}
-          onPointerDown={(e) => { e.stopPropagation(); e.currentTarget.setPointerCapture(e.pointerId); overlayIn(ch, config.vmixInputKey || undefined); }}
-          onClick={(e) => e.stopPropagation()}
-          disabled={!vmixState || !hasInput}
-          title="Show overlay"
-          style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
-        ><Eye size={12} strokeWidth={2} /> Show</button>
-        <button
-          className={`wgt-sblt-btn wgt-sblt-btn--hide${!overlayActive ? ' wgt-sblt-btn--active' : ''}`}
-          onPointerDown={(e) => { e.stopPropagation(); e.currentTarget.setPointerCapture(e.pointerId); overlayOut(ch); }}
-          onClick={(e) => e.stopPropagation()}
-          disabled={!vmixState || !hasInput}
-          title="Hide overlay"
-          style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
-        ><EyeOff size={12} strokeWidth={2} /> Hide</button>
-      </div>
+      {!outputOnly && (
+        <div className="wgt-sblt-actions">
+          <button
+            className="wgt-sblt-pick-btn"
+            onPointerDown={(e) => { e.stopPropagation(); e.currentTarget.setPointerCapture(e.pointerId); setShowPicker(true); }}
+            onClick={(e) => e.stopPropagation()}
+            disabled={activePlayers.length === 0}
+            title="Pick player"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
+          ><ChevronDown size={12} strokeWidth={2} /> Pick</button>
+          <button
+            className="wgt-sblt-btn wgt-sblt-btn--send"
+            onPointerDown={(e) => { e.stopPropagation(); e.currentTarget.setPointerCapture(e.pointerId); sendToVmix(selected); }}
+            onClick={(e) => e.stopPropagation()}
+            disabled={!client || !hasInput || !selected}
+            title="Send to vMix"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
+          ><ArrowUp size={12} strokeWidth={2} /> Send</button>
+          <button
+            className={`wgt-sblt-btn wgt-sblt-btn--show${overlayActive ? ' wgt-sblt-btn--active' : ''}`}
+            onPointerDown={(e) => { e.stopPropagation(); e.currentTarget.setPointerCapture(e.pointerId); overlayIn(ch, config.vmixInputKey || undefined); }}
+            onClick={(e) => e.stopPropagation()}
+            disabled={!vmixState || !hasInput}
+            title="Show overlay"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
+          ><Eye size={12} strokeWidth={2} /> Show</button>
+          <button
+            className={`wgt-sblt-btn wgt-sblt-btn--hide${!overlayActive ? ' wgt-sblt-btn--active' : ''}`}
+            onPointerDown={(e) => { e.stopPropagation(); e.currentTarget.setPointerCapture(e.pointerId); overlayOut(ch); }}
+            onClick={(e) => e.stopPropagation()}
+            disabled={!vmixState || !hasInput}
+            title="Hide overlay"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
+          ><EyeOff size={12} strokeWidth={2} /> Hide</button>
+        </div>
+      )}
     </div>
   );
 }

@@ -51,7 +51,7 @@ pub fn run() {
 
             // Seed a fully transparent PNG every launch (idempotent) so the
             // Draw system's vMix pushes can reference a stable, always-present
-            // "blank" logo — http://localhost:9877/images/transparent.png —
+            // "blank" logo — http://localhost:9887/images/transparent.png —
             // to actively clear an image field instead of leaving whatever
             // the previous team's logo was showing.
             let transparent_dest = images_dir.join("transparent.png");
@@ -59,11 +59,15 @@ pub fn run() {
                 std::fs::write(&transparent_dest, include_bytes!("../assets/transparent.png")).ok();
             }
 
+            // Distinct from GOMOLAB vMix Control's own 9877/9878/9879 — this
+            // is a genuinely separate app meant to run alongside it (see
+            // syncClient.ts for the matching frontend constants), not a
+            // replacement, so the two must never fight over the same ports.
             let server_state = Arc::new(server::ServerState::new(
                 lan_ip,
-                9877,
-                9878,
-                9879,
+                9887,
+                9888,
+                9889,
                 images_dir,
             ));
 

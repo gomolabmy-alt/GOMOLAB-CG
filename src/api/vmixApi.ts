@@ -552,7 +552,7 @@ export class VmixApiClient {
     // logo URLs are persisted in widget/tournament config and outlive network
     // changes, so a URL resolved to a LAN IP on a previous network would
     // otherwise stay silently broken forever — always re-resolve at send time.
-    if (_isTauri && /^http:\/\/[^/]+:9877\/images\//.test(filePath)) {
+    if (_isTauri && /^http:\/\/[^/]+:9887\/images\//.test(filePath)) {
       const ext = await externalImagesBase();
       if (ext) resolved = ext + '/' + filePath.split('/images/')[1];
     }

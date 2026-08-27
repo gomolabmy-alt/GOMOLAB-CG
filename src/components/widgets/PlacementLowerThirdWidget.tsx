@@ -15,6 +15,8 @@ interface Props {
   config: Record<string, any>;
   w: number;
   h: number;
+  /** Hides the Pick/Send/Show/Hide action row — see WidgetRenderer's own doc. */
+  outputOnly?: boolean;
 }
 
 interface PlacementSlot {
@@ -31,7 +33,7 @@ interface PlacementSlot {
   mergedSeparator?: string;
 }
 
-export function PlacementLowerThirdWidget({ widgetId, config }: Props) {
+export function PlacementLowerThirdWidget({ widgetId, config, outputOnly }: Props) {
   const { pages } = useCanvasStore();
   const { teams: allTeams } = useTeamDbStore();
   const { matches: allMatches } = useMatchScheduleStore();
@@ -175,7 +177,7 @@ export function PlacementLowerThirdWidget({ widgetId, config }: Props) {
                 {activeTeam?.name ?? (needsCategoryPick ? 'Pick a Category in settings' : 'Not yet decided')}
               </div>
             </div>
-            {slots.length > 1 && (
+            {!outputOnly && slots.length > 1 && (
               <button
                 className="wgt-clt-switch-btn"
                 title="Switch placement"
@@ -191,40 +193,42 @@ export function PlacementLowerThirdWidget({ widgetId, config }: Props) {
       </div>
 
       {/* ── Actions ───────────────────────────────────────────────────────── */}
-      <div className="wgt-clt-actions">
-        <button
-          className="wgt-clt-pick-btn"
-          onPointerDown={(e) => { e.stopPropagation(); e.currentTarget.setPointerCapture(e.pointerId); setShowPicker(true); }}
-          onClick={(e) => e.stopPropagation()}
-          disabled={slots.length === 0}
-          title="Pick placement"
-          style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
-        ><ChevronDown size={12} strokeWidth={2} /> Pick</button>
-        <button
-          className="wgt-clt-btn wgt-clt-btn--send"
-          onPointerDown={(e) => { e.stopPropagation(); e.currentTarget.setPointerCapture(e.pointerId); sendToVmix(active, activeTeam); }}
-          onClick={(e) => e.stopPropagation()}
-          disabled={!client || !hasInput || !active}
-          title="Send to vMix"
-          style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
-        ><ArrowUp size={12} strokeWidth={2} /> Send</button>
-        <button
-          className={`wgt-clt-btn wgt-clt-btn--show${overlayActive ? ' wgt-clt-btn--active' : ''}`}
-          onPointerDown={(e) => { e.stopPropagation(); e.currentTarget.setPointerCapture(e.pointerId); overlayIn(ch, active?.vmixInputKey); }}
-          onClick={(e) => e.stopPropagation()}
-          disabled={!vmixState || !hasInput}
-          title="Show overlay"
-          style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
-        ><Eye size={12} strokeWidth={2} /> Show</button>
-        <button
-          className={`wgt-clt-btn wgt-clt-btn--hide${!overlayActive ? ' wgt-clt-btn--active' : ''}`}
-          onPointerDown={(e) => { e.stopPropagation(); e.currentTarget.setPointerCapture(e.pointerId); overlayOut(ch); }}
-          onClick={(e) => e.stopPropagation()}
-          disabled={!vmixState || !hasInput}
-          title="Hide overlay"
-          style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
-        ><EyeOff size={12} strokeWidth={2} /> Hide</button>
-      </div>
+      {!outputOnly && (
+        <div className="wgt-clt-actions">
+          <button
+            className="wgt-clt-pick-btn"
+            onPointerDown={(e) => { e.stopPropagation(); e.currentTarget.setPointerCapture(e.pointerId); setShowPicker(true); }}
+            onClick={(e) => e.stopPropagation()}
+            disabled={slots.length === 0}
+            title="Pick placement"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
+          ><ChevronDown size={12} strokeWidth={2} /> Pick</button>
+          <button
+            className="wgt-clt-btn wgt-clt-btn--send"
+            onPointerDown={(e) => { e.stopPropagation(); e.currentTarget.setPointerCapture(e.pointerId); sendToVmix(active, activeTeam); }}
+            onClick={(e) => e.stopPropagation()}
+            disabled={!client || !hasInput || !active}
+            title="Send to vMix"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
+          ><ArrowUp size={12} strokeWidth={2} /> Send</button>
+          <button
+            className={`wgt-clt-btn wgt-clt-btn--show${overlayActive ? ' wgt-clt-btn--active' : ''}`}
+            onPointerDown={(e) => { e.stopPropagation(); e.currentTarget.setPointerCapture(e.pointerId); overlayIn(ch, active?.vmixInputKey); }}
+            onClick={(e) => e.stopPropagation()}
+            disabled={!vmixState || !hasInput}
+            title="Show overlay"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
+          ><Eye size={12} strokeWidth={2} /> Show</button>
+          <button
+            className={`wgt-clt-btn wgt-clt-btn--hide${!overlayActive ? ' wgt-clt-btn--active' : ''}`}
+            onPointerDown={(e) => { e.stopPropagation(); e.currentTarget.setPointerCapture(e.pointerId); overlayOut(ch); }}
+            onClick={(e) => e.stopPropagation()}
+            disabled={!vmixState || !hasInput}
+            title="Hide overlay"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
+          ><EyeOff size={12} strokeWidth={2} /> Hide</button>
+        </div>
+      )}
     </div>
   );
 }

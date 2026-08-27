@@ -591,7 +591,7 @@ async fn api_list_images(
     State(state): State<Arc<ServerState>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    // Use the Host header so browser clients on port 9878/9879 get image URLs
+    // Use the Host header so browser clients on port 9888/9889 get image URLs
     // that resolve from their own origin — all three ports serve /images/.
     let base = headers
         .get(header::HOST)

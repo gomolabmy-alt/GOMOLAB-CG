@@ -40,9 +40,18 @@ import { GroupStandingsWidget } from './GroupStandingsWidget';
 
 interface Props {
   widget: CanvasWidget;
+  /** True only for the "own CG" output route (see CgOutputPage.tsx) — hides
+   *  a widget's own operator-facing controls (Send/Show/Hide buttons, the
+   *  placement picker, etc.) so what's captured is just the on-air graphic.
+   *  Distinct from a read-only remote viewer (syncClient.isReadOnly), which
+   *  still shows those buttons — a producer watching on their phone can
+   *  still tap Show/Hide there, this is only for an actual capture source.
+   *  Currently only the lower-third-style widgets (the ones with a
+   *  clearly separate preview/actions split) honor it. */
+  outputOnly?: boolean;
 }
 
-export function WidgetRenderer({ widget }: Props) {
+export function WidgetRenderer({ widget, outputOnly }: Props) {
   const { id, type, config, w, h } = widget;
   const sharedProps = { config, w, h };
 
@@ -54,9 +63,9 @@ export function WidgetRenderer({ widget }: Props) {
     case 'file-path':   content = <FilePathWidget widgetId={id} {...sharedProps} />; break;
     case 'scoreboard':  content = <ScoreboardWidget widgetId={id} {...sharedProps} />; break;
     case 'score-log':          content = <ScoreLogWidget widgetId={id} {...sharedProps} />; break;
-    case 'score-lower-third':      content = <ScoreLowerThirdWidget widgetId={id} {...sharedProps} />; break;
-    case 'player-lower-third':     content = <PlayerLowerThirdWidget widgetId={id} {...sharedProps} />; break;
-    case 'sin-bin-lower-third':    content = <SinBinLowerThirdWidget widgetId={id} {...sharedProps} />; break;
+    case 'score-lower-third':      content = <ScoreLowerThirdWidget widgetId={id} outputOnly={outputOnly} {...sharedProps} />; break;
+    case 'player-lower-third':     content = <PlayerLowerThirdWidget widgetId={id} outputOnly={outputOnly} {...sharedProps} />; break;
+    case 'sin-bin-lower-third':    content = <SinBinLowerThirdWidget widgetId={id} outputOnly={outputOnly} {...sharedProps} />; break;
     case 'timer':       content = <TimerWidget widgetId={id} {...sharedProps} />; break;
     case 'tbar':        content = <TBarWidget {...sharedProps} />; break;
     case 'volume':      content = <VolumeWidget {...sharedProps} />; break;
@@ -74,8 +83,8 @@ export function WidgetRenderer({ widget }: Props) {
     case 'vmix-titles':   content = <VmixTitlesWidget {...sharedProps} />; break;
     case 'rugby-lineup':       content = <RugbyLineupWidget widgetId={id} {...sharedProps} />; break;
     case 'rugby-lineup-next':  content = <RugbyLineupWidget widgetId={id} nextMatchMode {...sharedProps} />; break;
-    case 'card-lower-third':   content = <CardLowerThirdWidget widgetId={id} {...sharedProps} />; break;
-    case 'placement-lower-third': content = <PlacementLowerThirdWidget widgetId={id} {...sharedProps} />; break;
+    case 'card-lower-third':   content = <CardLowerThirdWidget widgetId={id} outputOnly={outputOnly} {...sharedProps} />; break;
+    case 'placement-lower-third': content = <PlacementLowerThirdWidget widgetId={id} outputOnly={outputOnly} {...sharedProps} />; break;
     case 'pomodoro':           content = <CustomTimerWidget widgetId={id} {...sharedProps} />; break;
     case 'image-display':      content = <ImageDisplayWidget config={config} />; break;
     case 'recent-matches':     content = <RecentMatchesWidget widgetId={id} {...sharedProps} />; break;

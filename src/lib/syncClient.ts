@@ -1,6 +1,8 @@
-const SYNC_PORT = 9877;
-const READONLY_PORT = 9878;
-export const COMMENTATOR_PORT = 9879;
+// Distinct from GOMOLAB vMix Control's own 9877/9878/9879 (see lib.rs) —
+// this is a separate app meant to run alongside it, not replace it.
+const SYNC_PORT = 9887;
+const READONLY_PORT = 9888;
+export const COMMENTATOR_PORT = 9889;
 
 export type SyncAction = {
   type: 'ACTION';
@@ -28,7 +30,7 @@ export type SyncCommentatorFullState = {
   canvas: { pages: any[]; activePageId: string };
 };
 
-// Sent by a remote client (port 9877) pressing "Save to Host" to explicitly
+// Sent by a remote client (port 9887) pressing "Save to Host" to explicitly
 // push its locally-edited Team DB / Schedule / Results / Tournament data —
 // unlike FULL_STATE (host → everyone), this only takes effect on the host,
 // which then adopts it and re-broadcasts via its own next FULL_STATE heartbeat.

@@ -128,7 +128,7 @@ export function Canvas({ mode = 'main' }: { mode?: 'main' | 'commentator' }) {
 
   const isDesktopHost = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
   const isClientMode = !isDesktopHost;
-  // Commentator clients (port 9879) are read-only; read-only port (9878) clients are also read-only
+  // Commentator clients (port 9889) are read-only; read-only port (9888) clients are also read-only
   const isReadOnly = syncClient.isReadOnly;
   const canEdit = editMode && !isReadOnly;
 

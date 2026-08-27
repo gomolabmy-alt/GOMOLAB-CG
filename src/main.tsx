@@ -4,6 +4,7 @@ import { createRoot } from 'react-dom/client';
 import './index.css';
 import { App } from './App';
 import { PopoutPage } from './components/PopoutPage';
+import { CgOutputPage } from './components/CgOutputPage';
 import { syncClient } from './lib/syncClient';
 import { useCanvasStore, initCanvasSync, initCommentatorSync } from './stores/canvasStore';
 import { useTournamentStore, initTournamentSync } from './stores/tournamentStore';
@@ -62,6 +63,13 @@ const isDesktopHost = typeof window !== 'undefined' && (
 const popoutPageId = typeof window !== 'undefined'
   ? new URLSearchParams(window.location.search).get('popoutPage')
   : null;
+// The "own CG" output route (see CgOutputPage.tsx) — normally loaded on the
+// read-only sync port (9888) by a completely different application (vMix's
+// Web Browser input, an OBS Browser Source), never a Tauri window, so this
+// never affects isMainWindow the way popoutPageId does.
+const cgOutputWidgetId = typeof window !== 'undefined'
+  ? new URLSearchParams(window.location.search).get('cgOutput')
+  : null;
 const isMainWindow = isDesktopHost && !popoutPageId;
 
 // Sign-in gate only applies to the actual packaged app's main window — a
@@ -118,7 +126,7 @@ const fallbackEl = document.getElementById('boot-fallback');
 createRoot(rootEl).render(
   <StrictMode>
     <RootErrorBoundary>
-      {popoutPageId ? <PopoutPage pageId={popoutPageId} /> : <App />}
+      {cgOutputWidgetId ? <CgOutputPage widgetId={cgOutputWidgetId} /> : popoutPageId ? <PopoutPage pageId={popoutPageId} /> : <App />}
     </RootErrorBoundary>
   </StrictMode>,
 );

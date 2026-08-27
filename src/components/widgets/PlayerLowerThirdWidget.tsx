@@ -11,9 +11,11 @@ interface Props {
   config: Record<string, any>;
   w: number;
   h: number;
+  /** Hides the Send/Show/Hide action row — see WidgetRenderer's own doc. */
+  outputOnly?: boolean;
 }
 
-export function PlayerLowerThirdWidget({ widgetId, config }: Props) {
+export function PlayerLowerThirdWidget({ widgetId, config, outputOnly }: Props) {
   const { pages } = useCanvasStore();
   const { getClient, vmixState, overlayIn, overlayOut, vmixSyncVersion } = useVmixStore();
 
@@ -136,31 +138,33 @@ export function PlayerLowerThirdWidget({ widgetId, config }: Props) {
         )}
       </div>
 
-      <div className="wgt-slt-actions">
-        <button
-          className="wgt-slt-btn wgt-slt-btn--send"
-          onClick={sendToVmix}
-          disabled={!getClient() || !hasInput || !hasPlayer}
-          title="Send player data to vMix title"
-          style={{ display: 'inline-flex', alignItems: 'center', gap: 4, justifyContent: 'center' }}
-        >
-          <ArrowUp size={12} strokeWidth={2} /> Send
-        </button>
-        <button
-          className={`wgt-slt-btn wgt-slt-btn--show${overlayActive ? ' wgt-slt-btn--active' : ''}`}
-          onClick={() => overlayIn(ch, config.vmixInputKey || undefined)}
-          disabled={!vmixState || !hasInput}
-          title="Show on overlay"
-          style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
-        ><Eye size={12} strokeWidth={2} /> Show</button>
-        <button
-          className={`wgt-slt-btn wgt-slt-btn--hide${!overlayActive ? ' wgt-slt-btn--active' : ''}`}
-          onClick={() => overlayOut(ch)}
-          disabled={!vmixState || !hasInput}
-          title="Hide from overlay"
-          style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
-        ><EyeOff size={12} strokeWidth={2} /> Hide</button>
-      </div>
+      {!outputOnly && (
+        <div className="wgt-slt-actions">
+          <button
+            className="wgt-slt-btn wgt-slt-btn--send"
+            onClick={sendToVmix}
+            disabled={!getClient() || !hasInput || !hasPlayer}
+            title="Send player data to vMix title"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, justifyContent: 'center' }}
+          >
+            <ArrowUp size={12} strokeWidth={2} /> Send
+          </button>
+          <button
+            className={`wgt-slt-btn wgt-slt-btn--show${overlayActive ? ' wgt-slt-btn--active' : ''}`}
+            onClick={() => overlayIn(ch, config.vmixInputKey || undefined)}
+            disabled={!vmixState || !hasInput}
+            title="Show on overlay"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
+          ><Eye size={12} strokeWidth={2} /> Show</button>
+          <button
+            className={`wgt-slt-btn wgt-slt-btn--hide${!overlayActive ? ' wgt-slt-btn--active' : ''}`}
+            onClick={() => overlayOut(ch)}
+            disabled={!vmixState || !hasInput}
+            title="Hide from overlay"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
+          ><EyeOff size={12} strokeWidth={2} /> Hide</button>
+        </div>
+      )}
     </div>
   );
 }

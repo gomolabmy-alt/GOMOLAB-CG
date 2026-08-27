@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "GOMOLAB vMix Control",
-  "version": "1.0.7",
-  "identifier": "com.gomolab.vmixcontrol",
+  "productName": "GOMOLAB CG",
+  "version": "0.1.0",
+  "identifier": "com.gomolab.cg",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:5173",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "GOMOLAB vMix Control",
+        "title": "GOMOLAB CG",
         "width": 1280,
         "height": 800,
         "minWidth": 700,
@@ -29,11 +29,11 @@
   "plugins": {
     "deep-link": {
       "desktop": {
-        "schemes": ["gomolab"]
+        "schemes": ["gomolabcg"]
       }
     },
     "updater": {
-      "active": true,
+      "active": false,
       "endpoints": [
         "https://github.com/gomolabmy-alt/GOMOLAB-vMixControl/releases/latest/download/latest.json"
       ],

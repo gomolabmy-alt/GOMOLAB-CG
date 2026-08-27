@@ -1,6 +1,6 @@
 {
-  "name": "gomolab-vmix-control",
-  "version": "1.0.7",
+  "name": "gomolab-cg",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "main": "electron/main.cjs",
@@ -21,8 +21,8 @@
     "ios:open": "npx cap open ios"
   },
   "build": {
-    "appId": "com.gomolab.vmixcontrol",
-    "productName": "GOMOLAB vMix Control",
+    "appId": "com.gomolab.cg",
+    "productName": "GOMOLAB CG",
     "copyright": "Copyright © 2024 GOMOLAB",
     "files": [
       "dist/**/*",
@@ -108,7 +108,7 @@
         }
       ],
       "extendInfo": {
-        "NSLocalNetworkUsageDescription": "GOMOLAB vMix Control needs local network access to connect to vMix running on your local network."
+        "NSLocalNetworkUsageDescription": "GOMOLAB CG needs local network access to connect to vMix and serve its own graphics output on your local network."
       }
     },
     "win": {
@@ -129,7 +129,7 @@
       ]
     },
     "dmg": {
-      "title": "GOMOLAB vMix Control",
+      "title": "GOMOLAB CG",
       "contents": [
         {
           "x": 130,

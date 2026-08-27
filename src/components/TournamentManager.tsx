@@ -4791,8 +4791,8 @@ function DrawPanel({ tournament, activeCategory }: { tournament: Tournament; act
   const { client, vmixState } = useVmixStore();
   const allVmixInputs = vmixState?.inputs ?? [];
   const { liveSyncDraw, setLiveSyncDraw } = useAppSettings();
-  // Only a non-host interactive (9877) client can push to the host — 9878
-  // readonly and 9879 commentator clients never edit.
+  // Only a non-host interactive (9887) client can push to the host — 9888
+  // readonly and 9889 commentator clients never edit.
   const isRemoteInteractive = !isHostClient && !syncClient.isReadOnly && !syncClient.isCommentator;
   const categories = tournament.categories ?? [];
   // Which category's draw is in view — groups/pots/teams tagged for another
@@ -4991,7 +4991,7 @@ function DrawPanel({ tournament, activeCategory }: { tournament: Tournament; act
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groupMembershipKey, JSON.stringify(groupListTargets), client]);
 
-  // Live Sync (remote 9877 only): auto-push to the host a moment after any
+  // Live Sync (remote 9887 only): auto-push to the host a moment after any
   // draw-relevant change, so the host (and everyone watching its broadcast)
   // sees the draw happen live instead of waiting for a manual "Save to Host".
   // Fingerprinted across ALL of this tournament's teams (not just the

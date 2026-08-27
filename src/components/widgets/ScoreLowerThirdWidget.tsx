@@ -15,6 +15,8 @@ interface Props {
   config: Record<string, any>;
   w: number;
   h: number;
+  /** Hides the action row — see WidgetRenderer's own doc. */
+  outputOnly?: boolean;
 }
 
 interface LogEntry {
@@ -52,7 +54,7 @@ function resolveInput(vmixInputs: VmixInput[], actionLabel: string): VmixInput |
 
 interface Player { id: string; name: string; jerseyNo: string; }
 
-export function ScoreLowerThirdWidget({ widgetId, config }: Props) {
+export function ScoreLowerThirdWidget({ widgetId, config, outputOnly }: Props) {
   const { pages, patchScoreLogEntry } = useCanvasStore();
   const { teams: teamDbTeams } = useTeamDbStore();
   const { getClient, vmixState, overlayIn, overlayOut, vmixSyncVersion } = useVmixStore();
@@ -276,34 +278,36 @@ export function ScoreLowerThirdWidget({ widgetId, config }: Props) {
         </div>
       )}
 
-      <div className="wgt-slt-actions">
-        <button
-          className="wgt-slt-btn wgt-slt-btn--send"
-          onPointerDown={(e) => { e.stopPropagation(); e.currentTarget.setPointerCapture(e.pointerId); sendToVmix(); }}
-          onClick={(e) => e.stopPropagation()}
-          disabled={!getClient() || !hasInput || !last}
-          title="Send last score data to vMix title"
-          style={{ display: 'inline-flex', alignItems: 'center', gap: 4, justifyContent: 'center' }}
-        >
-          <ArrowUp size={12} strokeWidth={2} /> Send
-        </button>
-        <button
-          className={`wgt-slt-btn wgt-slt-btn--show${overlayActive ? ' wgt-slt-btn--active' : ''}`}
-          onPointerDown={(e) => { e.stopPropagation(); e.currentTarget.setPointerCapture(e.pointerId); overlayIn(ch, activeInput?.vmixInputKey || undefined); }}
-          onClick={(e) => e.stopPropagation()}
-          disabled={!vmixState || !hasInput}
-          title="Show on overlay"
-          style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
-        ><Eye size={12} strokeWidth={2} /> Show</button>
-        <button
-          className={`wgt-slt-btn wgt-slt-btn--hide${!overlayActive ? ' wgt-slt-btn--active' : ''}`}
-          onPointerDown={(e) => { e.stopPropagation(); e.currentTarget.setPointerCapture(e.pointerId); overlayOut(ch); }}
-          onClick={(e) => e.stopPropagation()}
-          disabled={!vmixState || !hasInput}
-          title="Hide from overlay"
-          style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
-        ><EyeOff size={12} strokeWidth={2} /> Hide</button>
-      </div>
+      {!outputOnly && (
+        <div className="wgt-slt-actions">
+          <button
+            className="wgt-slt-btn wgt-slt-btn--send"
+            onPointerDown={(e) => { e.stopPropagation(); e.currentTarget.setPointerCapture(e.pointerId); sendToVmix(); }}
+            onClick={(e) => e.stopPropagation()}
+            disabled={!getClient() || !hasInput || !last}
+            title="Send last score data to vMix title"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, justifyContent: 'center' }}
+          >
+            <ArrowUp size={12} strokeWidth={2} /> Send
+          </button>
+          <button
+            className={`wgt-slt-btn wgt-slt-btn--show${overlayActive ? ' wgt-slt-btn--active' : ''}`}
+            onPointerDown={(e) => { e.stopPropagation(); e.currentTarget.setPointerCapture(e.pointerId); overlayIn(ch, activeInput?.vmixInputKey || undefined); }}
+            onClick={(e) => e.stopPropagation()}
+            disabled={!vmixState || !hasInput}
+            title="Show on overlay"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
+          ><Eye size={12} strokeWidth={2} /> Show</button>
+          <button
+            className={`wgt-slt-btn wgt-slt-btn--hide${!overlayActive ? ' wgt-slt-btn--active' : ''}`}
+            onPointerDown={(e) => { e.stopPropagation(); e.currentTarget.setPointerCapture(e.pointerId); overlayOut(ch); }}
+            onClick={(e) => e.stopPropagation()}
+            disabled={!vmixState || !hasInput}
+            title="Hide from overlay"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
+          ><EyeOff size={12} strokeWidth={2} /> Hide</button>
+        </div>
+      )}
     </div>
   );
 }
