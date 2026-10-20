@@ -2,9 +2,6 @@ import './polyfill'; // must be first — patches crypto.randomUUID for older br
 import { StrictMode, Component, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import './index.css';
-import { App } from './App';
-import { PopoutPage } from './components/PopoutPage';
-import { CgOutputPage } from './components/CgOutputPage';
 import { syncClient } from './lib/syncClient';
 import { useCanvasStore, initCanvasSync, initCommentatorSync } from './stores/canvasStore';
 import { useTournamentStore, initTournamentSync } from './stores/tournamentStore';
@@ -13,6 +10,8 @@ import { useMatchScheduleStore } from './stores/matchScheduleStore';
 import { useMatchResultsStore } from './stores/matchResultsStore';
 import { useRundownStore } from './stores/rundownStore';
 import { useAuthStore } from './stores/authStore';
+import { useCgPlayoutStore, initPlayoutSync } from './stores/cgPlayoutStore';
+import { parseCgOutputMode } from './lib/cgOutputMode';
 
 class RootErrorBoundary extends Component<{ children: ReactNode }, { error: string | null }> {
   state = { error: null };
@@ -46,6 +45,7 @@ class RootErrorBoundary extends Component<{ children: ReactNode }, { error: stri
 initCanvasSync();
 initTournamentSync();
 initCommentatorSync();
+initPlayoutSync();
 
 // Connect to sync server; desktop host sends full state on connect for new joiners
 // Also treat localhost in Vite dev mode as host so UI preview works without the Tauri app
@@ -63,14 +63,31 @@ const isDesktopHost = typeof window !== 'undefined' && (
 const popoutPageId = typeof window !== 'undefined'
   ? new URLSearchParams(window.location.search).get('popoutPage')
   : null;
-// The "own CG" output route (see CgOutputPage.tsx) — normally loaded on the
+// The "own CG" output route (see CgOutputPage.tsx) — usually loaded on the
 // read-only sync port (9888) by a completely different application (vMix's
-// Web Browser input, an OBS Browser Source), never a Tauri window, so this
-// never affects isMainWindow the way popoutPageId does.
+// Web Browser input, an OBS Browser Source), but also opened as an in-app
+// preview window (see CgOutputsPanel.tsx's "Preview" button), which IS a
+// real Tauri webview — so, same as popoutPageId, it must never let that
+// window self-appoint as the sync host.
 const cgOutputWidgetId = typeof window !== 'undefined'
   ? new URLSearchParams(window.location.search).get('cgOutput')
   : null;
-const isMainWindow = isDesktopHost && !popoutPageId;
+// A CasparCG-style channel output (see CgChannelOutputPage.tsx) — renders
+// every on-air layer for one CG playout channel, stacked by z-order. Same
+// story as cgOutputWidgetId: reached over the network by vMix/OBS, or opened
+// as an in-app preview window (CgPlayoutPanel.tsx), either way a real Tauri
+// webview that must never self-appoint as sync host.
+const cgChannelParam = typeof window !== 'undefined'
+  ? new URLSearchParams(window.location.search).get('cgChannel')
+  : null;
+// Fill/Key/Monitor — see lib/cgOutputMode.ts. Read once here (not inside
+// either output page) so both `?cgOutput=`/`?cgChannel=` routes share the
+// exact same `mode=` query-param convention. Absent/unrecognized -> 'monitor',
+// so every URL written before this existed keeps behaving identically.
+const cgOutputMode = typeof window !== 'undefined'
+  ? parseCgOutputMode(new URLSearchParams(window.location.search).get('mode'))
+  : 'monitor';
+const isMainWindow = isDesktopHost && !popoutPageId && !cgOutputWidgetId && !cgChannelParam;
 
 // Sign-in gate only applies to the actual packaged app's main window — a
 // popped-out window doesn't need its own separate auth verification/
@@ -98,6 +115,11 @@ syncClient.connect(isMainWindow ? () => ({
   matchSchedule: { matches: useMatchScheduleStore.getState().matches },
   matchResults: { results: useMatchResultsStore.getState().results },
   rundown: { segments: useRundownStore.getState().segments },
+  playout: { layers: useCgPlayoutStore.getState().layers },
+  library: (() => {
+    const s = useCanvasStore.getState();
+    return { pages: s.libraryPages, activePageId: s.libraryActivePageId };
+  })(),
 }) : undefined);
 
 function sendCommentatorHeartbeat() {
@@ -123,15 +145,48 @@ if (isMainWindow) {
 const rootEl = document.getElementById('root')!;
 const fallbackEl = document.getElementById('boot-fallback');
 
-createRoot(rootEl).render(
-  <StrictMode>
-    <RootErrorBoundary>
-      {cgOutputWidgetId ? <CgOutputPage widgetId={cgOutputWidgetId} /> : popoutPageId ? <PopoutPage pageId={popoutPageId} /> : <App />}
-    </RootErrorBoundary>
-  </StrictMode>,
-);
+// Loaded via a genuine dynamic import() — not a static one at the top of
+// this file — specifically so Vite/Rollup code-splits each of these four
+// page trees into its OWN chunk instead of bundling all of them (plus every
+// module each one pulls in) into one shared entry chunk. This matters most
+// for `?cgOutput=`/`?cgChannel=` (CgOutputPage/CgChannelOutputPage): the
+// ACTUAL broadcast output surface, loaded over the network by vMix's/OBS'
+// own Browser Source (often several simultaneous instances, one per CG
+// layer/channel, each spinning up its own full Chromium process) — before
+// this, hitting that URL downloaded/parsed/executed the ENTIRE editor (the
+// whole Sidebar, Tournament Manager, Widget Palette, CgTemplateDesigner,
+// every widget type, etc.) just to render one small template on screen.
+// Now it only fetches CgOutputPage/CgChannelOutputPage and whatever THOSE
+// actually need (CgTemplateWidget, the animation engine, gsap) — same for a
+// popped-out canvas window (PopoutPage), which doesn't need the output-only
+// code either. The main editor window still loads its own full chunk, just
+// no longer forced onto every other window at the same time.
+(async () => {
+  let Page: React.ComponentType<any>;
+  let props: Record<string, any> = {};
+  if (cgOutputWidgetId) {
+    ({ CgOutputPage: Page } = await import('./components/CgOutputPage'));
+    props = { widgetId: cgOutputWidgetId, mode: cgOutputMode };
+  } else if (cgChannelParam) {
+    ({ CgChannelOutputPage: Page } = await import('./components/CgChannelOutputPage'));
+    props = { channel: Number(cgChannelParam), mode: cgOutputMode };
+  } else if (popoutPageId) {
+    ({ PopoutPage: Page } = await import('./components/PopoutPage'));
+    props = { pageId: popoutPageId };
+  } else {
+    ({ App: Page } = await import('./App'));
+  }
 
-// Hide the "Loading…" overlay once React has taken over
-if (fallbackEl) {
-  requestAnimationFrame(() => { fallbackEl.style.display = 'none'; });
-}
+  createRoot(rootEl).render(
+    <StrictMode>
+      <RootErrorBoundary>
+        <Page {...props} />
+      </RootErrorBoundary>
+    </StrictMode>,
+  );
+
+  // Hide the "Loading…" overlay once React has taken over
+  if (fallbackEl) {
+    requestAnimationFrame(() => { fallbackEl.style.display = 'none'; });
+  }
+})();

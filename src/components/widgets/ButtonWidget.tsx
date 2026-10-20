@@ -1,15 +1,19 @@
-import { useState } from 'react';
+import { useContext, useState } from 'react';
 import { useVmixStore } from '../../stores/vmixStore';
-import { isAppFn, deriveToggleOn, runButtonPress, runButtonRelease, type ActionItem } from '../../lib/buttonActions';
+import { useCanvasStore } from '../../stores/canvasStore';
+import { CanvasActionContext } from '../../lib/canvasContext';
+import { isAppFn, isCgFn, deriveToggleOn, runActions, runButtonPress, runButtonRelease, type ActionItem } from '../../lib/buttonActions';
 import { hotkeyLabel } from '../../lib/hotkeyFormat';
 
 interface Props {
+  widgetId: string;
   config: Record<string, any>;
   w: number;
   h: number;
 }
 
 type SideButton = { id: string; label: string; color?: string; textColor?: string; fontSize?: number; mode?: string; actions: ActionItem[]; releaseActions?: ActionItem[]; hotkey?: string };
+type ButtonState = { id: string; name: string; color?: string; textColor?: string; actions: ActionItem[] };
 
 const isApp = isAppFn;
 
@@ -74,9 +78,12 @@ function firstInputKey(actions: ActionItem[]): string | undefined {
   return actions.find(a => a.params?.Input)?.params?.Input;
 }
 
-export function ButtonWidget({ config }: Props) {
+export function ButtonWidget({ widgetId, config }: Props) {
   const { vmixState } = useVmixStore();
   const connVmixState = vmixState;
+  const store = useCanvasStore();
+  const ctx = useContext(CanvasActionContext);
+  const updateWidgetConfig = ctx?.updateWidgetConfig ?? store.updateWidgetConfig;
   const [firing, setFiring] = useState(false);
   const [sideFiring, setSideFiring] = useState<Record<string, boolean>>({});
 
@@ -84,12 +91,33 @@ export function ButtonWidget({ config }: Props) {
   const releaseActions = getActions(config.releaseActions, config.releaseFunction, config.releaseParams);
   const sideButtons: SideButton[] = config.sideButtons ?? [];
 
+  // Multi-State: no on/off to derive from vMix (unlike Toggle) — which
+  // state is "current" is tracked directly on the widget's own config
+  // (currentStateId), same source of truth a Toggle button would otherwise
+  // read live from vMix, just local since an arbitrary N-way cycle has no
+  // single vMix signal to derive it from. Falls back to the first state
+  // whenever the id doesn't resolve (never configured yet, or that state
+  // got deleted out from under it).
+  const states: ButtonState[] = config.states ?? [];
+  const currentStateIdx = Math.max(0, states.findIndex(s => s.id === config.currentStateId));
+  const currentState = states[currentStateIdx];
+
   const handleDown = async () => {
+    if (config.mode === 'multiState') {
+      if (states.length === 0) return;
+      setFiring(true);
+      const nextIdx = (currentStateIdx + 1) % states.length;
+      const nextState = states[nextIdx];
+      updateWidgetConfig(widgetId, { currentStateId: nextState.id });
+      await runActions(nextState.actions ?? []);
+      return;
+    }
     if (config.mode !== 'toggle') setFiring(true);
     await runButtonPress({ mode: config.mode, actions: pressActions, releaseActions });
   };
 
   const handleUp = async () => {
+    if (config.mode === 'multiState') { setFiring(false); return; }
     if (config.mode !== 'toggle') {
       setFiring(false);
       await runButtonRelease({ mode: config.mode, actions: pressActions, releaseActions });
@@ -110,24 +138,26 @@ export function ButtonWidget({ config }: Props) {
     }
   };
 
-  const hasVmixAction = [...pressActions, ...releaseActions, ...sideButtons.flatMap(sb => [...(sb.actions ?? []), ...(sb.releaseActions ?? [])])].some(a => a.fn && !isApp(a.fn));
+  const hasVmixAction = [...pressActions, ...releaseActions, ...sideButtons.flatMap(sb => [...(sb.actions ?? []), ...(sb.releaseActions ?? [])]), ...states.flatMap(s => s.actions ?? [])].some(a => a.fn && !isApp(a.fn) && !isCgFn(a.fn));
 
   const mainInputKey = config.tallyInputKey || firstInputKey(pressActions) || firstInputKey(releaseActions);
-  const mainTally = tallyClass(mainInputKey, [...pressActions, ...releaseActions], connVmixState);
+  const mainTally = config.mode === 'multiState' ? '' : tallyClass(mainInputKey, [...pressActions, ...releaseActions], connVmixState);
 
-  // Both modes derive "on" from live vMix state — toggle uses deriveToggleOn
-  // (overlay channel / recording / streaming / etc.), momentary uses tally
-  // (PGM/OVL/PRV) — neither depends on local click memory.
+  // Toggle derives "on" from live vMix state (overlay channel / recording /
+  // streaming / etc.), momentary uses tally (PGM/OVL/PRV) — neither depends
+  // on local click memory. Multi-State has no single "on" — see
+  // currentState above, which IS its own local click memory (there's no
+  // generic live-vMix signal for "which of N states").
   const isOn = config.mode === 'toggle'
     ? deriveToggleOn([...pressActions, ...releaseActions], connVmixState)
-    : !!mainTally;
+    : config.mode === 'multiState' ? false : !!mainTally;
 
   const mainBtn = (
     <button
       className={`wgt-btn${sideButtons.length ? ' wgt-btn--main' : ''} ${firing ? 'wgt-btn--fire' : ''} ${isOn ? 'wgt-btn--on' : ''} ${mainTally}`}
       style={{
-        '--bc': config.color ?? '#3498db',
-        '--tc': config.textColor ?? '#fff',
+        '--bc': (config.mode === 'multiState' ? currentState?.color : undefined) ?? config.color ?? '#3498db',
+        '--tc': (config.mode === 'multiState' ? currentState?.textColor : undefined) ?? config.textColor ?? '#fff',
         fontSize: (config.fontSize ?? 14) + 'px',
       } as React.CSSProperties}
       onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); handleDown(); }}
@@ -136,7 +166,7 @@ export function ButtonWidget({ config }: Props) {
       disabled={hasVmixAction && !connVmixState}
     >
       {config.mode === 'toggle' && <span className="wgt-btn-dot" />}
-      {config.label ?? 'Button'}
+      {config.mode === 'multiState' ? (currentState?.name || config.label || 'Button') : (config.label ?? 'Button')}
       {config.hotkey && <span className="wgt-btn-hotkey-badge" title={`Hotkey: ${hotkeyLabel(config.hotkey)}`}>{hotkeyLabel(config.hotkey)}</span>}
       {mainTally && <span className={`wgt-btn-tally-badge wgt-btn-tally-badge--${mainTally === 'wgt-btn--pgm' ? 'pgm' : mainTally === 'wgt-btn--ovl' ? 'ovl' : 'prv'}`}>
         {mainTally === 'wgt-btn--pgm' ? 'PGM' : mainTally === 'wgt-btn--ovl' ? 'OVL' : 'PRV'}

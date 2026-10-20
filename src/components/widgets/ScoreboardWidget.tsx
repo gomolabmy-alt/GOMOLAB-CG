@@ -29,6 +29,7 @@ import { resolvePlayerListRoster } from '../../lib/playerListSquad';
 import type { CanvasWidget } from '../../types/canvas';
 import { HeadToHeadPanel } from './HeadToHeadPanel';
 import { extractKnockoutStage } from '../TournamentManager';
+import { resolveScorePart, type ScoreMergePart } from '../../lib/templateBinding';
 import { computeShootoutStatus, shootoutRoundsNeeded, type ShootoutRound } from '../../lib/shootout';
 
 interface Props {
@@ -63,32 +64,8 @@ function resolveInc(inc: Increment): { label: string; value: number } {
 // vMix merge composers (see WidgetConfigPanel's 'scoreboard' case,
 // SCORE_MERGE_PARTS_A/B/INFO) — resolves one named piece straight off this
 // widget's own config, same values the individual field pushes below use.
-type ScoreMergePart =
-  | 'shortA' | 'textA' | 'teamA' | 'scoreA'
-  | 'shortB' | 'textB' | 'teamB' | 'scoreB'
-  | 'competition' | 'category' | 'group' | 'round' | 'scheduledTime' | 'matchId';
-
-function resolveScorePart(config: Record<string, any>, part: ScoreMergePart, matchId?: string): string {
-  switch (part) {
-    case 'shortA': return config.teamAShortName ?? '';
-    case 'textA': return config.teamATextField ?? '';
-    case 'teamA': return config.teamAName ?? '';
-    case 'scoreA': return String(config.scoreA ?? 0);
-    case 'shortB': return config.teamBShortName ?? '';
-    case 'textB': return config.teamBTextField ?? '';
-    case 'teamB': return config.teamBName ?? '';
-    case 'scoreB': return String(config.scoreB ?? 0);
-    case 'competition': return config.competition ?? '';
-    case 'category': return config.category ?? '';
-    // A group name is meaningless once the fixture is a knockout match —
-    // falls back to the stage/round text instead, same swap as the Group
-    // Field push and on-widget badge.
-    case 'group': return extractKnockoutStage({ group: config.group, round: config.subtitle }) ? (config.subtitle ?? '') : (config.group ?? '');
-    case 'round': return config.subtitle ?? '';
-    case 'scheduledTime': return config.scheduledTime ?? '';
-    case 'matchId': return matchId ?? '';
-  }
-}
+// ScoreMergePart/resolveScorePart now live in lib/templateBinding.ts, shared
+// with the CG template designer's binding registry — see that file.
 
 const SCORE_ABBREVS: Record<string, string> = {
   'try': 'TRY', 'tries': 'TRY',
@@ -275,7 +252,13 @@ export function ScoreboardWidget({ widgetId, config }: Props) {
   const { pages, scoreWidgetAction, resetWidgetScore, resetWidgetTeams, resetWidgetTimer, undoLastScoreEntry } = store;
   const updateWidgetConfig = ctx?.updateWidgetConfig ?? store.updateWidgetConfig;
   const { teams: teamDbTeams } = useTeamDbStore();
-  const { client, vmixSyncVersion } = useVmixStore();
+  const { vmixSyncVersion } = useVmixStore();
+  // getClient() (not the raw `client` field) — see vmixStore.ts's own doc
+  // comment: `client` is only ever set on the HOST, so reading it directly
+  // silently drops every push when this widget is driven from a remote
+  // interactive client. getClient() proxies through to the host's real
+  // connection in that case.
+  const client = useVmixStore((s) => s.getClient());
   const { results: savedResults, addResult, updateResult } = useMatchResultsStore();
   const { markSent, markCompleted, updateMatch, matches: scheduledMatches } = useMatchScheduleStore();
   const { tournaments } = useTournamentStore();

@@ -1,9 +1,11 @@
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 
+mod amcp;
+mod app_nap;
 mod commands;
-mod ndi;
 mod server;
+mod sysstats;
 
 pub struct AppState {
     pub server: Arc<server::ServerState>,
@@ -49,6 +51,19 @@ pub fn run() {
                 .join("served-images");
             std::fs::create_dir_all(&images_dir).ok();
 
+            // One file per saved image sequence (see commands.rs's
+            // save_sequence) — a sibling of served-images, not a subfolder
+            // of it, so a sequence's own bundle never shows up in the plain
+            // image library (list_images/"/api/images" only ever reads
+            // served-images itself, non-recursively).
+            let sequences_dir = app
+                .handle()
+                .path()
+                .app_data_dir()
+                .expect("failed to get app data dir")
+                .join("served-sequences");
+            std::fs::create_dir_all(&sequences_dir).ok();
+
             // Seed a fully transparent PNG every launch (idempotent) so the
             // Draw system's vMix pushes can reference a stable, always-present
             // "blank" logo — http://localhost:9887/images/transparent.png —
@@ -68,7 +83,9 @@ pub fn run() {
                 9887,
                 9888,
                 9889,
+                5250,
                 images_dir,
+                sequences_dir,
             ));
 
             app.manage(AppState {
@@ -78,6 +95,14 @@ pub fn run() {
 
             tauri::async_runtime::spawn(async move {
                 server::start_servers(server_state).await;
+            });
+
+            // AMCP-style CG control port (LOAD/PLAY/STOP/UPDATE — see
+            // amcp.rs), a plain TCP listener started the same way as the
+            // three WS servers above, on its own Arc<ServerState> clone.
+            let amcp_state = Arc::clone(&app.state::<AppState>().server);
+            tauri::async_runtime::spawn(async move {
+                amcp::start_amcp_server(amcp_state).await;
             });
 
             // 20 ms tick emitter — drives all timer widgets from the Rust side so
@@ -116,6 +141,7 @@ pub fn run() {
             commands::get_build_number,
             commands::get_pid,
             commands::get_machine_id,
+            sysstats::get_system_stats,
             commands::http_get,
             commands::fetch_public_json,
             commands::tcp_test,
@@ -124,9 +150,13 @@ pub fn run() {
             commands::toggle_interactive,
             commands::toggle_readonly,
             commands::toggle_commentator,
+            commands::toggle_amcp,
             commands::set_sleep_block,
             commands::open_image_dialog,
+            commands::pick_sequence_frames,
+            commands::save_sequence,
             commands::save_text_file_dialog,
+            commands::open_text_file_dialog,
             commands::save_image,
             commands::rename_image,
             commands::import_image,
@@ -135,11 +165,6 @@ pub fn run() {
             commands::delete_image,
             commands::get_images_base_url,
             commands::get_local_ips,
-            commands::scan_ndi,
-            commands::ndi_runtime_available,
-            commands::ndi_preview_start,
-            commands::ndi_preview_stop,
-            commands::get_ndi_preview_base_url,
             commands::vmix_tcp_connect,
             commands::vmix_tcp_disconnect,
             commands::vmix_tcp_refresh,

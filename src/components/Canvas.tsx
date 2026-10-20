@@ -1,17 +1,52 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { Check, Pencil, X, LayoutGrid, Keyboard } from 'lucide-react';
+import { Check, Pencil, X, LayoutGrid, Keyboard, Trophy, Plus } from 'lucide-react';
 import { useCanvasStore } from '../stores/canvasStore';
 import { useAppSettings, nearestScalePreset } from '../stores/appSettingsStore';
+import { useTournamentStore } from '../stores/tournamentStore';
 import { WidgetRenderer } from './widgets/index';
 import { WidgetPalette } from './WidgetPalette';
 import { WidgetConfigPanel } from './WidgetConfigPanel';
+import { CgTemplateDesigner } from './CgTemplateDesigner';
 import { NotificationOverlay } from './NotificationOverlay';
 import { ConfirmModal } from './ConfirmModal';
 import { HotkeyRecorder } from './HotkeyRecorder';
+import { TournamentScopeHeader } from './TournamentManager';
 import { collectHotkeyBindings } from '../lib/hotkeyBindings';
 import { syncClient } from '../lib/syncClient';
 import { CanvasActionContext } from '../lib/canvasContext';
+
+// Same Tournament/Category bar TournamentManager.tsx's own Draw/Teams/
+// Schedule/etc. tabs use (TournamentScopeHeader) — reused here so the
+// canvas gets an identical, dedicated, always-visible scope picker instead
+// of only the Sidebar's compact popover. Off by default (see
+// appSettingsStore's canvasScopeBarVisible doc comment); its own × removes
+// it, a small "+ Add" affordance brings it back when hidden.
+function CanvasScopeBar() {
+  const { tournaments } = useTournamentStore();
+  const { canvasTournamentId, setCanvasTournamentId, canvasCategory, setCanvasCategory, setCanvasScopeBarVisible } = useAppSettings();
+  const activeTournament = tournaments.find(t => t.id === canvasTournamentId);
+  const categories = activeTournament?.categories ?? [];
+  return (
+    <div className="canvas-scope-bar">
+      <TournamentScopeHeader
+        tournaments={tournaments}
+        selectedId={canvasTournamentId}
+        onSelect={setCanvasTournamentId}
+        categories={categories}
+        activeCategory={canvasCategory}
+        onSelectCategory={setCanvasCategory}
+      >
+        <button
+          className="canvas-scope-bar-remove"
+          title="Remove this bar"
+          style={{ marginLeft: 'auto' }}
+          onClick={() => setCanvasScopeBarVisible(false)}
+        ><X size={14} strokeWidth={2} /></button>
+      </TournamentScopeHeader>
+    </div>
+  );
+}
 
 export function Canvas({ mode = 'main' }: { mode?: 'main' | 'commentator' }) {
   const {
@@ -48,9 +83,13 @@ export function Canvas({ mode = 'main' }: { mode?: 'main' | 'commentator' }) {
   const setActivePage = isCommentatorMode ? setCommentatorActivePage : setMainActivePage;
   const selectWidget = isCommentatorMode ? selectCommentatorWidget : selectMainWidget;
 
-  const { canvasWidth, canvasHeight, canvasScale, setCanvasScale } = useAppSettings();
+  const {
+    canvasWidth, canvasHeight, canvasScale, setCanvasScale,
+    canvasScopeBarVisible, setCanvasScopeBarVisible,
+  } = useAppSettings();
 
   const [showPalette, setShowPalette] = useState(false);
+  const [templateDesignerId, setTemplateDesignerId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [syncStatus, setSyncStatus] = useState(syncClient.status);
@@ -159,7 +198,7 @@ export function Canvas({ mode = 'main' }: { mode?: 'main' | 'commentator' }) {
         justifyContent: 'center', height: '100vh', gap: 20,
         background: '#1a1a2e', color: '#fff',
       }}>
-        <div style={{ fontSize: 36, fontWeight: 700, letterSpacing: 1 }}>GOMOLAB vMix Control</div>
+        <div style={{ fontSize: 36, fontWeight: 700, letterSpacing: 1 }}>GOMOLAB CG and vMix Control</div>
         <div style={{
           display: 'flex', alignItems: 'center', gap: 10,
           padding: '10px 24px', borderRadius: 8,
@@ -322,6 +361,17 @@ export function Canvas({ mode = 'main' }: { mode?: 'main' | 'commentator' }) {
 
       </div>
 
+      {/* ── Tournament/Category scope bar (optional, see CanvasScopeBar) ── */}
+      {canvasScopeBarVisible ? (
+        <CanvasScopeBar />
+      ) : canEdit && (
+        <button
+          className="canvas-scope-bar-add"
+          title="Show a Tournament/Category bar above the canvas"
+          onClick={() => setCanvasScopeBarVisible(true)}
+        ><Plus size={13} strokeWidth={2} /> <Trophy size={13} strokeWidth={2} /> Tournament/Category Bar</button>
+      )}
+
       {confirmDeletePageId && (
         <ConfirmModal
           title="Delete page?"
@@ -420,7 +470,13 @@ export function Canvas({ mode = 'main' }: { mode?: 'main' | 'commentator' }) {
             duplicateWidget: duplicateCommentatorWidget,
             selectWidget: selectCommentatorWidget,
           } : undefined}
+          onOpenTemplateDesigner={setTemplateDesignerId}
         />
+      )}
+
+      {/* ── Custom CG Template Designer ───────────────────────────────── */}
+      {templateDesignerId && (
+        <CgTemplateDesigner widgetId={templateDesignerId} onClose={() => setTemplateDesignerId(null)} />
       )}
 
       {/* ── Read-only Notification Overlay ───────────────────────────── */}

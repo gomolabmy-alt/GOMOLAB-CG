@@ -1,6 +1,7 @@
 import { useMemo, useState, useEffect, useRef, useContext } from 'react';
 import { RotateCcw, ChevronRight, Check, AlarmClock, Play, Link2, AlertTriangle } from 'lucide-react';
 import { useRundownStore, sortRundownSegments, deriveRundownStatus, type RundownSegment } from '../../stores/rundownStore';
+import { registerReliableTick } from '../../stores/canvasStore';
 import { useMatchScheduleStore } from '../../stores/matchScheduleStore';
 import { useMatchResultsStore } from '../../stores/matchResultsStore';
 import { parseScheduledDateTime, formatLate, useLiveScoreboardConfigs } from '../../utils/scoreboardSnapshot';
@@ -33,12 +34,13 @@ export function RundownWidget({ config }: Props) {
 
   const doneCount = segments.filter(s => statusOf(s) === 'done').length;
 
-  // Ticks the "how late"/"how overrun" durations forward against the local clock.
+  // Ticks the "how late"/"how overrun" durations forward against the local
+  // clock. registerReliableTick (not a plain setInterval) — see
+  // MatchScheduleWidget.tsx's identical comment; a fixed key is fine here
+  // per this component's own "not per-widget-instance-scoped" doc comment
+  // above.
   const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 30000);
-    return () => clearInterval(id);
-  }, []);
+  useEffect(() => registerReliableTick('rundown-widget:now', 30000, () => setNow(Date.now())), []);
 
   // Auto-scrolls to the next not-yet-started segment — segments are already
   // sortIndex-sorted, so the first upcoming one is "up next".

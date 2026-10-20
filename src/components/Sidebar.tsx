@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import {
   MapPin, Lock, User, Monitor, BarChart3, ArrowUp, Check, Circle, Play,
   RotateCw, AlertTriangle, RotateCcw, Sun, Moon, Settings, Pencil, Zap,
-  Eye, Mic, Wifi, Trophy, X, ArrowRight,
+  Eye, Mic, Wifi, Trophy, X, ArrowRight, Cast, Layers, Terminal,
 } from 'lucide-react';
 import { useVmixStore } from '../stores/vmixStore';
 import { useCanvasStore } from '../stores/canvasStore';
@@ -15,6 +15,7 @@ import { syncClient } from '../lib/syncClient';
 import { ProjectMenu } from './ProjectMenu';
 import { CanvasTournamentPicker } from './CanvasTournamentPicker';
 import { TournamentManager } from './TournamentManager';
+import { CgOutputsPanel } from './CgOutputsPanel';
 import { AppSettingsModal } from './AppSettingsModal';
 import { VmixStatsPanel } from './VmixStatsPanel';
 import { UndoControl } from './UndoControl';
@@ -93,7 +94,7 @@ function SidebarAuthChip() {
   if (offlineBypass) {
     return (
       <div className="sb-popover" ref={ref}>
-        <button className="sb-row" onClick={() => setOpen(o => !o)} title="Using GOMOLAB vMix Control offline via PIN bypass — not signed in, cloud sync is off">
+        <button className="sb-row" onClick={() => setOpen(o => !o)} title="Using GOMOLAB CG and vMix Control offline via PIN bypass — not signed in, cloud sync is off">
           <span className="sb-row-icon"><Lock size={14} strokeWidth={2} /></span>
           <span className="sb-row-text">Offline Mode</span>
         </button>
@@ -540,12 +541,13 @@ function SidebarConnectionChip({ conn }: { conn: VmixConnectionEntry }) {
 export function Sidebar() {
   const { connection, remoteVmixConnections, vmixState, toggleRecord, toggleStream, toggleFadeToBlack, lastUpdated, connectionLog, resyncAll, browserClients } = useVmixStore();
   const { syncAllToVmix: canvasSyncAllToVmix, resetMatchData, editMode, setEditMode } = useCanvasStore();
-  const { theme, setTheme, sidebarCollapsed, setSidebarCollapsed } = useAppSettings();
+  const { theme, setTheme, sidebarCollapsed, setSidebarCollapsed, cgPlayoutSidebarCollapsed, setCgPlayoutSidebarCollapsed } = useAppSettings();
   const { pushing, pulling, lastError } = useCloudSyncStatus();
   const [showConnect, setShowConnect] = useState(false);
   const [canvasSyncFlash, setCanvasSyncFlash] = useState(false);
   const [vmixSyncFlash, setVmixSyncFlash] = useState(false);
   const [showTournamentDb, setShowTournamentDb] = useState(false);
+  const [showCgOutputs, setShowCgOutputs] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
   const [showStats, setShowStats] = useState(false);
@@ -559,8 +561,8 @@ export function Sidebar() {
   const [buildNumber, setBuildNumber] = useState<string>('');
   const [pid, setPid] = useState<number | null>(null);
   const [syncInfo, setSyncInfo] = useState<{
-    url: string; readonlyUrl: string; commentatorUrl: string;
-    interactiveEnabled: boolean; readonlyEnabled: boolean; commentatorEnabled: boolean;
+    url: string; readonlyUrl: string; commentatorUrl: string; amcpPort: number;
+    interactiveEnabled: boolean; readonlyEnabled: boolean; commentatorEnabled: boolean; amcpEnabled: boolean;
   } | null>(null);
 
   const refreshServerInfo = useCallback(() => {
@@ -592,6 +594,13 @@ export function Sidebar() {
     const { invoke } = await import('@tauri-apps/api/core');
     const enabled = await invoke<boolean>('toggle_readonly');
     setSyncInfo((prev) => prev ? { ...prev, readonlyEnabled: enabled } : prev);
+  }, [isTauri]);
+
+  const toggleAmcp = useCallback(async () => {
+    if (!isTauri) return;
+    const { invoke } = await import('@tauri-apps/api/core');
+    const enabled = await invoke<boolean>('toggle_amcp');
+    setSyncInfo((prev) => prev ? { ...prev, amcpEnabled: enabled } : prev);
   }, [isTauri]);
 
   const toggleCommentator = useCallback(async () => {
@@ -649,7 +658,7 @@ export function Sidebar() {
       <div className="sb-head" data-tauri-drag-region>
         <div className="sb-mark" data-tauri-drag-region>G</div>
         <div className="sb-wordmark" data-tauri-drag-region>
-          <div className="sb-name">GOMOLAB vMix Control</div>
+          <div className="sb-name">GOMOLAB CG and vMix Control</div>
           {buildNumber && <div className="sb-build">Build {buildNumber}{pid !== null ? ` · PID ${pid}` : ''}</div>}
           <UpdateChecker />
         </div>
@@ -846,6 +855,29 @@ export function Sidebar() {
               {syncInfo.commentatorEnabled ? 'ON' : 'OFF'}
             </button>
           </div>
+          <div className="sb-remote-row">
+            <span className={`status-dot status-dot--${syncInfo.amcpEnabled ? 'on' : 'off'}`} />
+            <button className="sb-remote-url" onClick={() => copyUrl(`tcp://${syncInfo.readonlyUrl.replace(/^http:\/\//, '').split(':')[0]}:${syncInfo.amcpPort}`)}
+              title={`AMCP control port (click to copy)\ntcp://${syncInfo.readonlyUrl.replace(/^http:\/\//, '').split(':')[0]}:${syncInfo.amcpPort}`}>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><Terminal size={11} strokeWidth={2} /> AMCP :{syncInfo.amcpPort}</span>
+            </button>
+            <button className={`sb-toggle sb-toggle--${syncInfo.amcpEnabled ? 'on' : 'off'}`} onClick={toggleAmcp}
+              title={syncInfo.amcpEnabled ? 'Disable AMCP control port' : 'Enable AMCP control port'}>
+              {syncInfo.amcpEnabled ? 'ON' : 'OFF'}
+            </button>
+          </div>
+          <button className="sb-row" onClick={() => setShowCgOutputs(true)} title="Get a standalone output URL for a widget (vMix/OBS Browser Source)">
+            <span className="sb-row-icon"><Cast size={14} strokeWidth={2} /></span>
+            <span className="sb-row-text">CG Outputs</span>
+          </button>
+          <button
+            className="sb-row"
+            onClick={() => setCgPlayoutSidebarCollapsed(!cgPlayoutSidebarCollapsed)}
+            title={cgPlayoutSidebarCollapsed ? 'Expand the CG Playout sidebar (docked on the right)' : 'Collapse the CG Playout sidebar'}
+          >
+            <span className="sb-row-icon"><Layers size={14} strokeWidth={2} /></span>
+            <span className="sb-row-text">CG Playout</span>
+          </button>
         </div>
       )}
 
@@ -900,6 +932,7 @@ export function Sidebar() {
       </div>
 
       {showTournamentDb && <TournamentManager onClose={() => setShowTournamentDb(false)} />}
+      {showCgOutputs && <CgOutputsPanel onClose={() => setShowCgOutputs(false)} />}
       {showSettings && <AppSettingsModal onClose={() => setShowSettings(false)} />}
     </aside>
   );

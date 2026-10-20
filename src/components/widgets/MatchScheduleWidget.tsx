@@ -1,6 +1,6 @@
 import { useMemo, useState, useEffect, useRef, useCallback, useContext } from 'react';
 import { RotateCcw, ChevronRight, ArrowRight, Check, AlarmClock, Send } from 'lucide-react';
-import { useCanvasStore } from '../../stores/canvasStore';
+import { useCanvasStore, registerReliableTick } from '../../stores/canvasStore';
 import { useMatchScheduleStore, type ScheduledMatch } from '../../stores/matchScheduleStore';
 import { useMatchResultsStore } from '../../stores/matchResultsStore';
 import { useAppSettings } from '../../stores/appSettingsStore';
@@ -130,11 +130,12 @@ export function MatchScheduleWidget({ widgetId, config }: Props) {
   const matchNumbers = useMatchNumbers();
 
   // Ticks the "how late" durations forward against the local system clock.
+  // registerReliableTick (not a plain setInterval) — a bare setInterval gets
+  // throttled once this window isn't visible/focused, which would freeze
+  // these "how late" labels while the app is inactive instead of just
+  // updating them less often than every 30s.
   const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 30000);
-    return () => clearInterval(id);
-  }, []);
+  useEffect(() => registerReliableTick(`${widgetId}:now`, 30000, () => setNow(Date.now())), [widgetId]);
 
   // Auto-scrolls to the next fixture waiting to be sent — matches are already
   // date-sorted, so the first not-yet-sent one is "up next" in the queue.

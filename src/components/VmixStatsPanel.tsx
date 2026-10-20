@@ -85,6 +85,12 @@ export function VmixStatsPanel({ anchorRef, onClose }: Props) {
     e.event === 'error' || e.event === 'send-error' || e.event === 'poll-error'
   ).length;
 
+  // Read fresh every render (this panel already re-renders every second via
+  // the `now` ticker above) rather than a reactive store subscription —
+  // isTcpActive is a plain mutable field on the client, not store state, so
+  // nothing would otherwise trigger a re-render when it flips.
+  const isTcpActive = useVmixStore.getState().getClient()?.isTcpActive ?? false;
+
   const missingFields    = vmixFieldStats.filter(f => f.fieldMissing);
   const inputMissingFields = vmixFieldStats.filter(f => f.inputMissing);
   const okFields         = vmixFieldStats.filter(f => f.status === 'ok' && f.mismatch !== true && !f.fieldMissing && !f.inputMissing);
@@ -95,6 +101,17 @@ export function VmixStatsPanel({ anchorRef, onClose }: Props) {
 
   return (
     <div className="vmix-stats-panel" ref={panelRef}>
+      {connections.length > 0 && (
+        <div
+          className={`vmix-conn-method${isTcpActive ? ' vmix-conn-method--tcp' : ' vmix-conn-method--http'}`}
+          title={isTcpActive
+            ? 'Sending over TCP (port 8099) — one quick socket write per command, no per-command round trip.'
+            : 'TCP isn\'t connected — every command is a full HTTP round trip instead, which is why multi-action button presses can feel slow. Check that vMix\'s TCP controller (port 8099) is enabled and nothing (a firewall, a VPN client) is blocking it.'}
+        >
+          <Zap size={12} strokeWidth={2} />
+          {isTcpActive ? 'TCP (fast)' : 'HTTP only (slower)'}
+        </div>
+      )}
       <div className="vmix-stats-header">
         <div className="vmix-stats-tabs">
           <button

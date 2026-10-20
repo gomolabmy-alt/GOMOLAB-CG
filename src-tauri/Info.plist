@@ -3,12 +3,11 @@
 <plist version="1.0">
 <dict>
   <key>NSLocalNetworkUsageDescription</key>
-  <string>GOMOLAB CG needs local network access to connect to vMix and serve its own graphics output on your network.</string>
+  <string>GOMOLAB CG and vMix Control needs local network access to connect to vMix and serve its own graphics output on your network.</string>
   <key>NSBonjourServices</key>
   <array>
     <string>_vmix._tcp</string>
     <string>_http._tcp</string>
-    <string>_ndi._tcp</string>
   </array>
   <key>NSAppTransportSecurity</key>
   <dict>

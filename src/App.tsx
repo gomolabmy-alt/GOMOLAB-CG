@@ -1,10 +1,14 @@
 import { useEffect, useState } from 'react';
-import { Sun, Moon, Mic } from 'lucide-react';
+import { Sun, Moon, Mic, PenTool } from 'lucide-react';
 import { useVmixStore } from './stores/vmixStore';
 import { useAppSettings } from './stores/appSettingsStore';
 import { Sidebar } from './components/Sidebar';
 import { Canvas } from './components/Canvas';
+import { CgTemplateLibraryGrid } from './components/CgTemplateLibraryGrid';
+import { CgMonitorBar } from './components/CgMonitorBar';
+import { CgPlayoutPanel } from './components/CgPlayoutPanel';
 import { SplashScreen } from './components/SplashScreen';
+import { StatusBar } from './components/StatusBar';
 import { SignInGate } from './components/SignInGate';
 import { UndoToast } from './components/UndoToast';
 import { useAuthStore } from './stores/authStore';
@@ -17,7 +21,11 @@ import { backfillResultStageData } from './lib/backfillResultStageData';
 import { backfillTierMismatches } from './lib/backfillTierMismatches';
 import { startTournamentAutoAdvance } from './lib/tournamentAutoAdvance';
 import { startCountdownVmixSync } from './lib/countdownVmixSync';
+import { startCustomTimerTickSync } from './lib/customTimerTickSync';
 import { startCompanionBridge } from './lib/companionBridge';
+import { useCanvasStore } from './stores/canvasStore';
+import { preloadAllProjectAssets } from './lib/templatePreload';
+import { startSystemStatsPolling, stopSystemStatsPolling } from './stores/systemStatsStore';
 
 function CommentatorApp() {
   const { theme, setTheme } = useAppSettings();
@@ -35,16 +43,57 @@ function CommentatorApp() {
 
 export function App() {
   const { connect, connectionStatus, savedConnections } = useVmixStore();
-  const { theme } = useAppSettings();
-  const [canvasMode, setCanvasMode] = useState<'main' | 'commentator'>('main');
+  const { theme, uiScale, statusBarEnabled } = useAppSettings();
+  const [canvasMode, setCanvasMode] = useState<'main' | 'commentator' | 'library'>('main');
   const isDesktopHost = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
   const [splashDone, setSplashDone] = useState(!isDesktopHost);
   const authStatus = useAuthStore(s => s.status);
   const offlineBypass = useAuthStore(s => s.offlineBypass);
+  // "Everything should be 100% loaded" on open — every CG template's own
+  // images/sequence frames/playlist slides, across Main Canvas AND the CG
+  // Template Library, warmed into the browser's cache up front rather than
+  // only ever fetched lazily the first time some layer happens to play
+  // (which is what the per-layer preload in cgPlayoutStore.ts's loadLayer
+  // already does — this is the whole-project version of that same
+  // guarantee). `total` starts at -1 (not 0) so the indicator can tell
+  // "haven't scanned yet" apart from "scanned and there's genuinely nothing
+  // to load" — both look like 0 otherwise, and only one of them should ever
+  // render a "fully loaded" state without a flash of it first.
+  const [assetPreload, setAssetPreload] = useState({ loaded: 0, total: -1 });
+  // Briefly confirms completion once loaded === total (a real total, not
+  // the initial -1 "haven't scanned yet" placeholder) — "still loading" to
+  // "loaded" should read as a visible transition an operator actually
+  // sees, not the indicator just silently vanishing the instant it's done.
+  // Self-clears; a project with nothing to preload at all (total === 0)
+  // never shows either state, correctly reading as already fully ready.
+  const [showAssetsLoadedToast, setShowAssetsLoadedToast] = useState(false);
+  useEffect(() => {
+    if (assetPreload.total <= 0 || assetPreload.loaded < assetPreload.total) return;
+    setShowAssetsLoadedToast(true);
+    const t = setTimeout(() => setShowAssetsLoadedToast(false), 2500);
+    return () => clearTimeout(t);
+  }, [assetPreload.loaded, assetPreload.total]);
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
   }, [theme]);
+
+  // Whole-app UI scale — see appSettingsStore.ts's own doc comment on
+  // uiScale for how this differs from canvasScale. Applied to <html> (not
+  // just .app-layout) specifically so EVERYTHING scales together,
+  // including things that portal straight to document.body outside the
+  // normal component tree (LogoUrlPicker's library popup, ConfirmModal,
+  // etc.) — scoping this to an inner wrapper div instead would leave those
+  // portals at a mismatched, un-scaled size relative to everything else.
+  // `zoom` (not `transform: scale`) because it's a real WebKit/Chromium
+  // layout property — it reflows content at the scaled size instead of
+  // just visually stretching a fixed-size layout, which is what a
+  // `transform` would do here (clipping or leaving blank space depending
+  // on direction, since nothing would actually reflow to fill or shrink
+  // into the new size).
+  useEffect(() => {
+    (document.documentElement.style as any).zoom = uiScale;
+  }, [uiScale]);
 
   useEffect(() => {
     if (!isDesktopHost) return;
@@ -126,12 +175,41 @@ export function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Custom Timer countdown/countup ticking, regardless of which canvas tab
+  // is active — same "not mounted, doesn't tick" problem as the vMix push
+  // right above, just for the on-screen/stored value itself instead of the
+  // vMix push (see customTimerTickSync.ts). Desktop-host only, same as
+  // every other background process here.
+  useEffect(() => {
+    if (!isDesktopHost) return;
+    startCustomTimerTickSync();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Stream Deck / Companion bridge — lets a Bitfocus Companion module
   // connected as a plain read-only sync client trigger any hotkey-bound
   // action and receive REC/STR/FTB/toggle feedback (see companionBridge.ts).
   useEffect(() => {
     if (!isDesktopHost) return;
     startCompanionBridge();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Whole-project CG asset preload — see templatePreload.ts's own doc
+  // comment on preloadAllProjectAssets for the full "why". A one-time
+  // snapshot read (getState(), not a reactive subscription) — this is
+  // specifically the "on open" guarantee; an asset ADDED to a template
+  // later is still covered normally the moment that template is actually
+  // loaded/played (loadLayer's own existing per-layer preload), so nothing
+  // is missed, this just doesn't re-scan the ENTIRE project on every
+  // unrelated edit anywhere in the app. Never blocks anything — the app
+  // stays fully usable throughout; the indicator below is purely
+  // informational, so an operator can tell at a glance whether it's safe to
+  // assume everything will play back smoothly yet.
+  useEffect(() => {
+    if (!isDesktopHost) return;
+    const { pages, libraryPages } = useCanvasStore.getState();
+    preloadAllProjectAssets(pages, libraryPages, (loaded, total) => setAssetPreload({ loaded, total }));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -145,6 +223,15 @@ export function App() {
     if (authStatus === 'signed-in') useAuthStore.getState().verify();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Bottom resource status bar's own live poll (systemStatsStore.ts) — a
+  // single shared loop, started/stopped here rather than from StatusBar.tsx
+  // itself so toggling the setting off (AppSettingsModal) genuinely stops
+  // the underlying get_system_stats calls, not just hides the bar's DOM.
+  useEffect(() => {
+    if (isDesktopHost && statusBarEnabled) startSystemStatsPolling();
+    else stopSystemStatsPolling();
+  }, [isDesktopHost, statusBarEnabled]);
 
   if (syncClient.isCommentator) {
     return <CommentatorApp />;
@@ -168,6 +255,19 @@ export function App() {
         <Sidebar />
         <div className="app-main">
           <UndoToast />
+          {isDesktopHost && assetPreload.total > 0 && assetPreload.loaded < assetPreload.total && (
+            <div className="cg-asset-preload-toast" title="Every CG template's own images, sequence frames, and playlist/carousel slides — across Main Canvas and the CG Template Library — are being warmed into cache so nothing flashes in blank or stutters the first time it actually plays on air.">
+              <span className="cgp-spinner" />
+              <span>Loading CG template assets… {assetPreload.loaded}/{assetPreload.total}</span>
+              <div className="cg-asset-preload-bar"><div className="cg-asset-preload-bar-fill" style={{ width: `${(assetPreload.loaded / assetPreload.total) * 100}%` }} /></div>
+            </div>
+          )}
+          {isDesktopHost && showAssetsLoadedToast && (
+            <div className="cg-asset-preload-toast cg-asset-preload-toast--done">
+              <span>✓ All CG template assets loaded ({assetPreload.total})</span>
+            </div>
+          )}
+          {isDesktopHost && <CgMonitorBar />}
           {isDesktopHost && (
             <div className="canvas-mode-bar">
               <button
@@ -179,11 +279,19 @@ export function App() {
                 onClick={() => setCanvasMode('commentator')}
                 style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
               ><Mic size={12} strokeWidth={2} /> Commentator</button>
+              <button
+                className={`canvas-mode-btn ${canvasMode === 'library' ? 'canvas-mode-btn--active' : ''}`}
+                onClick={() => setCanvasMode('library')}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                title="Custom CG templates live here, off the production canvas"
+              ><PenTool size={12} strokeWidth={2} /> Templates</button>
             </div>
           )}
-          <Canvas mode={canvasMode} />
+          {canvasMode === 'library' ? <CgTemplateLibraryGrid /> : <Canvas mode={canvasMode} />}
         </div>
+        {isDesktopHost && <CgPlayoutPanel />}
       </div>
+      {isDesktopHost && <StatusBar />}
     </div>
   );
 }

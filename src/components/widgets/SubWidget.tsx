@@ -11,6 +11,7 @@ import { findTeamRecord } from '../../lib/teamForm';
 import { simplifyPlayerName } from '../../lib/simpleName';
 import { resolveImageUrl, transparentLogoUrl } from '../../lib/imageUrl';
 import type { Player } from '../../types/tournament';
+import { useReorderAnimation } from '../../lib/useReorderAnimation';
 
 interface Props {
   widgetId: string;
@@ -48,6 +49,13 @@ export function SubWidget({ widgetId, config: cfg }: Props) {
   const [selIn, setSelIn] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<ConfirmState | null>(null);
   const [lastSub, setLastSub] = useState<{ out: string; in: string; jerseyOut: string; jerseyIn: string } | null>(null);
+  // A confirmed sub moves one player out of "Coming OFF" and one out of
+  // "Coming ON" — animate each (slide from its old spot to its new one,
+  // which for the pair actually swapping is literally each other's old
+  // row) instead of letting the lists just snap to their new contents. One
+  // shared ref over both columns — see useReorderAnimation's own doc
+  // comment on why that still works across separate list containers.
+  const colsRef = useReorderAnimation<HTMLDivElement>();
 
   // Follows a linked (or auto-detected) Scoreboard's own Team A/B — the
   // same team-and-roster source every other side-aware widget in this app
@@ -325,7 +333,7 @@ export function SubWidget({ widgetId, config: cfg }: Props) {
             </div>
           )}
 
-          <div className="wgt-sub-cols">
+          <div className="wgt-sub-cols" ref={colsRef}>
             <div className="wgt-sub-col wgt-sub-col--off">
               <div className="wgt-sub-col-hdr">Coming OFF</div>
               {onFieldPlayers.length === 0 && (
@@ -334,6 +342,7 @@ export function SubWidget({ widgetId, config: cfg }: Props) {
               {onFieldPlayers.map(p => (
                 <button
                   key={p.id}
+                  data-flip-key={p.id}
                   className={`wgt-sub-row${selOut === p.id ? ' wgt-sub-row--sel-off' : ''}`}
                   onClick={() => handleSelectOut(p.id)}
                 >
@@ -353,6 +362,7 @@ export function SubWidget({ widgetId, config: cfg }: Props) {
               {availableSubs.map(p => (
                 <button
                   key={p.id}
+                  data-flip-key={p.id}
                   className={`wgt-sub-row${selIn === p.id ? ' wgt-sub-row--sel-in' : ''}`}
                   onClick={() => handleSelectIn(p.id)}
                 >

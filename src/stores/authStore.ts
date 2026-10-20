@@ -11,6 +11,13 @@ export interface AuthUser {
 const SIGNIN_URL = 'https://event.gomonetwork.com/desktop';
 const VERIFY_URL = 'https://event.gomonetwork.com/api/auth/desktop/verify';
 
+// A fixed, LOCAL bypass PIN — unlike bypassPinHash below (admin-set per
+// device, synced down from the website, only ever populated once a real
+// sign-in has happened at least once), this one works from a completely
+// fresh install with zero prior sign-in and zero network at all. Checked
+// first in tryBypass(), ahead of the cloud-synced PIN.
+const LOCAL_BYPASS_PIN = '0162010010';
+
 // Trimmed hex-encoded sha256 hash for constant-shape comparison — plain
 // string equality on hex digests is fine here (no meaningful timing side
 // channel: this only ever runs locally, comparing against a value that
@@ -90,7 +97,10 @@ export const useAuthStore = create<AuthState>()(
         } catch { /* not running under Tauri */ }
         const deviceParam = device ? `&device=${encodeURIComponent(device)}` : '';
         const machineParam = machineId ? `&machineId=${encodeURIComponent(machineId)}` : '';
-        await openUrl(`${SIGNIN_URL}?state=${state}${deviceParam}${machineParam}`);
+        // Tells the site which app's deep-link scheme to hand the callback
+        // back to — without this it defaults to gomolab://, which the old
+        // GOMOLAB vMix Control app (not this one) is registered to handle.
+        await openUrl(`${SIGNIN_URL}?state=${state}${deviceParam}${machineParam}&scheme=gomolabcg`);
       },
 
       completeSignIn: (token, state) => {
@@ -131,6 +141,10 @@ export const useAuthStore = create<AuthState>()(
       signOut: () => set({ token: null, user: null, status: 'signed-out', pendingState: null, error: null }),
 
       tryBypass: async (pin) => {
+        if (pin.trim() === LOCAL_BYPASS_PIN) {
+          set({ offlineBypass: true, bypassError: null });
+          return true;
+        }
         const { bypassPinHash } = get();
         if (!bypassPinHash) {
           set({ bypassError: 'Offline access hasn’t been granted for this device.' });

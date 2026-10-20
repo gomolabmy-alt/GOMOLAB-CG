@@ -115,6 +115,51 @@ export function mergeResultRows(
   });
 }
 
+export type FormOutcome = 'W' | 'L' | 'D';
+
+/** Which of Win/Loss/Draw a form row's own side resolved to, from that
+ *  side's actual recorded score vs. its opponent's — shared by
+ *  TeamFormWidget.tsx's own vMix push (so the pushed text/color/image agree)
+ *  and lib/templateBinding.ts's CG template binding (so a bound element
+ *  shows exactly the same outcome), same "moved here so it has one home
+ *  shared by two consumers" reasoning templateBinding.ts's own
+ *  resolveScorePart/SCORE_MERGE_PARTS already documents. */
+export function formRowOutcome(row: ResultFormRow, side: 'a' | 'b'): FormOutcome | null {
+  const entry = row[side];
+  if (!entry) return null;
+  const { r, side: s } = entry;
+  const own = s === 'A' ? r.scoreA : r.scoreB;
+  const opp = s === 'A' ? r.scoreB : r.scoreA;
+  return own > opp ? 'W' : own < opp ? 'L' : 'D';
+}
+
+/** "{stage}: {outcome} {own}-{opp} v {opponent}" — the full text TeamForm
+ *  pushes to vMix text fields and a 'Result Text' CG binding resolves to. */
+export function formRowResultText(row: ResultFormRow, side: 'a' | 'b'): string | null {
+  const entry = row[side];
+  const outcome = formRowOutcome(row, side);
+  if (!entry || !outcome) return null;
+  const { r, side: s } = entry;
+  const own = s === 'A' ? r.scoreA : r.scoreB;
+  const opp = s === 'A' ? r.scoreB : r.scoreA;
+  const oppName = s === 'A' ? (r.teamBShortName || r.teamBName) : (r.teamAShortName || r.teamAName);
+  return `${row.stage}: ${outcome} ${own}-${opp} v ${oppName}`;
+}
+
+/** Per-outcome Win/Loss/Draw styling an operator configures once on the
+ *  TeamForm widget (formWinText/formWinColor/formWinImage, etc. — each
+ *  independently optional, see WidgetConfigPanel.tsx's 'team-form' case) —
+ *  shared the same way formRowOutcome above is. */
+export function formOutcomeText(config: Record<string, any>, outcome: FormOutcome): string {
+  return outcome === 'W' ? (config.formWinText ?? 'W') : outcome === 'L' ? (config.formLossText ?? 'L') : (config.formDrawText ?? 'D');
+}
+export function formOutcomeColor(config: Record<string, any>, outcome: FormOutcome): string {
+  return outcome === 'W' ? (config.formWinColor ?? '#2ecc71') : outcome === 'L' ? (config.formLossColor ?? '#e74c3c') : (config.formDrawColor ?? '#95a5a6');
+}
+export function formOutcomeImage(config: Record<string, any>, outcome: FormOutcome): string | undefined {
+  return outcome === 'W' ? config.formWinImage : outcome === 'L' ? config.formLossImage : config.formDrawImage;
+}
+
 export function mergeUpcomingRows(
   matches: ScheduledMatch[],
   teamA: { name: string; shortName?: string },

@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "GOMOLAB CG",
+  "productName": "GOMOLAB CG and vMix Control",
   "version": "0.1.0",
   "identifier": "com.gomolab.cg",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "GOMOLAB CG",
+        "title": "GOMOLAB CG and vMix Control",
         "width": 1280,
         "height": 800,
         "minWidth": 700,

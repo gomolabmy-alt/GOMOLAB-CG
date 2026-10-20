@@ -6,7 +6,7 @@ export const COMMENTATOR_PORT = 9889;
 
 export type SyncAction = {
   type: 'ACTION';
-  store: 'canvas' | 'tournament';
+  store: 'canvas' | 'tournament' | 'playout';
   fn: string;
   args: any[];
 };
@@ -23,6 +23,16 @@ export type SyncFullState = {
   matchSchedule?: { matches: any[] };
   matchResults?: { results: any[] };
   rundown?: { segments: any[] };
+  // CG playout (channel/layer on-air state) — included so a CG output
+  // window opened *after* something is already on-air still gets it: unlike
+  // plain ACTION broadcasts, FULL_STATE is the one message type the Rust
+  // server caches and replays to new joiners (see server.rs), and the
+  // existing 5s heartbeat (main.tsx) keeps it fresh for free.
+  playout?: { layers: Record<string, any> };
+  // CG Template library — same "late joiner needs a cached snapshot, not
+  // just live ACTIONs" reasoning as `playout` above: a ?cgChannel=/?cgOutput=
+  // window opened after a template already exists needs this to find it.
+  library?: { pages: any[]; activePageId: string };
 };
 
 export type SyncCommentatorFullState = {

@@ -1,6 +1,10 @@
 import { useState } from 'react';
 import { Settings, X, Play, Pause, RotateCcw } from 'lucide-react';
 import { useVmixStore, formatTime } from '../stores/vmixStore';
+import { useTournamentStore } from '../stores/tournamentStore';
+import { useTeamDbStore } from '../stores/teamDbStore';
+import { useAppSettings } from '../stores/appSettingsStore';
+import { normalizeGroups, normalizePots, resolveGroupSlots } from './TournamentManager';
 import { SCORE_INCREMENTS } from '../types/vmix';
 import type { Scoreboard, VmixTimer, ScoreboardStyle, TimerMode, TimerFormat } from '../types/vmix';
 
@@ -245,6 +249,113 @@ function TimerCard({ timer }: { timer: VmixTimer }) {
   );
 }
 
+// ─── Draw / Group & Pool Stage ──────────────────────────────────────────────
+// Read-only reference for an operator mid-match: "who's in which group/pot"
+// from the Draw, without leaving the Score tab to open the separate
+// Tournament Database window. Reuses the exact same helpers/data the Draw
+// tab itself (TournamentManager.tsx's DrawPanel) is built on — this never
+// writes anything back, just reads the same `Tournament.groups`/`pots` and
+// `SavedTeam.group`/`pot`/`groupPosition` fields.
+
+function DrawStageSection() {
+  const { tournaments } = useTournamentStore();
+  const { teams: allTeams } = useTeamDbStore();
+  const { canvasTournamentId } = useAppSettings();
+  // Defaults to whatever tournament the Sidebar's own venue-scope picker is
+  // already set to (the one global "which tournament" concept this app
+  // has) — overridable here so Scoring isn't stuck if that's unset/wrong.
+  const [tournamentIdOverride, setTournamentIdOverride] = useState('');
+  const [category, setCategory] = useState('');
+  const [collapsed, setCollapsed] = useState(false);
+
+  const tournamentId = tournamentIdOverride || canvasTournamentId || tournaments[0]?.id || '';
+  const tournament = tournaments.find(t => t.id === tournamentId);
+  const categories = tournament?.categories ?? [];
+  const inScope = (teamCategory?: string) => !category || !teamCategory || teamCategory === category;
+
+  const groups = normalizeGroups(tournament?.groups).filter(g => inScope(g.category));
+  const pots = normalizePots(tournament?.pots).filter(p => inScope(p.category));
+  const tournamentTeams = allTeams.filter(t => t.tournamentId === tournamentId && inScope(t.category));
+
+  return (
+    <div className="score-page-section">
+      <div className="score-page-row">
+        <div className="mix-section-title">Draw — Groups &amp; Pots</div>
+        <button className="btn btn--ghost btn--small" onClick={() => setCollapsed(v => !v)}>
+          {collapsed ? 'Show' : 'Hide'}
+        </button>
+      </div>
+      {!collapsed && (
+        <>
+          <div className="score-page-row" style={{ gap: 8 }}>
+            <select className="field-input" style={{ maxWidth: 220 }} value={tournamentId}
+              onChange={(e) => setTournamentIdOverride(e.target.value)}>
+              {tournaments.length === 0 && <option value="">— no tournaments —</option>}
+              {tournaments.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+            </select>
+            {categories.length > 0 && (
+              <select className="field-input" style={{ maxWidth: 160 }} value={category}
+                onChange={(e) => setCategory(e.target.value)}>
+                <option value="">All categories</option>
+                {categories.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+            )}
+          </div>
+
+          {!tournament ? (
+            <p className="app-settings-hint">Select a tournament to see its draw.</p>
+          ) : groups.length === 0 && pots.length === 0 ? (
+            <p className="app-settings-hint">No groups or pots set up for this tournament yet — configure them in the Draw tab of the Tournament Database.</p>
+          ) : (
+            <div className="score-draw-grid">
+              {groups.map(g => {
+                const members = tournamentTeams.filter(t => t.group === g.name);
+                const { slots } = resolveGroupSlots(members, g.capacity);
+                const rows = slots.length > 0 ? slots : members.map(m => m);
+                return (
+                  <div key={g.name} className="score-draw-card">
+                    <div className="score-draw-card-title">{g.name}</div>
+                    {rows.length === 0 ? (
+                      <div className="score-draw-empty">No teams yet</div>
+                    ) : (
+                      <ol className="score-draw-list">
+                        {rows.map((t, i) => (
+                          <li key={t?.id ?? i} className={t ? undefined : 'score-draw-list-empty'}>
+                            {t ? (t.shortName || t.name) : '—'}
+                          </li>
+                        ))}
+                      </ol>
+                    )}
+                  </div>
+                );
+              })}
+              {pots.map(p => {
+                const members = tournamentTeams.filter(t => t.pot === p.name);
+                return (
+                  <div key={p.name} className="score-draw-card">
+                    <div className="score-draw-card-title">{p.name}</div>
+                    {members.length === 0 ? (
+                      <div className="score-draw-empty">No teams yet</div>
+                    ) : (
+                      <ul className="score-draw-list">
+                        {members.map(t => (
+                          <li key={t.id} className={t.group ? 'score-draw-list-drawn' : undefined} title={t.group ? `Drawn into ${t.group}` : 'Not drawn yet'}>
+                            {t.shortName || t.name}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 // ─── Score Page ──────────────────────────────────────────────────────────────
 
 export function ScorePage() {
@@ -266,6 +377,8 @@ export function ScorePage() {
         </div>
         {timers.map((t) => <TimerCard key={t.id} timer={t} />)}
       </div>
+
+      <DrawStageSection />
     </div>
   );
 }

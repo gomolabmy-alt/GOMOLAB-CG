@@ -93,6 +93,37 @@ function stopWorkerInterval(widgetId: string) {
   delete _tickMsMap[widgetId];
 }
 
+// Reusable version of the tick-registration mechanism just above (Rust-
+// driven in Tauri, Web Worker in browsers) for any OTHER widget that needs a
+// reliable, background-throttling-proof "call me every N ms" — e.g.
+// CustomTimerWidget.tsx's own countdown/count-up/wall-clock display, which
+// previously used a plain setInterval with none of this protection:
+// setInterval/setTimeout callbacks are throttled by the browser/WKWebView
+// runtime itself once the page/window isn't visible (a JS-runtime-level
+// throttle, separate from macOS App Nap — see app_nap.rs's own comment for
+// that one — and NOT fixed by anything set_sleep_block/app_nap already do,
+// since those only keep this app's own PROCESSES from being throttled, not
+// its JS timers). Shares the exact same `timerTickHandlers` map / Rust event
+// / Web Worker the game-clock code above already registers into — the Rust
+// "timer-tick" listener and the worker's onmessage both already dispatch
+// generically over every key in that map, so no separate plumbing is needed
+// here, just another entry in it. `key` only needs to be unique within this
+// one JS realm (each Tauri window has its own separate module state, so two
+// windows both showing the same widget never collide) — a widgetId already
+// satisfies that. Returns an unsubscribe function.
+export function registerReliableTick(key: string, tickMs: number, onTick: () => void): () => void {
+  _tickMsMap[key] = tickMs;
+  _lastTickAt[key] = Date.now();
+  timerTickHandlers[key] = onTick;
+  if (!_isTauriApp) timerWorker.postMessage({ type: 'start', widgetId: key, tickMs });
+  return () => {
+    delete timerTickHandlers[key];
+    delete _tickMsMap[key];
+    delete _lastTickAt[key];
+    if (!_isTauriApp) timerWorker.postMessage({ type: 'stop', widgetId: key });
+  };
+}
+
 // Tell the Electron main process to block/unblock system sleep.
 // Called whenever the set of active timer intervals changes.
 function syncSleepBlock(intervals: Record<string, boolean>) {
@@ -100,6 +131,25 @@ function syncSleepBlock(intervals: Record<string, boolean>) {
   if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
     import('@tauri-apps/api/core').then(({ invoke }) => invoke('set_sleep_block', { block: anyRunning })).catch(() => {});
   }
+}
+
+// Reusable version of what every game-clock start/pause call site above
+// already does inline (add/remove its own widgetId in `timerIntervals`, then
+// syncSleepBlock the result) — for any OTHER widget with its own, separately
+// tracked "is something actively running right now" state, e.g.
+// CustomTimerWidget.tsx's own `running` flag, which previously never
+// participated in this at all (system sleep/App Nap were never blocked while
+// a Custom Timer counted down, on top of that widget's separate setInterval-
+// throttling bug fixed by registerReliableTick above). Piggybacks on the
+// SAME `timerIntervals` store field the game-clock code already reads/writes
+// — `key` just needs to not collide with an actual widgetId also playing a
+// game-clock timer, which a `${widgetId}:`-prefixed key (as CustomTimerWidget
+// uses) never does.
+export function setTimerActive(key: string, active: boolean) {
+  const ints = { ...useCanvasStore.getState().timerIntervals };
+  if (active) ints[key] = true; else delete ints[key];
+  useCanvasStore.setState({ timerIntervals: ints });
+  syncSleepBlock(ints);
 }
 
 const GRID = 10;
@@ -192,7 +242,7 @@ function firePeriodEndTrigger(cfg: Record<string, any>, client: any) {
   if (cfg.periodEndTriggerInput) params.Input = cfg.periodEndTriggerInput;
   if (cfg.periodEndTriggerSelectedName) params.SelectedName = cfg.periodEndTriggerSelectedName;
   if (cfg.periodEndTriggerValue) params.Value = cfg.periodEndTriggerValue;
-  client.fn(cfg.periodEndTriggerFn, params).catch(() => {});
+  client.sendFunction(cfg.periodEndTriggerFn, params).catch(() => {});
 }
 
 function fireFinalPlayEndTrigger(cfg: Record<string, any>, client: any) {
@@ -201,7 +251,7 @@ function fireFinalPlayEndTrigger(cfg: Record<string, any>, client: any) {
   if (cfg.finalPlayEndTriggerInput) params.Input = cfg.finalPlayEndTriggerInput;
   if (cfg.finalPlayEndTriggerSelectedName) params.SelectedName = cfg.finalPlayEndTriggerSelectedName;
   if (cfg.finalPlayEndTriggerValue) params.Value = cfg.finalPlayEndTriggerValue;
-  client.fn(cfg.finalPlayEndTriggerFn, params).catch(() => {});
+  client.sendFunction(cfg.finalPlayEndTriggerFn, params).catch(() => {});
 }
 
 function sendOverrunColor(cfg: Record<string, any>, client: any, active: boolean) {
@@ -217,7 +267,7 @@ function sendOverrunColor(cfg: Record<string, any>, client: any, active: boolean
   // property in the GT template; if the template exposes a plain text field
   // instead, the operator can pick a different function (e.g. SetText) here.
   const fn = cfg.overrunColorFn || 'SetColor';
-  client.fn(fn, { Input: inputKey, SelectedName: field, Value: color }).catch(() => {});
+  client.sendFunction(fn, { Input: inputKey, SelectedName: field, Value: color }).catch(() => {});
 }
 
 // `opts` fields (all optional — every caller can mix and match, and every
@@ -326,6 +376,29 @@ interface CanvasStore {
 
   // Restore commentator canvas from incoming sync
   restoreCommentatorCanvas: (pages: unknown[], activePageId: string) => void;
+
+  // ── CG Template library (separate from main canvas — see App.tsx's
+  // "Templates" mode button) ──────────────────────────────────────────
+  // Deliberately just ONE page, always: unlike the main/commentator trees
+  // this has no add/delete/rename/reorder-page actions or hotkeys — a
+  // template library is a flat catalog, not a multi-page canvas. Widget
+  // actions mirror the MAIN canvas's per-function ACTION-RPC sync
+  // convention (set() + syncClient.send), not the commentator tree's
+  // whole-state-push (COMMENTATOR_FULL_STATE) — that keeps this riding the
+  // existing generic FULL_STATE cache (see the `library` field added to
+  // SyncFullState) with zero Rust changes needed.
+  libraryPages: CanvasPage[];
+  libraryActivePageId: string;
+  librarySelectedWidgetId: string | null;
+  selectLibraryWidget: (id: string | null) => void;
+  addLibraryWidget: (type: WidgetType) => void;
+  deleteLibraryWidget: (widgetId: string) => void;
+  moveLibraryWidget: (widgetId: string, x: number, y: number) => void;
+  resizeLibraryWidget: (widgetId: string, w: number, h: number) => void;
+  updateLibraryWidget: (widgetId: string, patch: Partial<CanvasWidget>) => void;
+  updateLibraryWidgetConfig: (widgetId: string, patch: Record<string, any>) => void;
+  duplicateLibraryWidget: (widgetId: string) => void;
+  restoreLibraryCanvas: (pages: unknown[], activePageId: string) => void;
 
   // Pages
   addPage: () => string;
@@ -503,6 +576,7 @@ export const useCanvasStore = create<CanvasStore>()(
       };
 
       const initialCommentatorPage = makePage('Page 1');
+      const initialLibraryPage = makePage('CG Templates');
 
       // Helper: send full commentator canvas state to the server so commentator
       // clients receive the update. Only the desktop host sends this.
@@ -711,6 +785,120 @@ export const useCanvasStore = create<CanvasStore>()(
           set({ commentatorPages: newPages, commentatorActivePageId: resolvedId });
         },
 
+        // ── CG Template library ──────────────────────────────────────────────
+        // Widget actions here mirror the MAIN canvas's own (addWidget/
+        // moveWidget/etc, not the commentator tree's whole-state-push) —
+        // see the interface doc comment above for why.
+        libraryPages: [initialLibraryPage],
+        libraryActivePageId: initialLibraryPage.id,
+        librarySelectedWidgetId: null,
+
+        selectLibraryWidget: (id) => set({ librarySelectedWidgetId: id }),
+
+        addLibraryWidget: (type) => {
+          const def = WIDGET_DEFAULTS[type];
+          const widget: CanvasWidget = {
+            id: crypto.randomUUID(),
+            type,
+            x: snap(Math.random() * (CANVAS_W / 2)),
+            y: snap(Math.random() * 200 + 20),
+            w: def.w,
+            h: def.h,
+            config: { ...def.config },
+          };
+          const pageId = get().libraryActivePageId;
+          set({
+            libraryPages: get().libraryPages.map((p) =>
+              p.id === pageId ? { ...p, widgets: [...p.widgets, widget] } : p
+            ),
+            librarySelectedWidgetId: widget.id,
+          });
+          syncClient.send({ type: 'ACTION', store: 'canvas', fn: 'addLibraryWidget', args: [pageId, widget] });
+        },
+
+        deleteLibraryWidget: (widgetId) => {
+          set({
+            libraryPages: get().libraryPages.map((p) => ({
+              ...p,
+              widgets: p.widgets.filter((w) => w.id !== widgetId),
+            })),
+            librarySelectedWidgetId: get().librarySelectedWidgetId === widgetId ? null : get().librarySelectedWidgetId,
+          });
+          syncClient.send({ type: 'ACTION', store: 'canvas', fn: 'deleteLibraryWidget', args: [widgetId] });
+        },
+
+        moveLibraryWidget: (widgetId, x, y) => {
+          set({
+            libraryPages: get().libraryPages.map((p) => ({
+              ...p,
+              widgets: p.widgets.map((w) =>
+                w.id === widgetId
+                  ? { ...w, x: Math.max(0, Math.min(x, CANVAS_W - w.w)), y: Math.max(0, Math.min(y, CANVAS_H - w.h)) }
+                  : w
+              ),
+            })),
+          });
+          syncClient.send({ type: 'ACTION', store: 'canvas', fn: 'moveLibraryWidget', args: [widgetId, x, y] });
+        },
+
+        resizeLibraryWidget: (widgetId, w, h) => {
+          set({
+            libraryPages: get().libraryPages.map((p) => ({
+              ...p,
+              widgets: p.widgets.map((wid) =>
+                wid.id === widgetId ? { ...wid, w: Math.max(60, w), h: Math.max(40, h) } : wid
+              ),
+            })),
+          });
+          syncClient.send({ type: 'ACTION', store: 'canvas', fn: 'resizeLibraryWidget', args: [widgetId, w, h] });
+        },
+
+        updateLibraryWidget: (widgetId, patch) => {
+          set({
+            libraryPages: get().libraryPages.map((p) => ({
+              ...p,
+              widgets: p.widgets.map((w) => (w.id === widgetId ? { ...w, ...patch } : w)),
+            })),
+          });
+          syncClient.send({ type: 'ACTION', store: 'canvas', fn: 'updateLibraryWidget', args: [widgetId, patch] });
+        },
+
+        updateLibraryWidgetConfig: (widgetId, patch) => {
+          set({
+            libraryPages: get().libraryPages.map((p) => ({
+              ...p,
+              widgets: p.widgets.map((w) => (w.id === widgetId ? { ...w, config: { ...w.config, ...patch } } : w)),
+            })),
+          });
+          syncClient.send({ type: 'ACTION', store: 'canvas', fn: 'updateLibraryWidgetConfig', args: [widgetId, patch] });
+        },
+
+        duplicateLibraryWidget: (widgetId) => {
+          for (const page of get().libraryPages) {
+            const w = page.widgets.find((w) => w.id === widgetId);
+            if (w) {
+              const copy: CanvasWidget = { ...w, id: crypto.randomUUID(), x: w.x + 20, y: w.y + 20, config: { ...w.config } };
+              set({
+                libraryPages: get().libraryPages.map((p) =>
+                  p.id === page.id ? { ...p, widgets: [...p.widgets, copy] } : p
+                ),
+                librarySelectedWidgetId: copy.id,
+              });
+              syncClient.send({ type: 'ACTION', store: 'canvas', fn: 'addLibraryWidget', args: [page.id, copy] });
+              return;
+            }
+          }
+        },
+
+        restoreLibraryCanvas: (pages, activePageId) => {
+          const newPages = pages as CanvasPage[];
+          const currentId = get().libraryActivePageId;
+          const resolvedId = newPages.some((p) => p.id === currentId)
+            ? currentId
+            : activePageId as string;
+          set({ libraryPages: newPages, libraryActivePageId: resolvedId });
+        },
+
         // ── Pages ──────────────────────────────────────────────────────────
 
         addPage: () => {
@@ -875,7 +1063,7 @@ export const useCanvasStore = create<CanvasStore>()(
           const trimmed = newId.trim();
           if (!trimmed) return { ok: false, error: 'ID cannot be empty' };
           if (trimmed === widgetId) return { ok: true };
-          const allWidgets = [...get().pages, ...get().commentatorPages].flatMap(p => p.widgets);
+          const allWidgets = [...get().pages, ...get().commentatorPages, ...get().libraryPages].flatMap(p => p.widgets);
           if (!allWidgets.some(w => w.id === widgetId)) return { ok: false, error: 'Widget not found' };
           if (allWidgets.some(w => w.id === trimmed)) return { ok: false, error: 'That ID is already used by another widget' };
 
@@ -896,6 +1084,7 @@ export const useCanvasStore = create<CanvasStore>()(
           set({
             pages: remap(get().pages),
             commentatorPages: remap(get().commentatorPages),
+            libraryPages: remap(get().libraryPages),
             timerIntervals: nextIntervals,
             selectedWidgetId: get().selectedWidgetId === widgetId ? trimmed : get().selectedWidgetId,
           });
@@ -1150,7 +1339,7 @@ export const useCanvasStore = create<CanvasStore>()(
               }
             }
 
-            const { client: triggerClient } = useVmixStore.getState();
+            const triggerClient = useVmixStore.getState().getClient();
             // Manual mode (no auto-advance, no Final Play) defers both the
             // label/period change AND this trigger until the operator
             // confirms — endWidgetPeriod (called on confirm) fires it then.
@@ -1228,7 +1417,7 @@ export const useCanvasStore = create<CanvasStore>()(
               }
             } else {
               const finalMs = cfg.mode === 'countdown' ? 0 : periods * cfg.durationMs;
-              const { client } = useVmixStore.getState();
+              const client = useVmixStore.getState().getClient();
               timerSendAll(client, cfg, formatTimeForVmix(finalMs, cfg));
               // The widget's own display recomputes total elapsed time as
               // (min(currentPeriod, periods) - 1) * durationMs + currentMs for
@@ -1278,7 +1467,7 @@ export const useCanvasStore = create<CanvasStore>()(
           timerTickHandlers[widgetId] = () => {
             const cfg = findWidgetConfig(widgetId);
             if (!cfg || !cfg.running) return;
-            const { client } = useVmixStore.getState();
+            const client = useVmixStore.getState().getClient();
 
             // ── Extra Time tick ─────────────────────────────────────────────
             if (cfg.inExtraTime) {
@@ -1751,7 +1940,7 @@ export const useCanvasStore = create<CanvasStore>()(
             awaitingEndConfirm: false,
           });
           useUndoStore.getState().pushUndo('Reset timer', () => updateWidgetConfig(widgetId, before));
-          const { client } = useVmixStore.getState();
+          const client = useVmixStore.getState().getClient();
           timerSendAll(client, config, formatTimeForVmix(resetMs, config));
           sendOverrunColor(config, client, false);
         },
@@ -1788,7 +1977,7 @@ export const useCanvasStore = create<CanvasStore>()(
             inFinalPlay: false, finalPlayMs: 0, finalPlayPendingNext: false,
             awaitingEndConfirm: false,
           });
-          const { client } = useVmixStore.getState();
+          const client = useVmixStore.getState().getClient();
           timerSendAll(client, config, formatTimeForVmix(startMs, config));
           sendOverrunColor(config, client, false);
         },
@@ -1892,7 +2081,7 @@ export const useCanvasStore = create<CanvasStore>()(
           // the press did nothing) once the branch's own patch lands on top.
           updateWidgetConfig(widgetId, { awaitingEndConfirm: false });
 
-          const { client } = useVmixStore.getState();
+          const client = useVmixStore.getState().getClient();
           sendOverrunColor(cfg, client, false);
 
           // ── Final Play end ────────────────────────────────────────────────
@@ -2064,7 +2253,7 @@ export const useCanvasStore = create<CanvasStore>()(
             resumePeriodStartMs: null,
             running: false,
           });
-          const { client } = useVmixStore.getState();
+          const client = useVmixStore.getState().getClient();
           timerSendAll(client, { ...config, inBreak: false, currentPeriod: nextPeriod }, formatTimeForVmix(startMs, config));
         },
 
@@ -2148,7 +2337,7 @@ export const useCanvasStore = create<CanvasStore>()(
             scoreLog: [logEntry, ...(config.scoreLog ?? [])],
           });
           {
-            const { client } = useVmixStore.getState();
+            const client = useVmixStore.getState().getClient();
             const targets = config.vmixInputs?.length
               ? config.vmixInputs
               : config.vmixInputKey
@@ -2174,7 +2363,7 @@ export const useCanvasStore = create<CanvasStore>()(
           updateWidgetConfig(widgetId, { scoreA: 0, scoreB: 0, scoreLog: [], cardsA: [], cardsB: [] });
           useUndoStore.getState().pushUndo('Reset score', () => updateWidgetConfig(widgetId, before));
           {
-            const { client } = useVmixStore.getState();
+            const client = useVmixStore.getState().getClient();
             const targets = config.vmixInputs?.length
               ? config.vmixInputs
               : config.vmixInputKey
@@ -2213,7 +2402,7 @@ export const useCanvasStore = create<CanvasStore>()(
           });
           useUndoStore.getState().pushUndo('Reset teams', () => updateWidgetConfig(widgetId, before));
           {
-            const { client } = useVmixStore.getState();
+            const client = useVmixStore.getState().getClient();
             const targets = config.vmixInputs?.length
               ? config.vmixInputs
               : config.vmixInputKey
@@ -2342,7 +2531,7 @@ export const useCanvasStore = create<CanvasStore>()(
           updateWidgetConfig(widgetId, { [field]: next, scoreLog: nextLog });
           useUndoStore.getState().pushUndo(`Undo ${entry.action}`, () => updateWidgetConfig(widgetId, before));
           {
-            const { client } = useVmixStore.getState();
+            const client = useVmixStore.getState().getClient();
             const targets = config.vmixInputs?.length
               ? config.vmixInputs
               : config.vmixInputKey
@@ -2410,7 +2599,7 @@ export const useCanvasStore = create<CanvasStore>()(
         },
 
         syncAllToVmix: () => {
-          const { client } = useVmixStore.getState();
+          const client = useVmixStore.getState().getClient();
           if (!client) return;
           const widgets = get().pages.flatMap(p => p.widgets);
           for (const w of widgets) {
@@ -2612,6 +2801,13 @@ export const useCanvasStore = create<CanvasStore>()(
           activePageId: s.activePageId,
           commentatorPages: s.commentatorPages,
           commentatorActivePageId: s.commentatorActivePageId,
+          // Missing here meant every custom CG template silently vanished
+          // the moment this store rehydrated from storage (app restart, or
+          // any other reload of persisted state) — it looked fine all
+          // session, then reset to the empty seeded page on relaunch,
+          // orphaning anything already loaded into a CG Playout layer.
+          libraryPages: s.libraryPages,
+          libraryActivePageId: s.libraryActivePageId,
         };
       },
     }
@@ -2643,6 +2839,14 @@ export function initCanvasSync() {
           // the in-memory state was already updated so the canvas can render.
           store.setSyncReady();
         }
+      }
+      // The CG Template library rides the same FULL_STATE message as a
+      // separate top-level field — this is what lets a freshly-opened
+      // ?cgChannel=/?cgOutput= window (a readonly client, only ever caught
+      // up via cached FULL_STATE replay, never live ACTIONs before it
+      // connected) actually see templates that already existed.
+      if (!isHost && msg.library) {
+        useCanvasStore.getState().restoreLibraryCanvas(msg.library.pages, msg.library.activePageId);
       }
       return;
     }
@@ -2705,6 +2909,39 @@ export function initCanvasSync() {
       case 'resizeWidget': {
         const [wid, w, h] = msg.args as [string, number, number];
         store.resizeWidget(wid, w, h);
+        break;
+      }
+      // ── CG Template library ─────────────────────────────────────────────
+      case 'addLibraryWidget': {
+        const [pageId, widget] = msg.args as [string, CanvasWidget];
+        useCanvasStore.setState((s) => ({
+          libraryPages: s.libraryPages.map((p) =>
+            p.id === pageId ? { ...p, widgets: [...p.widgets, widget] } : p
+          ),
+        }));
+        break;
+      }
+      case 'deleteLibraryWidget':
+        store.deleteLibraryWidget(msg.args[0] as string);
+        break;
+      case 'moveLibraryWidget': {
+        const [wid, x, y] = msg.args as [string, number, number];
+        store.moveLibraryWidget(wid, x, y);
+        break;
+      }
+      case 'resizeLibraryWidget': {
+        const [wid, w, h] = msg.args as [string, number, number];
+        store.resizeLibraryWidget(wid, w, h);
+        break;
+      }
+      case 'updateLibraryWidgetConfig': {
+        const [wid, patch] = msg.args as [string, Record<string, any>];
+        store.updateLibraryWidgetConfig(wid, patch);
+        break;
+      }
+      case 'updateLibraryWidget': {
+        const [wid, patch] = msg.args as [string, Partial<CanvasWidget>];
+        store.updateLibraryWidget(wid, patch);
         break;
       }
       case 'addPage': {

@@ -1,8 +1,11 @@
 import { useState } from 'react';
 import { Settings, X } from 'lucide-react';
 import { useAppSettings, SCALE_PRESETS } from '../stores/appSettingsStore';
+import { useVmixStore } from '../stores/vmixStore';
 
 const DURATION_PRESETS = [2000, 3000, 5000, 8000, 10000, 15000, 20000, 30000];
+const POLL_RATE_PRESETS = [200, 500, 1000, 2000, 5000];
+const UI_SCALE_PRESETS = [0.8, 0.9, 1, 1.1, 1.25, 1.5];
 
 interface Props {
   onClose: () => void;
@@ -20,10 +23,13 @@ const SIZE_PRESETS = [
 export function AppSettingsModal({ onClose }: Props) {
   const {
     canvasWidth, canvasHeight, canvasScale, setCanvasSize, setCanvasScale,
+    uiScale, setUiScale,
     notifyGoal, notifyCard, notifySub, notifyTimePause, notifyDurationMs,
     setNotifyGoal, setNotifyCard, setNotifySub, setNotifyTimePause, setNotifyDurationMs,
     simplifyMuhammadNames, simplifyFirstNameOnly, removeBinMarkers, truncateAtBinMarker,
     setSimplifyMuhammadNames, setSimplifyFirstNameOnly, setRemoveBinMarkers, setTruncateAtBinMarker,
+    vmixPollRateMs, setVmixPollRateMs,
+    statusBarEnabled, setStatusBarEnabled,
   } = useAppSettings();
 
   const [draftW, setDraftW] = useState(String(canvasWidth));
@@ -33,6 +39,18 @@ export function AppSettingsModal({ onClose }: Props) {
     const w = parseInt(draftW, 10);
     const h = parseInt(draftH, 10);
     if (w > 0 && h > 0) setCanvasSize(w, h);
+  };
+
+  // Persists the setting AND, if a vMix connection is already live, pushes
+  // the new rate straight into its running poll loop — see vmixApi.ts's
+  // own setPollIntervalMs doc comment for why that live wiring lives here
+  // rather than inside either store (this class is deliberately store-
+  // agnostic, and appSettingsStore importing vmixStore back would risk a
+  // circular import for no real benefit over just doing it at this one
+  // UI call site instead).
+  const applyPollRate = (ms: number) => {
+    setVmixPollRateMs(ms);
+    useVmixStore.getState().client?.setPollIntervalMs(ms);
   };
 
   return (
@@ -133,6 +151,40 @@ export function AppSettingsModal({ onClose }: Props) {
             </div>
           </div>
 
+          {/* ── App UI Scale ─────────────────────────────────────────────── */}
+          <div className="app-settings-section">
+            <div className="app-settings-section-label">App UI Scale</div>
+            <p className="app-settings-hint">
+              Scales the WHOLE app — sidebar, toolbars, panels, every popup —
+              not just the canvas above. Useful on a small or very high-DPI
+              screen, or just personal preference. Takes effect immediately.
+            </p>
+
+            <div className="app-settings-presets">
+              {UI_SCALE_PRESETS.map(s => (
+                <button
+                  key={s}
+                  className={`app-settings-preset ${Math.abs(s - uiScale) < 0.01 ? 'app-settings-preset--active' : ''}`}
+                  onPointerDown={(e) => { e.stopPropagation(); e.currentTarget.setPointerCapture(e.pointerId); setUiScale(s); }}
+                  onClick={(e) => e.stopPropagation()}
+                >{Math.round(s * 100)}%</button>
+              ))}
+            </div>
+
+            <div className="app-settings-scale-row">
+              <input
+                type="range"
+                className="app-settings-slider"
+                min={50}
+                max={200}
+                step={5}
+                value={Math.round(uiScale * 100)}
+                onChange={e => setUiScale(Number(e.target.value) / 100)}
+              />
+              <span className="app-settings-scale-val">{Math.round(uiScale * 100)}%</span>
+            </div>
+          </div>
+
           {/* ── Read-only Notifications ────────────────────────────────── */}
           <div className="app-settings-section">
             <div className="app-settings-section-label">Read-only Notifications</div>
@@ -186,6 +238,46 @@ export function AppSettingsModal({ onClose }: Props) {
             </div>
           </div>
 
+          {/* ── vMix Live State Polling ─────────────────────────────────── */}
+          <div className="app-settings-section">
+            <div className="app-settings-section-label">vMix Live State Polling</div>
+            <p className="app-settings-hint">
+              How often the app fetches vMix's own live state over HTTP — every
+              current input, its own text/state, tally, and preview/program
+              status all come from this. Faster feels more responsive but adds
+              load on both apps; slower is gentler but state can lag a little
+              behind what's actually happening in vMix. Separate from the
+              real-time TCP push the desktop app already uses when available
+              (always on, not affected by this setting) — this is what a
+              browser/remote client relies on entirely, and what desktop falls
+              back to whenever TCP itself is down or reconnecting.
+            </p>
+
+            <div className="app-settings-presets">
+              {POLL_RATE_PRESETS.map(ms => (
+                <button
+                  key={ms}
+                  className={`app-settings-preset ${vmixPollRateMs === ms ? 'app-settings-preset--active' : ''}`}
+                  onPointerDown={(e) => { e.stopPropagation(); e.currentTarget.setPointerCapture(e.pointerId); applyPollRate(ms); }}
+                  onClick={(e) => e.stopPropagation()}
+                >{ms}ms</button>
+              ))}
+            </div>
+
+            <div className="app-settings-scale-row" style={{ marginTop: 8 }}>
+              <input
+                type="range"
+                className="app-settings-slider"
+                min={100}
+                max={5000}
+                step={100}
+                value={vmixPollRateMs}
+                onChange={e => applyPollRate(Number(e.target.value))}
+              />
+              <span className="app-settings-scale-val">{vmixPollRateMs}ms</span>
+            </div>
+          </div>
+
           {/* ── Simple Names ─────────────────────────────────────────────── */}
           <div className="app-settings-section">
             <div className="app-settings-section-label">Simple Names</div>
@@ -211,6 +303,20 @@ export function AppSettingsModal({ onClose }: Props) {
               <label className="app-settings-notif-toggle">
                 <input type="checkbox" checked={truncateAtBinMarker} onChange={e => setTruncateAtBinMarker(e.target.checked)} />
                 <span>Hide everything after "bin"/"binti"/"bt"/"b." (e.g. "Ahmad bin Abdullah" → "Ahmad") — overrides the option above</span>
+              </label>
+            </div>
+          </div>
+
+          {/* ── Status Bar ───────────────────────────────────────────────── */}
+          <div className="app-settings-section">
+            <div className="app-settings-section-label">Status Bar</div>
+            <p className="app-settings-hint">
+              The thin resource bar along the bottom of the window (CPU/memory/GPU/network/disk usage). Its own hide button turns this off too — this is how to bring it back.
+            </p>
+            <div className="app-settings-notif-toggles">
+              <label className="app-settings-notif-toggle">
+                <input type="checkbox" checked={statusBarEnabled} onChange={e => setStatusBarEnabled(e.target.checked)} />
+                <span>Show status bar</span>
               </label>
             </div>
           </div>

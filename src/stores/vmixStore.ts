@@ -9,6 +9,7 @@ import type {
   VmixConnectionEntry, ConnectionLogEntry, ConnectionLogEvent,
 } from '../types/vmix';
 import { syncClient } from '../lib/syncClient';
+import { useAppSettings } from './appSettingsStore';
 import type { RemoteVmixConnection, BrowserClient } from '../lib/syncClient';
 
 // ─── Default data ──────────────────────────────────────────────────────────
@@ -362,6 +363,7 @@ export const useVmixStore = create<VmixStore>()(
             // Do NOT call stopPolling() — let TCP reconnect and HTTP bridge continue
             // automatically so the connection self-heals when vMix comes back.
           },
+          useAppSettings.getState().vmixPollRateMs,
         );
       },
 

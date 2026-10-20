@@ -4,6 +4,5 @@ declare interface Window {
   electronAPI?: {
     platform: string;
     isElectron: boolean;
-    scanNDI: () => Promise<string[]>;
   };
 }

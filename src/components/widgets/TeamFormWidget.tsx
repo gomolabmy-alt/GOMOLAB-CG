@@ -4,7 +4,10 @@ import { useCanvasStore } from '../../stores/canvasStore';
 import { useVmixStore } from '../../stores/vmixStore';
 import { useMatchResultsStore } from '../../stores/matchResultsStore';
 import { useMatchScheduleStore } from '../../stores/matchScheduleStore';
-import { mergeResultRows, mergeUpcomingRows, type ResultFormRow, type UpcomingFormRow } from '../../lib/teamForm';
+import {
+  mergeResultRows, mergeUpcomingRows, formRowOutcome, formRowResultText, formOutcomeText, formOutcomeColor, formOutcomeImage,
+  type UpcomingFormRow,
+} from '../../lib/teamForm';
 import { autoLinkedWidget } from '../../lib/autoLink';
 import { TeamFormTable } from './TeamFormTable';
 
@@ -15,49 +18,10 @@ interface Props {
   h: number;
 }
 
-type Outcome = 'W' | 'L' | 'D';
-
-function rowOutcome(row: ResultFormRow, side: 'a' | 'b'): Outcome | null {
-  const entry = row[side];
-  if (!entry) return null;
-  const { r, side: s } = entry;
-  const own = s === 'A' ? r.scoreA : r.scoreB;
-  const opp = s === 'A' ? r.scoreB : r.scoreA;
-  return own > opp ? 'W' : own < opp ? 'L' : 'D';
-}
-
-function resultText(row: ResultFormRow, side: 'a' | 'b'): string | null {
-  const entry = row[side];
-  const outcome = rowOutcome(row, side);
-  if (!entry || !outcome) return null;
-  const { r, side: s } = entry;
-  const own = s === 'A' ? r.scoreA : r.scoreB;
-  const opp = s === 'A' ? r.scoreB : r.scoreA;
-  const oppName = s === 'A' ? (r.teamBShortName || r.teamBName) : (r.teamAShortName || r.teamAName);
-  return `${row.stage}: ${outcome} ${own}-${opp} v ${oppName}`;
-}
-
 // '#RRGGBB' (what <input type="color"> gives us) -> 'FFRRGGBB', the ARGB hex
 // vMix's SetColor function expects for its Value parameter.
 function toArgbHex(hex: string): string {
   return 'FF' + hex.replace('#', '').toUpperCase();
-}
-
-// Per-row Win/Loss/Draw styling for the indexed vMix push below — same
-// three outcome values regardless of team side, applied through whichever
-// of Text/Color/Image prefixes are actually configured for that side (see
-// the 'team-form' case in WidgetConfigPanel.tsx — each is independently
-// optional, so an operator can wire up just a color, just an image, just
-// text, or any combination, depending on what their vMix template needs).
-function outcomeText(config: Record<string, any>, outcome: Outcome): string {
-  return outcome === 'W' ? (config.formWinText ?? 'W') : outcome === 'L' ? (config.formLossText ?? 'L') : (config.formDrawText ?? 'D');
-}
-function outcomeColor(config: Record<string, any>, outcome: Outcome): string {
-  const hex = outcome === 'W' ? (config.formWinColor ?? '#2ecc71') : outcome === 'L' ? (config.formLossColor ?? '#e74c3c') : (config.formDrawColor ?? '#95a5a6');
-  return toArgbHex(hex);
-}
-function outcomeImage(config: Record<string, any>, outcome: Outcome): string | undefined {
-  return outcome === 'W' ? config.formWinImage : outcome === 'L' ? config.formLossImage : config.formDrawImage;
 }
 
 function upcomingText(row: UpcomingFormRow, side: 'a' | 'b'): string | null {
@@ -104,8 +68,8 @@ export function TeamFormWidget({ widgetId, config }: Props) {
     [matches, teamAName, teamAShortName, teamBName, teamBShortName, category, tournamentId]
   );
 
-  const resultsAText = resultRows.map(r => resultText(r, 'a')).filter(Boolean).join(' | ');
-  const resultsBText = resultRows.map(r => resultText(r, 'b')).filter(Boolean).join(' | ');
+  const resultsAText = resultRows.map(r => formRowResultText(r, 'a')).filter(Boolean).join(' | ');
+  const resultsBText = resultRows.map(r => formRowResultText(r, 'b')).filter(Boolean).join(' | ');
   const upcomingAText = upcomingRows.map(r => upcomingText(r, 'a')).filter(Boolean).join(' | ');
   const upcomingBText = upcomingRows.map(r => upcomingText(r, 'b')).filter(Boolean).join(' | ');
 
@@ -135,12 +99,12 @@ export function TeamFormWidget({ widgetId, config }: Props) {
     for (const s of formSides) {
       if (!hasFormOutput(s)) continue;
       resultRows.forEach((row, i) => {
-        const outcome = rowOutcome(row, s.side);
+        const outcome = formRowOutcome(row, s.side);
         if (!outcome) return;
         const idx = i + 1;
-        if (s.textPrefix) c.setTextField(s.inputKey, `${s.textPrefix}${idx}.Text`, outcomeText(config, outcome));
-        if (s.colorPrefix) c.setColor(s.inputKey, `${s.colorPrefix}${idx}`, outcomeColor(config, outcome));
-        const img = s.imagePrefix && outcomeImage(config, outcome);
+        if (s.textPrefix) c.setTextField(s.inputKey, `${s.textPrefix}${idx}.Text`, formOutcomeText(config, outcome));
+        if (s.colorPrefix) c.setColor(s.inputKey, `${s.colorPrefix}${idx}`, toArgbHex(formOutcomeColor(config, outcome)));
+        const img = s.imagePrefix && formOutcomeImage(config, outcome);
         if (img) c.setImageField(s.inputKey, `${s.imagePrefix}${idx}.Source`, img);
       });
       // Clear leftover text from a previous, longer form history (e.g. a

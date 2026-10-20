@@ -18,7 +18,11 @@ const IMAGE_PORTS = new Set(['9887', '9888', '9889']);
  */
 export function resolveImageUrl(url: string): string {
   if (!url) return url;
-  const m = url.match(/^http:\/\/([^/:]+):(\d+)(\/images\/.*)$/);
+  // /sequences/ — one frame extracted on demand from a saved image
+  // sequence's single packed file (see src-tauri/src/server.rs's
+  // api_get_sequence_frame) — same embedded server, same host-rewriting
+  // rules as a plain /images/ URL, just a different path prefix.
+  const m = url.match(/^http:\/\/([^/:]+):(\d+)(\/(?:images|sequences)\/.*)$/);
   if (!m || !IMAGE_PORTS.has(m[2])) return url;
   if (_isTauri) {
     return `http://localhost:${m[2]}${m[3]}`;

@@ -5,20 +5,23 @@ import { useVmixStore } from '../stores/vmixStore';
 import { useTournamentStore } from '../stores/tournamentStore';
 import { useTeamDbStore } from '../stores/teamDbStore';
 import { useMatchScheduleStore, type ScheduledMatch } from '../stores/matchScheduleStore';
-import { extractKnockoutStage } from './TournamentManager';
+import { extractKnockoutStage, SPORT_ICON } from './TournamentManager';
 import { WIDGET_TYPE_LABELS } from '../types/canvas';
 import type { CanvasWidget } from '../types/canvas';
 import { WidgetIcon } from './widgets/WidgetIcon';
-import { ChevronDown, ChevronUp, ChevronRight, X, Terminal, SquareStack, RotateCcw, ArrowUp, ArrowDown, Copy, Zap } from 'lucide-react';
+import { ChevronDown, ChevronUp, ChevronRight, X, Terminal, SquareStack, RotateCcw, ArrowUp, ArrowDown, Copy, Zap, Cast, Flag, Star, ArrowLeftRight, Timer, Hourglass, Users, Info, Infinity as InfinityIcon, RectangleVertical, RectangleHorizontal, PanelBottom, Smartphone, Maximize, Minimize, Square, Volume2, Mic, Radio as RadioIcon, Scan, Crop, Expand, AlignLeft, AlignCenter, AlignRight } from 'lucide-react';
 import { INPUT_TYPE_LABELS } from '../types/vmix';
 import type { VmixInput } from '../types/vmix';
 import { LogoUrlPicker } from './LogoUrlPicker';
 import { resolveImageUrl } from '../lib/imageUrl';
 import { ActionListEditor } from './ActionListEditor';
 import { MergeFieldComposer, type MergePart } from './MergeFieldComposer';
+import { SCORE_MERGE_PARTS_A, SCORE_MERGE_PARTS_B, SCORE_MERGE_PARTS_INFO } from '../lib/templateBinding';
 import type { ActionItem } from '../lib/buttonActions';
 import { HotkeyRecorder } from './HotkeyRecorder';
 import { collectHotkeyBindings } from '../lib/hotkeyBindings';
+import { SPORT_DEFAULTS, type SportType, type RacketSportSettings } from '../types/tournament';
+import { initRallyMatch, initTennisMatch, normalizePlayerEntry, type RacketPlayerEntry } from '../lib/racketScoring';
 
 // Label for a player-list widget in a picker dropdown — shows the linked
 // saved team's name (teamDbStore), falling back to a short widget id.
@@ -96,17 +99,62 @@ export const RUGBY_LEAGUE_INCS = [
   { label: 'Drop', value: 1 },
 ];
 
+// `Mix` — vMix's own "which Mix bus" parameter (4K/Pro editions): Mix 1 is
+// the main Program/Preview, Mix 2-16 are independent mini-mixers (their own
+// Preview/Program/transition) that can themselves feed into another Mix as
+// an input. Values match what's shown in the vMix UI (1-16), same
+// convention bitfocus/companion-module-studiocoast-vmix's own `mixSelect`
+// field uses — ActionListEditor.tsx's own Mix picker converts to vMix's
+// real wire format (lowercase `mix`, 0-based) right before sending, see
+// vmixApi.ts's own doc comment on that.
+//
+// Listed per vMix's own official docs, not Companion's (which turned out to
+// be an incomplete/conservative reference) — Mix.html states: "The following
+// shortcuts can be used with an optional Mix parameter ... Fade, Zoom, Wipe
+// etc", and ShortcutFunctionReference.html's own intro groups Cut in with
+// them: "Transitions such as Fade, Zoom, Cut etc can be used as Functions in
+// shortcuts or the API". So Cut and every other transition effect (Fade,
+// Merge, Zoom, Wipe, Slide, Fly, CrossZoom, FlyRotate, Cube, CubeZoom,
+// VerticalWipe, VerticalSlide) genuinely target whichever Mix 1-16 is
+// selected, not just the main mix — vmixApi.ts's `fn()` forwards `mix`
+// straight through for all of them, no function-swapping needed. Only
+// CutDirect (reference table lists Parameters: Input only, no Mix) and
+// Transition1-4 (the four UI transition buttons — reference table lists
+// Parameters: None) are genuinely Mix-1-only, since vMix's own docs don't
+// offer a Mix parameter for either. The other explicitly Mix-aware
+// functions are ActiveInput (cut)/PreviewInput (preview)/Stinger1-4/
+// OverlayInput*/SetOutput2-4.
 export const VMIX_FUNCTIONS: { group: string; fns: { fn: string; label: string; p: string[] }[] }[] = [
   { group: 'Transitions', fns: [
-    { fn: 'Cut',                    label: 'Cut',                    p: ['Input'] },
-    { fn: 'Fade',                   label: 'Fade',                   p: ['Input'] },
-    { fn: 'Transition1',            label: 'Auto (T1)',              p: ['Input'] },
-    { fn: 'Transition2',            label: 'Transition 2',           p: ['Input'] },
-    { fn: 'Transition3',            label: 'Transition 3',           p: ['Input'] },
-    { fn: 'Transition4',            label: 'Transition 4',           p: ['Input'] },
-    { fn: 'Stinger1',               label: 'Stinger 1',              p: ['Input'] },
-    { fn: 'Stinger2',               label: 'Stinger 2',              p: ['Input'] },
+    { fn: 'Cut',                    label: 'Cut',                    p: ['Input', 'Mix'] },
+    { fn: 'Fade',                   label: 'Fade',                   p: ['Input', 'Mix'] },
+    { fn: 'Merge',                  label: 'Merge',                  p: ['Input', 'Mix'] },
+    { fn: 'Zoom',                   label: 'Zoom',                   p: ['Input', 'Mix'] },
+    { fn: 'Wipe',                   label: 'Wipe',                   p: ['Input', 'Mix'] },
+    { fn: 'Slide',                  label: 'Slide',                  p: ['Input', 'Mix'] },
+    { fn: 'Fly',                    label: 'Fly',                    p: ['Input', 'Mix'] },
+    { fn: 'CrossZoom',              label: 'Cross Zoom',             p: ['Input', 'Mix'] },
+    { fn: 'FlyRotate',              label: 'Fly Rotate',             p: ['Input', 'Mix'] },
+    { fn: 'Cube',                   label: 'Cube',                   p: ['Input', 'Mix'] },
+    { fn: 'CubeZoom',               label: 'Cube Zoom',              p: ['Input', 'Mix'] },
+    { fn: 'VerticalWipe',           label: 'Vertical Wipe',          p: ['Input', 'Mix'] },
+    { fn: 'VerticalSlide',          label: 'Vertical Slide',         p: ['Input', 'Mix'] },
+    { fn: 'CutDirect',              label: 'Cut Direct (bypass Preview, Mix 1 only)', p: ['Input'] },
+    { fn: 'QuickPlay',              label: 'Quick Play (cue + take)', p: ['Input'] },
+    { fn: 'Transition1',            label: 'Auto (T1, Mix 1 only)',  p: [] },
+    { fn: 'Transition2',            label: 'Transition 2 (Mix 1 only)', p: [] },
+    { fn: 'Transition3',            label: 'Transition 3 (Mix 1 only)', p: [] },
+    { fn: 'Transition4',            label: 'Transition 4 (Mix 1 only)', p: [] },
+    { fn: 'Stinger1',               label: 'Stinger 1',              p: ['Input', 'Mix'] },
+    { fn: 'Stinger2',               label: 'Stinger 2',              p: ['Input', 'Mix'] },
+    { fn: 'Stinger3',               label: 'Stinger 3',              p: ['Input', 'Mix'] },
+    { fn: 'Stinger4',               label: 'Stinger 4',              p: ['Input', 'Mix'] },
+    { fn: 'SetStingerGTInput1',     label: 'Set Stinger GT Input 1', p: ['Input'] },
+    { fn: 'SetStingerGTInput2',     label: 'Set Stinger GT Input 2', p: ['Input'] },
+    { fn: 'SetStingerGTInput3',     label: 'Set Stinger GT Input 3', p: ['Input'] },
+    { fn: 'SetStingerGTInput4',     label: 'Set Stinger GT Input 4', p: ['Input'] },
     { fn: 'FadeToBlack',            label: 'Fade To Black',          p: [] },
+    { fn: 'SetFader',               label: 'Set T-Bar Position (0-255)', p: ['Value'] },
     { fn: 'SetTransitionEffect1',   label: 'Set T1 Effect',          p: ['Value'] },
     { fn: 'SetTransitionEffect2',   label: 'Set T2 Effect',          p: ['Value'] },
     { fn: 'SetTransitionEffect3',   label: 'Set T3 Effect',          p: ['Value'] },
@@ -117,148 +165,306 @@ export const VMIX_FUNCTIONS: { group: string; fns: { fn: string; label: string; 
     { fn: 'SetTransitionDuration4', label: 'Set T4 Duration (ms)',   p: ['Value'] },
   ]},
   { group: 'Inputs', fns: [
-    { fn: 'PreviewInput',           label: 'Preview Input',          p: ['Input'] },
-    { fn: 'ActiveInput',            label: 'Active Input',           p: ['Input'] },
-    { fn: 'SetNextInput',           label: 'Next Input',             p: ['Input'] },
-    { fn: 'SetPreviousInput',       label: 'Previous Input',         p: [] },
+    { fn: 'PreviewInput',           label: 'Preview Input (supports Mix)', p: ['Input', 'Mix'] },
+    { fn: 'ActiveInput',            label: 'Active Input — cut to Program (supports Mix)', p: ['Input', 'Mix'] },
+    { fn: 'PreviewInputNext',       label: 'Preview Next Input',     p: [] },
+    { fn: 'PreviewInputPrevious',   label: 'Preview Previous Input', p: [] },
+    { fn: 'AddInput',               label: 'Add Input (Type,Value)', p: ['Value'] },
+    { fn: 'RemoveInput',            label: 'Remove Input',           p: ['Input'] },
     { fn: 'ResetInput',             label: 'Reset Input',            p: ['Input'] },
-    { fn: 'CloseInput',             label: 'Close Input',            p: ['Input'] },
-    { fn: 'SetInputAlpha',          label: 'Set Alpha',              p: ['Input', 'Value'] },
-    { fn: 'SetInputZoom',           label: 'Set Zoom',               p: ['Input', 'Value'] },
-    { fn: 'SetInputPanX',           label: 'Set Pan X',              p: ['Input', 'Value'] },
-    { fn: 'SetInputPanY',           label: 'Set Pan Y',              p: ['Input', 'Value'] },
-    { fn: 'SetInputVolume',         label: 'Set Input Volume',       p: ['Input', 'Value'] },
+    { fn: 'CreateVirtualInput',     label: 'Create Virtual Input',   p: ['Input'] },
+    { fn: 'SetInputName',           label: 'Set Input Name',         p: ['Input', 'Value'] },
+    { fn: 'MoveInput',              label: 'Move Input (to index)',  p: ['Input', 'Value'] },
+    { fn: 'SetAlpha',               label: 'Set Alpha',              p: ['Input', 'Value'] },
+    { fn: 'SetInputAlpha',          label: 'Set Alpha (legacy name)', p: ['Input', 'Value'] },
+    { fn: 'SetZoom',                label: 'Set Zoom',               p: ['Input', 'Value'] },
+    { fn: 'SetPanX',                label: 'Set Pan X',              p: ['Input', 'Value'] },
+    { fn: 'SetPanY',                label: 'Set Pan Y',              p: ['Input', 'Value'] },
+    { fn: 'SetCrop',                label: 'Set Crop (x1,y1,x2,y2)', p: ['Input', 'Value'] },
+    { fn: 'SetPosition',            label: 'Set Position (ms)',      p: ['Input', 'Value'] },
+    { fn: 'SetRate',                label: 'Set Playback Rate (%)',  p: ['Input', 'Value'] },
+    { fn: 'SetVolume',              label: 'Set Input Volume (0–100)', p: ['Input', 'Value'] },
+    { fn: 'MirrorOn',               label: 'Mirror On',              p: ['Input'] },
+    { fn: 'MirrorOff',              label: 'Mirror Off',             p: ['Input'] },
+    { fn: 'DeinterlaceOn',          label: 'Deinterlace On',         p: ['Input'] },
+    { fn: 'DeinterlaceOff',         label: 'Deinterlace Off',        p: ['Input'] },
+    { fn: 'SharpenOn',              label: 'Sharpen On',             p: ['Input'] },
+    { fn: 'SharpenOff',             label: 'Sharpen Off',            p: ['Input'] },
+    { fn: 'ColourCorrectionReset',  label: 'Colour Correction Reset', p: ['Input'] },
+    { fn: 'ColourCorrectionAuto',   label: 'Colour Correction Auto', p: ['Input'] },
+    { fn: 'Effect1On',              label: 'Effect 1 On',            p: ['Input'] },
+    { fn: 'Effect1Off',             label: 'Effect 1 Off',           p: ['Input'] },
+    { fn: 'SetEffect1Strength',     label: 'Set Effect 1 Strength',  p: ['Input', 'Value'] },
+    { fn: 'SelectIndex',            label: 'Select Index',           p: ['Input', 'Value'] },
+    { fn: 'SelectCategory',         label: 'Select Category',        p: ['Value'] },
+  ]},
+  { group: 'Layers (overlay compositing)', fns: [
+    { fn: 'LayerOn',                label: 'Layer On',               p: ['Input', 'Value'] },
+    { fn: 'LayerOff',                label: 'Layer Off',              p: ['Input', 'Value'] },
+    { fn: 'LayerOnOff',             label: 'Layer Toggle',           p: ['Input', 'Value'] },
+    { fn: 'SetLayer',               label: 'Set Layer (index=Input)', p: ['Input', 'Value'] },
+    { fn: 'MoveLayer',              label: 'Move Layer',             p: ['Input', 'Value'] },
+    { fn: 'SetLayer1X',             label: 'Set Layer 1 X',          p: ['Input', 'Value'] },
+    { fn: 'SetLayer1Y',             label: 'Set Layer 1 Y',          p: ['Input', 'Value'] },
+    { fn: 'SetLayer1Width',         label: 'Set Layer 1 Width',      p: ['Input', 'Value'] },
+    { fn: 'SetLayer1Height',        label: 'Set Layer 1 Height',     p: ['Input', 'Value'] },
+    { fn: 'SetLayer1Zoom',          label: 'Set Layer 1 Zoom',       p: ['Input', 'Value'] },
+    { fn: 'SetLayer1Crop',          label: 'Set Layer 1 Crop',       p: ['Input', 'Value'] },
+    { fn: 'SetLayer1Rectangle',     label: 'Set Layer 1 Rectangle',  p: ['Input', 'Value'] },
+    // Layer 2-10 follow the exact same SetLayer{N}X/Y/Width/Height/Zoom/
+    // Crop/Rectangle/PanX/PanY naming — pick "Custom…" below and type the
+    // exact function (e.g. SetLayer3Width) rather than this list carrying
+    // ~70 near-identical rows for every layer index.
   ]},
   { group: 'Overlay', fns: [
-    { fn: 'OverlayInput1',          label: 'Overlay 1 Toggle',       p: ['Input'] },
-    { fn: 'OverlayInput2',          label: 'Overlay 2 Toggle',       p: ['Input'] },
-    { fn: 'OverlayInput3',          label: 'Overlay 3 Toggle',       p: ['Input'] },
-    { fn: 'OverlayInput4',          label: 'Overlay 4 Toggle',       p: ['Input'] },
-    { fn: 'OverlayInput1In',        label: 'Overlay 1 In',           p: ['Input'] },
-    { fn: 'OverlayInput2In',        label: 'Overlay 2 In',           p: ['Input'] },
-    { fn: 'OverlayInput3In',        label: 'Overlay 3 In',           p: ['Input'] },
-    { fn: 'OverlayInput4In',        label: 'Overlay 4 In',           p: ['Input'] },
-    { fn: 'OverlayInput1Out',       label: 'Overlay 1 Out',          p: ['Input'] },
-    { fn: 'OverlayInput2Out',       label: 'Overlay 2 Out',          p: ['Input'] },
-    { fn: 'OverlayInput3Out',       label: 'Overlay 3 Out',          p: ['Input'] },
-    { fn: 'OverlayInput4Out',       label: 'Overlay 4 Out',          p: ['Input'] },
+    { fn: 'OverlayInput1',          label: 'Overlay 1 Toggle',       p: ['Input', 'Mix'] },
+    { fn: 'OverlayInput2',          label: 'Overlay 2 Toggle',       p: ['Input', 'Mix'] },
+    { fn: 'OverlayInput3',          label: 'Overlay 3 Toggle',       p: ['Input', 'Mix'] },
+    { fn: 'OverlayInput4',          label: 'Overlay 4 Toggle',       p: ['Input', 'Mix'] },
+    { fn: 'OverlayInput1In',        label: 'Overlay 1 In',           p: ['Input', 'Mix'] },
+    { fn: 'OverlayInput2In',        label: 'Overlay 2 In',           p: ['Input', 'Mix'] },
+    { fn: 'OverlayInput3In',        label: 'Overlay 3 In',           p: ['Input', 'Mix'] },
+    { fn: 'OverlayInput4In',        label: 'Overlay 4 In',           p: ['Input', 'Mix'] },
+    { fn: 'OverlayInput1Out',       label: 'Overlay 1 Out',          p: ['Mix'] },
+    { fn: 'OverlayInput2Out',       label: 'Overlay 2 Out',          p: ['Mix'] },
+    { fn: 'OverlayInput3Out',       label: 'Overlay 3 Out',          p: ['Mix'] },
+    { fn: 'OverlayInput4Out',       label: 'Overlay 4 Out',          p: ['Mix'] },
     { fn: 'OverlayInput1Off',       label: 'Overlay 1 Off',          p: [] },
     { fn: 'OverlayInput2Off',       label: 'Overlay 2 Off',          p: [] },
     { fn: 'OverlayInput3Off',       label: 'Overlay 3 Off',          p: [] },
     { fn: 'OverlayInput4Off',       label: 'Overlay 4 Off',          p: [] },
+    { fn: 'OverlayInput1Zoom',      label: 'Overlay 1 Zoom Toggle',  p: [] },
+    { fn: 'OverlayInput2Zoom',      label: 'Overlay 2 Zoom Toggle',  p: [] },
+    { fn: 'OverlayInput3Zoom',      label: 'Overlay 3 Zoom Toggle',  p: [] },
+    { fn: 'OverlayInput4Zoom',      label: 'Overlay 4 Zoom Toggle',  p: [] },
+    { fn: 'OverlayInputAllOff',     label: 'All Overlays Off',       p: [] },
+    { fn: 'PreviewOverlayInput1',   label: 'Preview Overlay 1',      p: ['Input'] },
+    { fn: 'PreviewOverlayInput2',   label: 'Preview Overlay 2',      p: ['Input'] },
+    { fn: 'PreviewOverlayInput3',   label: 'Preview Overlay 3',      p: ['Input'] },
+    { fn: 'PreviewOverlayInput4',   label: 'Preview Overlay 4',      p: ['Input'] },
   ]},
   { group: 'Title / GT', fns: [
     { fn: 'SetText',                label: 'Set Text',               p: ['Input', 'SelectedName', 'Value'] },
     { fn: 'SetTextCase',            label: 'Set Text Case',          p: ['Input', 'SelectedName', 'Value'] },
+    { fn: 'SetTextColour',          label: 'Set Text Colour',        p: ['Input', 'SelectedName', 'Value'] },
+    { fn: 'SetTextVisibleOn',       label: 'Set Text Visible On',    p: ['Input', 'SelectedName'] },
+    { fn: 'SetTextVisibleOff',      label: 'Set Text Visible Off',   p: ['Input', 'SelectedName'] },
     { fn: 'SetImage',               label: 'Set Image',              p: ['Input', 'SelectedName', 'Value'] },
+    { fn: 'SetImageVisibleOn',      label: 'Set Image Visible On',   p: ['Input', 'SelectedName'] },
+    { fn: 'SetImageVisibleOff',     label: 'Set Image Visible Off',  p: ['Input', 'SelectedName'] },
     { fn: 'SetColor',               label: 'Set Color (ARGB)',       p: ['Input', 'SelectedName', 'Value'] },
-    { fn: 'SetTickerSpeed',         label: 'Set Ticker Speed',       p: ['Input', 'Value'] },
+    { fn: 'SetTickerSpeed',         label: 'Set Ticker Speed',       p: ['Input', 'SelectedName', 'Value'] },
     { fn: 'SetCountdown',           label: 'Set Countdown',          p: ['Input', 'SelectedName', 'Value'] },
-    { fn: 'StartCountdown',         label: 'Start Countdown',        p: ['Input', 'SelectedName'] },
-    { fn: 'StopCountdown',          label: 'Stop Countdown',         p: ['Input', 'SelectedName'] },
-    { fn: 'PauseCountdown',         label: 'Pause Countdown',        p: ['Input', 'SelectedName'] },
-    { fn: 'ResetCountdown',         label: 'Reset Countdown',        p: ['Input', 'SelectedName'] },
-    { fn: 'AdjustCountdown',        label: 'Adjust Countdown (+/-s)', p: ['Input', 'SelectedName', 'Value'] },
-    { fn: 'NextPhoto',              label: 'Next Photo',             p: ['Input'] },
-    { fn: 'PreviousPhoto',          label: 'Previous Photo',         p: ['Input'] },
+    { fn: 'StartCountdown',         label: 'Start Countdown',        p: ['Input'] },
+    { fn: 'StopCountdown',          label: 'Stop Countdown',         p: ['Input'] },
+    { fn: 'PauseCountdown',         label: 'Pause Countdown',        p: ['Input'] },
+    { fn: 'SuspendCountdown',       label: 'Suspend Countdown',      p: ['Input'] },
+    { fn: 'ChangeCountdown',        label: 'Change Countdown',       p: ['Input', 'Value'] },
+    { fn: 'AdjustCountdown',        label: 'Adjust Countdown (+/-s)', p: ['Input', 'Value'] },
+    { fn: 'PauseRender',            label: 'Pause Render',           p: ['Input'] },
+    { fn: 'ResumeRender',           label: 'Resume Render',          p: ['Input'] },
     { fn: 'SelectTitlePreset',      label: 'Select Title Preset',    p: ['Input', 'Value'] },
-    { fn: 'TitlePreset',            label: 'Title Preset Next',      p: ['Input'] },
+    { fn: 'NextTitlePreset',        label: 'Next Title Preset',      p: ['Input'] },
+    { fn: 'PreviousTitlePreset',    label: 'Previous Title Preset',  p: ['Input'] },
     { fn: 'TitleBeginAnimation',    label: 'Title Begin Animation',  p: ['Input', 'Value'] },
-    { fn: 'SelectDataSourceRow',    label: 'Data Source Select Row', p: ['Input', 'SelectedName', 'Value'] },
-    { fn: 'NextDataSourceRow',      label: 'Data Source Next Row',   p: ['Input', 'SelectedName'] },
-    { fn: 'PreviousDataSourceRow',  label: 'Data Source Prev Row',   p: ['Input', 'SelectedName'] },
-    { fn: 'SetDynamic1',            label: 'Set Dynamic 1',          p: ['Value'] },
-    { fn: 'SetDynamic2',            label: 'Set Dynamic 2',          p: ['Value'] },
-    { fn: 'SetDynamic3',            label: 'Set Dynamic 3',          p: ['Value'] },
-    { fn: 'SetDynamic4',            label: 'Set Dynamic 4',          p: ['Value'] },
+    { fn: 'DataSourceSelectRow',    label: 'Data Source Select Row', p: ['Value'] },
+    { fn: 'DataSourceNextRow',      label: 'Data Source Next Row',   p: ['Value'] },
+    { fn: 'DataSourcePreviousRow',  label: 'Data Source Prev Row',   p: ['Value'] },
+    { fn: 'DataSourcePlay',         label: 'Data Source Play',       p: ['Value'] },
+    { fn: 'DataSourcePause',        label: 'Data Source Pause',      p: ['Value'] },
+    { fn: 'DataSourcePlayPause',    label: 'Data Source Play/Pause', p: ['Value'] },
+    { fn: 'DataSourceAutoNextOn',   label: 'Data Source Auto-Next On', p: ['Value'] },
+    { fn: 'DataSourceAutoNextOff',  label: 'Data Source Auto-Next Off', p: ['Value'] },
+    { fn: 'SetDynamicValue1',       label: 'Set Dynamic Value 1',    p: ['Value'] },
+    { fn: 'SetDynamicValue2',       label: 'Set Dynamic Value 2',    p: ['Value'] },
+    { fn: 'SetDynamicValue3',       label: 'Set Dynamic Value 3',    p: ['Value'] },
+    { fn: 'SetDynamicValue4',       label: 'Set Dynamic Value 4',    p: ['Value'] },
+    { fn: 'SetDynamicInput1',       label: 'Set Dynamic Input 1',    p: ['Value'] },
+    { fn: 'SetDynamicInput2',       label: 'Set Dynamic Input 2',    p: ['Value'] },
+    { fn: 'SetDynamicInput3',       label: 'Set Dynamic Input 3',    p: ['Value'] },
+    { fn: 'SetDynamicInput4',       label: 'Set Dynamic Input 4',    p: ['Value'] },
   ]},
   { group: 'Playback', fns: [
     { fn: 'Play',                   label: 'Play',                   p: ['Input'] },
     { fn: 'Pause',                  label: 'Pause',                  p: ['Input'] },
     { fn: 'PlayPause',              label: 'Play / Pause',           p: ['Input'] },
     { fn: 'Restart',                label: 'Restart',                p: ['Input'] },
+    { fn: 'LivePlayPause',          label: 'Live Play/Pause',        p: ['Input'] },
     { fn: 'Loop',                   label: 'Loop Toggle',            p: ['Input'] },
     { fn: 'LoopOn',                 label: 'Loop On',                p: ['Input'] },
     { fn: 'LoopOff',                label: 'Loop Off',               p: ['Input'] },
+    { fn: 'AutoPlayOn',             label: 'Auto Play On',           p: ['Input'] },
+    { fn: 'AutoPlayOff',            label: 'Auto Play Off',          p: ['Input'] },
+    { fn: 'AutoPlayNextOn',         label: 'Auto Play Next On',      p: ['Input'] },
+    { fn: 'AutoPlayNextOff',        label: 'Auto Play Next Off',     p: ['Input'] },
+    { fn: 'AutoPlayFirstOn',        label: 'Auto Play First On',     p: ['Input'] },
+    { fn: 'AutoPlayFirstOff',       label: 'Auto Play First Off',    p: ['Input'] },
+    { fn: 'AutoPauseOn',            label: 'Auto Pause On',          p: ['Input'] },
+    { fn: 'AutoPauseOff',           label: 'Auto Pause Off',         p: ['Input'] },
+    { fn: 'AutoRestartOn',          label: 'Auto Restart On',        p: ['Input'] },
+    { fn: 'AutoRestartOff',         label: 'Auto Restart Off',       p: ['Input'] },
+    { fn: 'NextItem',               label: 'Next Item',              p: ['Input'] },
+    { fn: 'PreviousItem',           label: 'Previous Item',          p: ['Input'] },
+    { fn: 'NextPicture',            label: 'Next Picture',           p: ['Input'] },
+    { fn: 'PreviousPicture',        label: 'Previous Picture',       p: ['Input'] },
+    { fn: 'MarkIn',                 label: 'Mark In',                p: ['Input'] },
+    { fn: 'MarkOut',                label: 'Mark Out',               p: ['Input'] },
+    { fn: 'MarkReset',              label: 'Mark Reset',             p: ['Input'] },
+    { fn: 'SetRateSlowMotion',      label: 'Set Slow Motion Rate',   p: ['Input', 'Value'] },
+  ]},
+  { group: 'List', fns: [
+    { fn: 'ListAdd',                label: 'List Add',               p: ['Input', 'Value'] },
+    { fn: 'ListRemove',             label: 'List Remove',            p: ['Input', 'Value'] },
+    { fn: 'ListRemoveAll',          label: 'List Remove All',        p: ['Input'] },
+    { fn: 'ListExport',             label: 'List Export',            p: ['Input', 'Value'] },
+    { fn: 'ListPlayOut',            label: 'List Play Out',          p: ['Input'] },
+    { fn: 'ListShowHide',           label: 'List Show/Hide',         p: ['Input'] },
+    { fn: 'ListShuffle',            label: 'List Shuffle',           p: ['Input'] },
   ]},
   { group: 'Audio', fns: [
     { fn: 'AudioOn',                label: 'Audio On',               p: ['Input'] },
     { fn: 'AudioOff',               label: 'Audio Off',              p: ['Input'] },
     { fn: 'AudioAutoOn',            label: 'Audio Auto On',          p: ['Input'] },
     { fn: 'AudioAutoOff',           label: 'Audio Auto Off',         p: ['Input'] },
-    { fn: 'SetVolume',              label: 'Set Volume (0–100)',      p: ['Input', 'Value'] },
-    { fn: 'SetMasterVolume',        label: 'Set Master Volume',      p: ['Value'] },
+    { fn: 'SetVolume',              label: 'Set Volume (0–100)',     p: ['Input', 'Value'] },
+    { fn: 'SetVolumeFade',          label: 'Fade Volume To',         p: ['Input', 'Value'] },
     { fn: 'SetBalance',             label: 'Set Balance (-1 to 1)',  p: ['Input', 'Value'] },
     { fn: 'SetGain',                label: 'Set Gain (dB)',          p: ['Input', 'Value'] },
+    { fn: 'Solo',                   label: 'Solo Toggle',            p: ['Input'] },
+    { fn: 'SoloOn',                 label: 'Solo On',                p: ['Input'] },
+    { fn: 'SoloOff',                label: 'Solo Off',               p: ['Input'] },
+    { fn: 'SoloAllOff',             label: 'Solo All Off',           p: [] },
+    { fn: 'SetMasterVolume',        label: 'Set Master Volume',      p: ['Value'] },
+    { fn: 'SetMasterVolumeFade',    label: 'Fade Master Volume To',  p: ['Value'] },
+    { fn: 'MasterAudioOn',          label: 'Master Audio On',        p: [] },
+    { fn: 'MasterAudioOff',         label: 'Master Audio Off',       p: [] },
     { fn: 'SetHeadphonesVolume',    label: 'Set Headphones Volume',  p: ['Value'] },
-    { fn: 'AudioBusOn',             label: 'Audio Bus On',           p: ['Input', 'Value'] },
-    { fn: 'AudioBusOff',            label: 'Audio Bus Off',          p: ['Input', 'Value'] },
+    { fn: 'AudioBusOn',             label: 'Audio Bus On (Value=bus letter)', p: ['Input', 'Value'] },
+    { fn: 'AudioBusOff',            label: 'Audio Bus Off (Value=bus letter)', p: ['Input', 'Value'] },
+    { fn: 'BusAAudioOn',            label: 'Bus A Audio On',         p: [] },
+    { fn: 'BusAAudioOff',           label: 'Bus A Audio Off',        p: [] },
+    { fn: 'SetBusAVolume',          label: 'Set Bus A Volume',       p: ['Value'] },
+    { fn: 'BusBAudioOn',            label: 'Bus B Audio On',         p: [] },
+    { fn: 'BusBAudioOff',           label: 'Bus B Audio Off',        p: [] },
+    { fn: 'SetBusBVolume',          label: 'Set Bus B Volume',       p: ['Value'] },
+    { fn: 'BusXAudioOn',            label: 'Bus On (Value=C-G)',     p: ['Value'] },
+    { fn: 'BusXAudioOff',           label: 'Bus Off (Value=C-G)',    p: ['Value'] },
+    { fn: 'BusXSolo',               label: 'Bus Solo Toggle (Value=A-G)', p: ['Value'] },
+    { fn: 'BusXSendToMaster',       label: 'Bus Send To Master Toggle (Value=A-G)', p: ['Value'] },
+    { fn: 'AudioChannelMatrixApplyPreset', label: 'Apply Channel Matrix Preset', p: ['Input', 'Value'] },
     { fn: 'AudioMixerShowHide',     label: 'Audio Mixer Toggle',     p: [] },
+    { fn: 'AudioPluginShow',        label: 'Show Audio Plugin',      p: ['Input', 'Value'] },
+    { fn: 'AudioPluginOnOff',       label: 'Audio Plugin Toggle',    p: ['Input', 'Value'] },
   ]},
   { group: 'Recording / Streaming', fns: [
     { fn: 'StartRecording',         label: 'Start Recording',        p: [] },
     { fn: 'StopRecording',          label: 'Stop Recording',         p: [] },
-    { fn: 'PauseRecording',         label: 'Pause Recording',        p: [] },
-    { fn: 'StartStreaming',         label: 'Start Streaming',        p: ['Value'] },
+    { fn: 'StartStopRecording',     label: 'Toggle Recording',       p: [] },
+    { fn: 'StartStreaming',         label: 'Start Streaming (Value=destination #, blank=all)', p: ['Value'] },
     { fn: 'StopStreaming',          label: 'Stop Streaming',         p: ['Value'] },
+    { fn: 'StartStopStreaming',     label: 'Toggle Streaming',       p: ['Value'] },
+    { fn: 'StreamingSetURL',        label: 'Set Streaming URL',      p: ['Value'] },
+    { fn: 'StreamingSetKey',        label: 'Set Streaming Key',      p: ['Value'] },
+    { fn: 'StreamingSetUsername',   label: 'Set Streaming Username', p: ['Value'] },
+    { fn: 'StreamingSetPassword',   label: 'Set Streaming Password', p: ['Value'] },
     { fn: 'StartExternal',          label: 'Start External',         p: [] },
     { fn: 'StopExternal',           label: 'Stop External',          p: [] },
+    { fn: 'StartStopExternal',      label: 'Toggle External',        p: [] },
     { fn: 'StartMultiCorder',       label: 'Start MultiCorder',      p: [] },
     { fn: 'StopMultiCorder',        label: 'Stop MultiCorder',       p: [] },
-    { fn: 'StartOutput',            label: 'Start Output',           p: ['Value'] },
-    { fn: 'StopOutput',             label: 'Stop Output',            p: ['Value'] },
+    { fn: 'StartStopMultiCorder',   label: 'Toggle MultiCorder',     p: [] },
     { fn: 'StartSRTOutput',         label: 'Start SRT Output',       p: ['Value'] },
     { fn: 'StopSRTOutput',          label: 'Stop SRT Output',        p: ['Value'] },
-  ]},
-  { group: 'List', fns: [
-    { fn: 'ListAdd',                label: 'List Add',               p: ['Input', 'Value'] },
-    { fn: 'ListRemoveAll',          label: 'List Remove All',        p: ['Input'] },
-    { fn: 'ListSelectIndex',        label: 'List Select Index',      p: ['Input', 'Value'] },
-    { fn: 'ListPlayNext',           label: 'List Play Next',         p: ['Input'] },
-    { fn: 'ListShuffle',            label: 'List Shuffle',           p: ['Input'] },
+    { fn: 'StartStopSRTOutput',     label: 'Toggle SRT Output',      p: ['Value'] },
+    { fn: 'WriteDurationToRecordingLog', label: 'Write Duration To Recording Log', p: ['Value'] },
+    { fn: 'SetOutput2',             label: 'Set Output 2',           p: ['Value', 'Input', 'Mix'] },
+    { fn: 'SetOutput3',             label: 'Set Output 3',           p: ['Value', 'Input', 'Mix'] },
+    { fn: 'SetOutput4',             label: 'Set Output 4',           p: ['Value', 'Input', 'Mix'] },
+    { fn: 'SetOutputExternal2',     label: 'Set External 2 Output',  p: ['Value', 'Input', 'Mix'] },
+    { fn: 'SetOutputFullscreen',    label: 'Set Fullscreen Output',  p: ['Value', 'Input', 'Mix'] },
+    { fn: 'SetOutputFullscreen2',   label: 'Set Fullscreen 2 Output', p: ['Value', 'Input', 'Mix'] },
+    { fn: 'FullscreenOn',           label: 'Fullscreen On',          p: [] },
+    { fn: 'FullscreenOff',          label: 'Fullscreen Off',         p: [] },
+    { fn: 'Fullscreen',             label: 'Fullscreen Toggle',      p: [] },
+    { fn: 'Snapshot',               label: 'Snapshot',               p: [] },
+    { fn: 'SnapshotInput',          label: 'Snapshot Input',         p: ['Input'] },
   ]},
   { group: 'Browser', fns: [
     { fn: 'BrowserNavigate',        label: 'Browser Navigate',       p: ['Input', 'Value'] },
     { fn: 'BrowserReload',          label: 'Browser Reload',         p: ['Input'] },
     { fn: 'BrowserBack',            label: 'Browser Back',           p: ['Input'] },
     { fn: 'BrowserForward',         label: 'Browser Forward',        p: ['Input'] },
-    { fn: 'BrowserKeyboardShowHide',label: 'Browser Keyboard Toggle',p: ['Input'] },
+    { fn: 'BrowserKeyboardEnabled', label: 'Browser Keyboard Enabled', p: ['Input'] },
+    { fn: 'BrowserKeyboardDisabled', label: 'Browser Keyboard Disabled', p: ['Input'] },
+    { fn: 'BrowserMouseEnabled',    label: 'Browser Mouse Enabled',  p: ['Input'] },
+    { fn: 'BrowserMouseDisabled',   label: 'Browser Mouse Disabled', p: ['Input'] },
   ]},
   { group: 'PTZ', fns: [
-    { fn: 'PTZMoveUp',              label: 'PTZ Move Up',            p: ['Input'] },
-    { fn: 'PTZMoveDown',            label: 'PTZ Move Down',          p: ['Input'] },
-    { fn: 'PTZMoveLeft',            label: 'PTZ Move Left',          p: ['Input'] },
-    { fn: 'PTZMoveRight',           label: 'PTZ Move Right',         p: ['Input'] },
-    { fn: 'PTZMoveUpLeft',          label: 'PTZ Move Up-Left',       p: ['Input'] },
-    { fn: 'PTZMoveUpRight',         label: 'PTZ Move Up-Right',      p: ['Input'] },
-    { fn: 'PTZMoveDownLeft',        label: 'PTZ Move Down-Left',     p: ['Input'] },
-    { fn: 'PTZMoveDownRight',       label: 'PTZ Move Down-Right',    p: ['Input'] },
-    { fn: 'PTZZoomIn',              label: 'PTZ Zoom In',            p: ['Input'] },
-    { fn: 'PTZZoomOut',             label: 'PTZ Zoom Out',           p: ['Input'] },
-    { fn: 'PTZFocusFar',            label: 'PTZ Focus Far',          p: ['Input'] },
-    { fn: 'PTZFocusNear',           label: 'PTZ Focus Near',         p: ['Input'] },
-    { fn: 'PTZAutoFocus',           label: 'PTZ Auto Focus',         p: ['Input'] },
+    { fn: 'PTZMoveUp',              label: 'PTZ Move Up',            p: ['Input', 'Value'] },
+    { fn: 'PTZMoveDown',            label: 'PTZ Move Down',          p: ['Input', 'Value'] },
+    { fn: 'PTZMoveLeft',            label: 'PTZ Move Left',          p: ['Input', 'Value'] },
+    { fn: 'PTZMoveRight',           label: 'PTZ Move Right',         p: ['Input', 'Value'] },
+    { fn: 'PTZMoveUpLeft',          label: 'PTZ Move Up-Left',       p: ['Input', 'Value'] },
+    { fn: 'PTZMoveUpRight',         label: 'PTZ Move Up-Right',      p: ['Input', 'Value'] },
+    { fn: 'PTZMoveDownLeft',        label: 'PTZ Move Down-Left',     p: ['Input', 'Value'] },
+    { fn: 'PTZMoveDownRight',       label: 'PTZ Move Down-Right',    p: ['Input', 'Value'] },
+    { fn: 'PTZMoveStop',            label: 'PTZ Move Stop',          p: ['Input'] },
+    { fn: 'PTZZoomIn',              label: 'PTZ Zoom In',            p: ['Input', 'Value'] },
+    { fn: 'PTZZoomOut',             label: 'PTZ Zoom Out',           p: ['Input', 'Value'] },
+    { fn: 'PTZZoomStop',            label: 'PTZ Zoom Stop',          p: ['Input'] },
+    { fn: 'PTZFocusFar',            label: 'PTZ Focus Far',          p: ['Input', 'Value'] },
+    { fn: 'PTZFocusNear',           label: 'PTZ Focus Near',         p: ['Input', 'Value'] },
+    { fn: 'PTZFocusStop',           label: 'PTZ Focus Stop',         p: ['Input'] },
+    { fn: 'PTZFocusAuto',           label: 'PTZ Focus Auto',         p: ['Input'] },
+    { fn: 'PTZFocusManual',         label: 'PTZ Focus Manual',       p: ['Input'] },
     { fn: 'PTZHome',                label: 'PTZ Home',               p: ['Input'] },
-    { fn: 'PTZMoveToVirtualInput',  label: 'PTZ Move To Virtual',    p: ['Input', 'Value'] },
+    { fn: 'PTZMoveToVirtualInputPosition', label: 'PTZ Move To Virtual Position', p: ['Input'] },
+    { fn: 'PTZMoveToVirtualInputPositionByIndex', label: 'PTZ Move To Virtual Position By Index', p: ['Input', 'Value'] },
     { fn: 'PTZCreateVirtualInput',  label: 'PTZ Create Virtual',     p: ['Input'] },
+    { fn: 'PTZUpdateVirtualInput',  label: 'PTZ Update Virtual',     p: ['Input'] },
   ]},
   { group: 'Replay', fns: [
     { fn: 'ReplayStartRecording',   label: 'Replay Start Recording', p: [] },
     { fn: 'ReplayStopRecording',    label: 'Replay Stop Recording',  p: [] },
+    { fn: 'ReplayStartStopRecording', label: 'Replay Toggle Recording', p: [] },
     { fn: 'ReplayMarkIn',           label: 'Replay Mark In',         p: [] },
     { fn: 'ReplayMarkOut',          label: 'Replay Mark Out',        p: [] },
+    { fn: 'ReplayMarkCancel',       label: 'Replay Mark Cancel',     p: [] },
     { fn: 'ReplayMarkInLive',       label: 'Replay Mark In (Live)',  p: [] },
-    { fn: 'ReplayMarkOutLive',      label: 'Replay Mark Out (Live)', p: [] },
-    { fn: 'ReplayLastEvent',        label: 'Replay Last Event',      p: [] },
-    { fn: 'ReplayLastEventSinglePlay', label: 'Replay Last (Single)', p: [] },
+    { fn: 'ReplayMarkInRecorded',   label: 'Replay Mark In (Recorded)', p: [] },
     { fn: 'ReplayLive',             label: 'Replay Live',            p: [] },
-    { fn: 'ReplayPlayPause',        label: 'Replay Play/Pause',      p: [] },
-    { fn: 'ReplayPlay',             label: 'Replay Play',            p: [] },
-    { fn: 'ReplayPause',            label: 'Replay Pause',           p: [] },
-    { fn: 'ReplayJumpToNow',        label: 'Replay Jump To Now',     p: [] },
-    { fn: 'ReplayFastForward',      label: 'Replay Fast Forward',    p: [] },
-    { fn: 'ReplayFastBackward',     label: 'Replay Fast Backward',   p: [] },
-    { fn: 'ReplaySetPlaybackSpeed', label: 'Replay Set Speed',       p: ['Value'] },
+    { fn: 'ReplayLiveToggle',       label: 'Replay Live Toggle',     p: [] },
+    { fn: 'ReplayRecorded',         label: 'Replay Recorded',        p: [] },
+    { fn: 'ReplayPlayPause',        label: 'Replay Play/Pause',      p: ['Channel'] },
+    { fn: 'ReplayPlay',             label: 'Replay Play',            p: ['Channel'] },
+    { fn: 'ReplayPause',            label: 'Replay Pause',           p: ['Channel'] },
+    { fn: 'ReplayPlayForward',      label: 'Replay Play Forward',    p: ['Channel'] },
+    { fn: 'ReplayPlayBackward',     label: 'Replay Play Backward',   p: ['Channel'] },
+    { fn: 'ReplayJumpToNow',        label: 'Replay Jump To Now',     p: ['Channel'] },
+    { fn: 'ReplayFastForward',      label: 'Replay Fast Forward',    p: ['Value', 'Channel'] },
+    { fn: 'ReplayFastBackward',     label: 'Replay Fast Backward',   p: ['Value', 'Channel'] },
+    { fn: 'ReplaySetSpeed',         label: 'Replay Set Speed',       p: ['Value', 'Channel'] },
+    { fn: 'ReplaySetDirectionForward', label: 'Replay Set Direction Forward', p: ['Channel'] },
+    { fn: 'ReplaySetDirectionBackward', label: 'Replay Set Direction Backward', p: ['Channel'] },
+    { fn: 'ReplayPlayEvent',        label: 'Replay Play Event (by index)', p: ['Value', 'Channel'] },
+    { fn: 'ReplayPlayLastEvent',    label: 'Replay Play Last Event', p: ['Channel'] },
+    { fn: 'ReplayPlaySelectedEvent', label: 'Replay Play Selected Event', p: ['Channel'] },
+    { fn: 'ReplayPlayAllEvents',    label: 'Replay Play All Events', p: ['Channel'] },
+    { fn: 'ReplayPlayNext',         label: 'Replay Play Next',       p: ['Channel'] },
+    { fn: 'ReplayPlayPrevious',     label: 'Replay Play Previous',   p: ['Channel'] },
+    { fn: 'ReplayStopEvents',       label: 'Replay Stop Events',     p: ['Channel'] },
+    { fn: 'ReplaySelectNextEvent',  label: 'Replay Select Next Event', p: ['Channel'] },
+    { fn: 'ReplaySelectPreviousEvent', label: 'Replay Select Previous Event', p: ['Channel'] },
+    { fn: 'ReplaySelectFirstEvent', label: 'Replay Select First Event', p: ['Channel'] },
+    { fn: 'ReplaySelectLastEvent',  label: 'Replay Select Last Event', p: ['Channel'] },
+    { fn: 'ReplaySelectAllEvents',  label: 'Replay Select All Events', p: [] },
+    { fn: 'ReplayDeleteLastEvent',  label: 'Replay Delete Last Event', p: ['Channel'] },
+    { fn: 'ReplayDeleteSelectedEvent', label: 'Replay Delete Selected Event', p: ['Channel'] },
+    { fn: 'ReplayDuplicateLastEvent', label: 'Replay Duplicate Last Event', p: ['Channel'] },
+    { fn: 'ReplayCamera1',          label: 'Replay Camera 1',        p: [] },
+    { fn: 'ReplayCamera2',          label: 'Replay Camera 2',        p: [] },
+    { fn: 'ReplayCamera3',          label: 'Replay Camera 3',        p: [] },
+    { fn: 'ReplayCamera4',          label: 'Replay Camera 4',        p: [] },
     { fn: 'ReplayACamera1',         label: 'Replay A: Camera 1',     p: [] },
     { fn: 'ReplayACamera2',         label: 'Replay A: Camera 2',     p: [] },
     { fn: 'ReplayACamera3',         label: 'Replay A: Camera 3',     p: [] },
@@ -267,31 +473,48 @@ export const VMIX_FUNCTIONS: { group: string; fns: { fn: string; label: string; 
     { fn: 'ReplayBCamera2',         label: 'Replay B: Camera 2',     p: [] },
     { fn: 'ReplayBCamera3',         label: 'Replay B: Camera 3',     p: [] },
     { fn: 'ReplayBCamera4',         label: 'Replay B: Camera 4',     p: [] },
-    { fn: 'ReplayChannelAOutput1',  label: 'Replay Output A',        p: [] },
-    { fn: 'ReplayChannelBOutput2',  label: 'Replay Output B',        p: [] },
-    { fn: 'ReplaySelectFeedA',      label: 'Replay Select Feed A',   p: [] },
-    { fn: 'ReplaySelectFeedB',      label: 'Replay Select Feed B',   p: [] },
-    { fn: 'ReplaySelectFeedFull',   label: 'Replay Select Full',     p: [] },
+    { fn: 'ReplaySelectChannelA',   label: 'Replay Select Channel A', p: [] },
+    { fn: 'ReplaySelectChannelB',   label: 'Replay Select Channel B', p: [] },
+    { fn: 'ReplaySelectChannelAB',  label: 'Replay Select Channel A+B', p: [] },
+    { fn: 'ReplayLastEventSingleCameraOn', label: 'Replay Last Event Single Camera On (Value=cam)', p: ['Value'] },
+    { fn: 'ReplaySetAudioSource',   label: 'Replay Set Audio Source', p: ['Value'] },
+    { fn: 'ReplayShowHide',         label: 'Replay Panel Show/Hide', p: [] },
   ]},
   { group: 'Script / System', fns: [
     { fn: 'ScriptStart',            label: 'Script Start',           p: ['Value'] },
+    { fn: 'ScriptStartDynamic',     label: 'Script Start Dynamic',   p: ['Value'] },
     { fn: 'ScriptStop',             label: 'Script Stop',            p: ['Value'] },
     { fn: 'ScriptStopAll',          label: 'Script Stop All',        p: [] },
+    { fn: 'ScriptStopDynamic',      label: 'Script Stop Dynamic',    p: [] },
     { fn: 'KeyPress',               label: 'Key Press',              p: ['Value'] },
+    { fn: 'SendKeys',               label: 'Send Keys',              p: ['Value'] },
+    { fn: 'Undo',                   label: 'Undo',                   p: [] },
     { fn: 'SavePreset',             label: 'Save Preset',            p: ['Value'] },
     { fn: 'OpenPreset',             label: 'Open Preset',            p: ['Value'] },
     { fn: 'LastPreset',             label: 'Last Preset',            p: [] },
-    { fn: 'Snapshot',               label: 'Snapshot',               p: [] },
-    { fn: 'SnapshotInput',          label: 'Snapshot Input',         p: ['Input'] },
-    { fn: 'FullscreenOn',           label: 'Fullscreen On',          p: [] },
-    { fn: 'FullscreenOff',          label: 'Fullscreen Off',         p: [] },
-    { fn: 'Fullscreen',             label: 'Fullscreen Toggle',      p: [] },
+    { fn: 'ActivatorRefresh',       label: 'Activator Refresh',      p: [] },
+    { fn: 'CallManagerShowHide',    label: 'Call Manager Show/Hide', p: [] },
   ]},
   { group: 'MultiView', fns: [
     { fn: 'MultiViewOverlay',       label: 'MultiView Overlay Toggle', p: ['Input', 'Value'] },
     { fn: 'MultiViewOverlayOn',     label: 'MultiView Overlay On',     p: ['Input', 'Value'] },
     { fn: 'MultiViewOverlayOff',    label: 'MultiView Overlay Off',    p: ['Input', 'Value'] },
     { fn: 'SetMultiViewOverlay',    label: 'Set MultiView Overlay',    p: ['Input', 'Value'] },
+    { fn: 'MoveMultiViewOverlay',   label: 'Move MultiView Overlay',   p: ['Input', 'Value'] },
+  ]},
+  { group: 'NDI', fns: [
+    { fn: 'NDICommand',             label: 'NDI Command',            p: ['Input', 'Value'] },
+    { fn: 'NDISelectSourceByName',  label: 'NDI Select Source By Name', p: ['Input', 'Value'] },
+    { fn: 'NDISelectSourceByIndex', label: 'NDI Select Source By Index', p: ['Input', 'Value'] },
+    { fn: 'NDIStartRecording',      label: 'NDI Start Recording',    p: ['Input'] },
+    { fn: 'NDIStopRecording',       label: 'NDI Stop Recording',     p: ['Input'] },
+  ]},
+  { group: 'PlayList', fns: [
+    { fn: 'SelectPlayList',         label: 'Select PlayList',        p: ['Value'] },
+    { fn: 'StartPlayList',          label: 'Start PlayList',         p: [] },
+    { fn: 'StopPlayList',           label: 'Stop PlayList',          p: [] },
+    { fn: 'NextPlayListEntry',      label: 'Next PlayList Entry',    p: [] },
+    { fn: 'PreviousPlayListEntry',  label: 'Previous PlayList Entry', p: [] },
   ]},
   { group: 'Custom', fns: [
     { fn: '__custom__',             label: 'Custom…',                p: [] },
@@ -330,27 +553,9 @@ const FIXTURE_MERGE_PARTS: MergePart[] = [
 
 // Scoreboard's own vMix merge composers (see the 'scoreboard' case) — one
 // per team (its own name/short-name/custom-text/score) plus one for the
-// shared match info that isn't per-team.
-const SCORE_MERGE_PARTS_A: MergePart[] = [
-  { key: 'shortA', label: 'Short Name A', sample: 'CHE' },
-  { key: 'textA',  label: 'Text A',       sample: 'Custom text' },
-  { key: 'teamA',  label: 'Team A Name',  sample: 'Chelsea' },
-  { key: 'scoreA', label: 'Score A',      sample: '3' },
-];
-const SCORE_MERGE_PARTS_B: MergePart[] = [
-  { key: 'shortB', label: 'Short Name B', sample: 'ARS' },
-  { key: 'textB',  label: 'Text B',       sample: 'Custom text' },
-  { key: 'teamB',  label: 'Team B Name',  sample: 'Arsenal' },
-  { key: 'scoreB', label: 'Score B',      sample: '1' },
-];
-const SCORE_MERGE_PARTS_INFO: MergePart[] = [
-  { key: 'competition',   label: 'Competition',    sample: 'Premier League' },
-  { key: 'category',      label: 'Category',       sample: 'Men' },
-  { key: 'group',         label: 'Group',          sample: 'Group A' },
-  { key: 'round',         label: 'Round',          sample: 'Round 3' },
-  { key: 'scheduledTime', label: 'Scheduled Time', sample: '19:00' },
-  { key: 'matchId',       label: 'Match ID',       sample: 'MB1' },
-];
+// shared match info that isn't per-team. Now defined in lib/templateBinding.ts
+// (shared with the CG template designer's binding registry) and re-imported
+// here under their original names.
 
 // Group Standings widget's per-row vMix merge composer (see the
 // 'group-standings' case) — one row per team in the auto-detected group.
@@ -465,7 +670,7 @@ export function InputPickerDropdown({ currentKey, currentTitle, allInputs, onSel
   );
 }
 
-function FieldPickerDropdown({ inputKey, value, onChange, placeholder = 'Title.Text', fieldFilter, allInputs }: {
+export function FieldPickerDropdown({ inputKey, value, onChange, placeholder = 'Title.Text', fieldFilter, allInputs }: {
   inputKey: string;
   value: string;
   onChange: (v: string) => void;
@@ -563,6 +768,10 @@ interface Props {
   widget: CanvasWidget;
   onClose: () => void;
   pagesOverride?: import('../types/canvas').CanvasPage[];
+  /** 'cg-template' widgets edit via a dedicated full-screen designer (see
+   *  CgTemplateDesigner.tsx) instead of a field list — this callback is how
+   *  that case (below) asks the mounting component (Canvas.tsx) to open it. */
+  onOpenTemplateDesigner?: (widgetId: string) => void;
   actionsOverride?: {
     updateWidgetConfig: (id: string, patch: Record<string, any>) => void;
     updateWidget: (id: string, patch: Partial<CanvasWidget>) => void;
@@ -572,7 +781,7 @@ interface Props {
   };
 }
 
-function CollapsibleSection({ label, children, defaultOpen = true }: { label: string; children: React.ReactNode; defaultOpen?: boolean }) {
+export function CollapsibleSection({ label, children, defaultOpen = true }: { label: string; children: React.ReactNode; defaultOpen?: boolean }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
     <>
@@ -594,9 +803,123 @@ export function Field({ label, children }: { label: string; children: React.Reac
   );
 }
 
+/** Drop-in replacement for every small, fixed-option `<select>` across this
+ *  whole panel (any widget type) — rendered as the same glowing "Match
+ *  Type" card grid Tournament Manager's own sport picker uses
+ *  (`.tm-ms-sport-grid`/`.tm-ms-sport-card` in src/index.css), reused here
+ *  as-is rather than a second visual language. `icon`/`sub` are both
+ *  optional per option — a plain binary choice (Auto/Manual, A/B) still
+ *  gets the same card box/glow treatment, just text-only; richer choices
+ *  (a layout style, a fit mode) add an icon and/or a one-line description
+ *  on top. Was previously two separate components (a plainer "PillSelect"
+ *  for simple toggles, this one for richer choices) — collapsed into just
+ *  this one so EVERY picker in the panel reads as the same design, not two
+ *  different weights of control side by side. */
+export function CardSelect<T extends string | number | boolean>({ options, value, onChange, columns, className, title }: {
+  options: { value: T; label: string; sub?: string; icon?: typeof Info }[];
+  value: T;
+  onChange: (v: T) => void;
+  /** Grid columns — default 2 (matches Tournament Manager's own Match
+   *  Duration pill grid); pass however many actually fit this panel's own
+   *  option count/width without wrapping awkwardly. */
+  columns?: number;
+  /** Extra class(es) on the grid container — e.g. `tm-ms-sport-grid--narrow`
+   *  to shrink the cards for a tight space (a widget's own compact gear
+   *  popover, not the full-width settings panel). */
+  className?: string;
+  /** Tooltip for the whole control, same spot a checkbox's own `title` used to sit. */
+  title?: string;
+}) {
+  return (
+    <div className={`tm-ms-duration-grid${className ? ` ${className}` : ''}`} title={title} style={columns ? { gridTemplateColumns: `repeat(${columns}, 1fr)` } : undefined}>
+      {options.map(opt => {
+        const Icon = opt.icon;
+        const active = value === opt.value;
+        return (
+          <button
+            key={String(opt.value)}
+            type="button"
+            className={`tm-ms-sport-card${active ? ' tm-ms-sport-card--active' : ''}`}
+            onClick={() => onChange(opt.value)}
+          >
+            {Icon && <Icon size={20} strokeWidth={1.75} />}
+            <span className="tm-ms-sport-card-name">{opt.label}</span>
+            {opt.sub && <span className="tm-ms-sport-card-sub">{opt.sub}</span>}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Drop-in replacement for every plain `<input type="checkbox">` "tick to
+ *  enable" toggle across this panel — a two-button CardSelect (On/Off) so
+ *  BOTH states are an explicit, clickable button (no bare unticked box that
+ *  shows nothing when a setting is off). `desc`/`title` cover the two shapes
+ *  a checkbox used to take here: a trailing description line after the box,
+ *  or a tooltip explaining a non-obvious rule. */
+export function ToggleCard({ checked, onChange, desc, title, onLabel = 'On', offLabel = 'Off' }: {
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  desc?: string;
+  title?: string;
+  onLabel?: string;
+  offLabel?: string;
+}) {
+  return (
+    <div title={title}>
+      <CardSelect value={checked} onChange={onChange} columns={2}
+        options={[{ value: true, label: onLabel }, { value: false, label: offLabel }]} />
+      {desc && <p className="app-settings-hint" style={{ margin: '4px 0 0' }}>{desc}</p>}
+    </div>
+  );
+}
+
+/** A live, read-only "Details" summary — same box Tournament Manager's own
+ *  Match Settings panel and this file's own 'racket-scoreboard' case
+ *  already use (`.tm-ms-details`/`.tm-ms-details-row`), reused as-is. Put
+ *  this at the TOP of a widget's settings, above its own CollapsibleSections,
+ *  so the 2-4 facts that actually matter at a glance don't require opening
+ *  anything — same "see the effect of what you just picked immediately"
+ *  reasoning the racket-scoreboard panel's own Details box already has. */
+function SettingsSummary({ rows }: { rows: { icon?: typeof Info; label: string; value: string }[] }) {
+  return (
+    <div className="tm-ms-details" style={{ marginBottom: 10 }}>
+      <div className="tm-ms-details-label"><Info size={13} strokeWidth={2} /> Details</div>
+      {rows.map((row, i) => {
+        const Icon = row.icon;
+        return (
+          <div key={i} className="tm-ms-details-row">
+            {Icon && <Icon size={13} strokeWidth={2} />}
+            <span className="tm-ms-details-key">{row.label}:</span>
+            <span className="tm-ms-details-val">{row.value}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Wraps a CUSTOM/freeform control (a color swatch, a slider, a number
+ *  field — anything that isn't picking from a small fixed set of named
+ *  options, so CardSelect doesn't fit) in the same dark box the Details
+ *  summary/card grid already use (`.tm-ms-details`), so a "customize this"
+ *  control sitting right next to a card grid reads as part of the same
+ *  design instead of a bare input floating against the panel's own
+ *  background. `label` is optional — omit it when the control already
+ *  carries its own via the surrounding <Field>. */
+export function CustomBox({ label, children }: { label?: string; children: React.ReactNode }) {
+  return (
+    <div className="tm-ms-details tm-ms-custom-box">
+      {label && <div className="tm-ms-details-label">{label}</div>}
+      {children}
+    </div>
+  );
+}
+
 const _panelPos = { x: -1, y: 56, w: 300, h: 480 };
 
-export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverride }: Props) {
+export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverride, onOpenTemplateDesigner }: Props) {
   const store = useCanvasStore();
   const updateWidgetConfig = actionsOverride?.updateWidgetConfig ?? store.updateWidgetConfig;
   const updateWidget = actionsOverride?.updateWidget ?? store.updateWidget;
@@ -650,6 +973,8 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
   const [vtCollapsed, setVTCollapsed] = useState<Record<string, boolean>>({});
   const [tfCollapsed, setTFCollapsed] = useState<Record<number, boolean>>({});
   const [panelCollapsed, setPanelCollapsed] = useState(false);
+  const [configTab, setConfigTab] = useState<'general' | 'vmix'>('general');
+  useEffect(() => setConfigTab('general'), [widget.id]);
   const [pos, setPos] = useState<{ x: number; y: number; w: number; h: number }>(() => {
     if (_panelPos.x < 0) _panelPos.x = Math.max(0, window.innerWidth - _panelPos.w - 16);
     return { ..._panelPos };
@@ -725,13 +1050,27 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
     <FieldPickerDropdown inputKey={inputKey} value={value} onChange={onChange} placeholder={placeholder} fieldFilter={fieldFilter} allInputs={inputs ?? allInputs} />
   );
 
+  /** Every `case` below returns `renderTabbed(generalJsx, vmixJsx)` instead of
+   *  JSX directly — `vmixJsx` is everything that reads/writes a vMix input
+   *  (input/field pickers, Auto-send, overlay channel, trigger functions);
+   *  everything else (data source links, layout, appearance) is `generalJsx`.
+   *  Lets "vMix Input" live as its own page instead of interleaved with the
+   *  rest of a widget's settings. Widget types with nothing to send to vMix
+   *  just omit the second argument and get a plain explanatory line instead. */
+  const renderTabbed = (general: React.ReactNode, vmix?: React.ReactNode) =>
+    configTab === 'vmix'
+      ? (vmix || <p className="app-settings-hint" style={{ margin: '4px 2px' }}>This widget doesn't send anything to vMix.</p>)
+      : general;
+
   const renderConfig = () => {
     switch (widget.type) {
 
       case 'button': {
         type SideButton = { id: string; label: string; color?: string; textColor?: string; fontSize?: number; mode?: string; actions: ActionItem[]; releaseActions?: ActionItem[]; hotkey?: string };
+        type ButtonState = { id: string; name: string; color?: string; textColor?: string; actions: ActionItem[] };
         const timerWidgets = pages.flatMap(p => p.widgets.filter(w => w.type === 'timer'));
         const scoreboardWidgets = pages.flatMap(p => p.widgets.filter(w => w.type === 'scoreboard'));
+        const cgTemplateWidgets = [...pages, ...store.libraryPages].flatMap(p => p.widgets.filter(w => w.type === 'cg-template'));
 
         // Migrate legacy single-function format
         const pressActions: ActionItem[] = cfg.actions ?? (cfg.function ? [{ fn: cfg.function, params: cfg.params ?? {} }] : [{ fn: 'Cut', params: {} }]);
@@ -746,26 +1085,105 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
               <input className="field-input" value={cfg.label ?? ''} onChange={e => up({ label: e.target.value })} />
             </Field>
             <Field label="Mode">
-              <select className="field-input" value={cfg.mode ?? 'momentary'} onChange={e => up({ mode: e.target.value })}>
-                <option value="momentary">Momentary</option>
-                <option value="toggle">Toggle</option>
-              </select>
+              <CardSelect value={cfg.mode ?? 'momentary'} onChange={v => up({ mode: v })}
+                options={[
+                  { value: 'momentary', label: 'Momentary' },
+                  { value: 'toggle', label: 'Toggle' },
+                  { value: 'multiState', label: 'Multi-State', sub: 'Cycle 3+ named states' },
+                ]} />
             </Field>
             <Field label="Hotkey">
               <HotkeyRecorder value={cfg.hotkey ?? ''} onChange={v => up({ hotkey: v })} allBindings={allHotkeyBindings} />
             </Field>
 
-            <CollapsibleSection label="Press Actions">
-              <ActionListEditor actions={pressActions} onChange={savePress} sectionKey="press"
-                pages={pages} timerWidgets={timerWidgets} scoreboardWidgets={scoreboardWidgets}
-                globalVariables={globalVariables} allInputs={allInputs} />
-            </CollapsibleSection>
+            {cfg.mode === 'toggle' && pressActions.some(a => a.fn === 'Cg.In') && !releaseActions.length && (
+              <p className="app-settings-hint" style={{ margin: '0 0 6px' }}>
+                Toggle + a CG "Play In" press action needs no Release Action — pressing again automatically plays it Out (stops the same Channel/Layer).
+              </p>
+            )}
 
-            <CollapsibleSection label="Release Actions">
-              <ActionListEditor actions={releaseActions} onChange={saveRelease} sectionKey="release"
-                pages={pages} timerWidgets={timerWidgets} scoreboardWidgets={scoreboardWidgets}
-                globalVariables={globalVariables} allInputs={allInputs} />
-            </CollapsibleSection>
+            {cfg.mode === 'multiState' ? (
+              <>
+                <p className="app-settings-hint" style={{ margin: '0 0 8px' }}>
+                  Each press advances to the NEXT state below (wrapping back to the first after the last) and fires that state's own actions — e.g. a team card cycling Active → Inactive → Hidden on vMix, or any other 3+-way cycle a plain on/off Toggle can't express. The button itself relabels/recolors to whichever state is current.
+                </p>
+                <CollapsibleSection label="States">
+                  {(() => {
+                    const states: ButtonState[] = cfg.states?.length ? cfg.states : [];
+                    const updateState = (i: number, patch: Partial<ButtonState>) =>
+                      up({ states: states.map((s, j) => j === i ? { ...s, ...patch } : s) });
+                    return (
+                      <>
+                        {states.map((s, i) => {
+                          const isCollapsed = vilCollapsed[`st-${s.id}`] ?? false;
+                          return (
+                            <div key={s.id} className="vil-cfg-block">
+                              <div className="vil-cfg-header">
+                                <button className="btn btn--ghost btn--small tf-collapse-btn"
+                                  onClick={() => setVilCollapsed(p => ({ ...p, [`st-${s.id}`]: !p[`st-${s.id}`] }))}>
+                                  {isCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+                                </button>
+                                <span className="vil-cfg-label">{s.name || `State ${i + 1}`}</span>
+                                <button className="btn btn--ghost btn--small" disabled={i === 0} title="Move earlier"
+                                  onClick={() => { const next = [...states]; [next[i - 1], next[i]] = [next[i], next[i - 1]]; up({ states: next }); }}>↑</button>
+                                <button className="btn btn--ghost btn--small" disabled={i === states.length - 1} title="Move later"
+                                  onClick={() => { const next = [...states]; [next[i + 1], next[i]] = [next[i], next[i + 1]]; up({ states: next }); }}>↓</button>
+                                <button className="btn btn--ghost btn--small" disabled={states.length <= 1} title="Remove"
+                                  onClick={() => up({ states: states.filter((_, j) => j !== i) })}>×</button>
+                              </div>
+                              {!isCollapsed && (
+                                <>
+                                  <Field label="Name">
+                                    <input className="field-input" value={s.name} placeholder={`State ${i + 1}`} onChange={e => updateState(i, { name: e.target.value })} />
+                                  </Field>
+                                  <Field label="Color">
+                                    <div className="color-picker">
+                                      {PRESET_COLORS.map(c => (
+                                        <button key={c} className={`color-swatch ${s.color === c ? 'color-swatch--selected' : ''}`}
+                                          style={{ background: c }} onClick={() => updateState(i, { color: c })} />
+                                      ))}
+                                      <input type="color" className="color-custom" value={s.color ?? '#3498db'} onChange={e => updateState(i, { color: e.target.value })} />
+                                    </div>
+                                  </Field>
+                                  <CollapsibleSection label="Actions">
+                                    <ActionListEditor actions={s.actions ?? []} onChange={(next) => updateState(i, { actions: next })} sectionKey={`st-${i}`}
+                                      pages={pages} timerWidgets={timerWidgets} scoreboardWidgets={scoreboardWidgets}
+                                      globalVariables={globalVariables} allInputs={allInputs} cgTemplateWidgets={cgTemplateWidgets} />
+                                  </CollapsibleSection>
+                                </>
+                              )}
+                            </div>
+                          );
+                        })}
+                        <button className="action-add-btn"
+                          onClick={() => up({ states: [...states, { id: crypto.randomUUID(), name: `State ${states.length + 1}`, color: '#3498db', actions: [] }] })}>
+                          + Add State
+                        </button>
+                        {states.length < 2 && (
+                          <p className="app-settings-hint" style={{ margin: '6px 0 0' }}>
+                            Add at least two states for a press to actually cycle anything.
+                          </p>
+                        )}
+                      </>
+                    );
+                  })()}
+                </CollapsibleSection>
+              </>
+            ) : (
+              <>
+                <CollapsibleSection label="Press Actions">
+                  <ActionListEditor actions={pressActions} onChange={savePress} sectionKey="press"
+                    pages={pages} timerWidgets={timerWidgets} scoreboardWidgets={scoreboardWidgets}
+                    globalVariables={globalVariables} allInputs={allInputs} cgTemplateWidgets={cgTemplateWidgets} />
+                </CollapsibleSection>
+
+                <CollapsibleSection label="Release Actions">
+                  <ActionListEditor actions={releaseActions} onChange={saveRelease} sectionKey="release"
+                    pages={pages} timerWidgets={timerWidgets} scoreboardWidgets={scoreboardWidgets}
+                    globalVariables={globalVariables} allInputs={allInputs} cgTemplateWidgets={cgTemplateWidgets} />
+                </CollapsibleSection>
+              </>
+            )}
 
             <CollapsibleSection label="Side Buttons">
               {(() => {
@@ -793,10 +1211,7 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
                                 <input className="field-input" value={sb.label} onChange={e => updateSb(i, { label: e.target.value })} />
                               </Field>
                               <Field label="Mode">
-                                <select className="field-input" value={sb.mode ?? 'momentary'} onChange={e => updateSb(i, { mode: e.target.value })}>
-                                  <option value="momentary">Momentary</option>
-                                  <option value="toggle">Toggle</option>
-                                </select>
+                                <CardSelect value={sb.mode ?? 'momentary'} onChange={v => updateSb(i, { mode: v })} options={[{ value: 'momentary', label: 'Momentary' }, { value: 'toggle', label: 'Toggle' }]} />
                               </Field>
                               <Field label="Hotkey">
                                 <HotkeyRecorder value={sb.hotkey ?? ''} onChange={v => updateSb(i, { hotkey: v })} allBindings={allHotkeyBindings} />
@@ -816,12 +1231,12 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
                               <CollapsibleSection label="Press Actions">
                                 <ActionListEditor actions={sb.actions ?? []} onChange={(next) => updateSb(i, { actions: next })} sectionKey={`sb-${i}-press`}
                                   pages={pages} timerWidgets={timerWidgets} scoreboardWidgets={scoreboardWidgets}
-                                  globalVariables={globalVariables} allInputs={allInputs} />
+                                  globalVariables={globalVariables} allInputs={allInputs} cgTemplateWidgets={cgTemplateWidgets} />
                               </CollapsibleSection>
                               <CollapsibleSection label="Release Actions">
                                 <ActionListEditor actions={sb.releaseActions ?? []} onChange={(next) => updateSb(i, { releaseActions: next })} sectionKey={`sb-${i}-release`}
                                   pages={pages} timerWidgets={timerWidgets} scoreboardWidgets={scoreboardWidgets}
-                                  globalVariables={globalVariables} allInputs={allInputs} />
+                                  globalVariables={globalVariables} allInputs={allInputs} cgTemplateWidgets={cgTemplateWidgets} />
                               </CollapsibleSection>
                             </>
                           )}
@@ -890,21 +1305,16 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
           setGroups(next);
         };
 
-        return (
-          <>
-            <Field label="Display Label">
-              <input className="field-input" value={cfg.label ?? ''} onChange={e => up({ label: e.target.value })} />
-            </Field>
+        const general = (
+          <Field label="Display Label">
+            <input className="field-input" value={cfg.label ?? ''} onChange={e => up({ label: e.target.value })} />
+          </Field>
+        );
 
+        const vmix = (
+          <>
             <div className="tf-autosend-row">
-              <label className="tf-autosend-label">
-                <input
-                  type="checkbox"
-                  checked={cfg.autoSend ?? false}
-                  onChange={e => up({ autoSend: e.target.checked })}
-                />
-                Auto-send while typing
-              </label>
+              <ToggleCard checked={cfg.autoSend ?? false} onChange={v => up({ autoSend: v })} desc="Auto-send while typing" />
               {cfg.autoSend && (
                 <div className="tf-autosend-delay">
                   <span className="field-label">Delay (ms)</span>
@@ -1010,20 +1420,472 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
             </button>
           </>
         );
+
+        return renderTabbed(general, vmix);
+      }
+
+      // RacketScoreboardWidget.tsx (badminton/table tennis/tennis/sepaktakraw)
+      // — same section shape as 'scoreboard' just below (Tournament DB, Teams,
+      // Match Info, Appearance) so it's just as configurable from this same
+      // panel, plus its own "Scoring Rules" section in place of football's
+      // "Sport Style"/increments (a rally-point/tennis engine has nothing
+      // resembling a scoring INCREMENT to configure — see lib/racketScoring.ts).
+      // Team Name/Color/Logo are ALSO editable right on the widget itself
+      // (inline color swatch + name input + TeamPicker) — same "quick edit
+      // inline, deeper settings here" split 'scoreboard' already has, not a
+      // conflicting second source of truth.
+      case 'racket-scoreboard': {
+        const sport: SportType = cfg.sport ?? 'badminton';
+        const scoringMode: 'rally' | 'tennis' = cfg.scoringMode ?? 'rally';
+        const isTennis = scoringMode === 'tennis';
+        const applySport = (next: SportType) => {
+          const rs: RacketSportSettings = SPORT_DEFAULTS[next].racketScoring
+            ?? { mode: 'rally', pointsToWin: 21, winBy2: true, gamesToWin: 2, tiebreakAtGames: 6, noAd: false, serviceMode: 'auto', serviceRule: 'rally-winner', serviceAlternateEvery: 2 };
+          up({
+            sport: next, scoringMode: rs.mode,
+            pointsToWin: rs.pointsToWin, winBy2: rs.winBy2, pointCap: rs.pointCap, deuceTarget: rs.deuceTarget, gamesToWin: rs.gamesToWin,
+            tiebreakAtGames: rs.tiebreakAtGames, noAd: rs.noAd,
+            serviceMode: rs.serviceMode, serviceRule: rs.serviceRule, serviceAlternateEvery: rs.serviceAlternateEvery,
+            rallyState: initRallyMatch(), tennisState: initTennisMatch(), pointHistory: [], pointLog: [],
+          });
+        };
+        const general = (
+        <>
+          <CollapsibleSection label="Tournament Database">
+            <Field label="Link Tournament">
+              <CustomBox>
+                <select className="field-input" value={cfg.linkedTournamentId ?? ''} onChange={e => up({ linkedTournamentId: e.target.value })}>
+                  <option value="">{pageTournament ? `— Auto: ${pageTournament.name} (this canvas) —` : '— none (set automatically from Load Match) —'}</option>
+                  {tournaments.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                </select>
+              </CustomBox>
+            </Field>
+            <p className="app-settings-hint" style={{ margin: '4px 0 0' }}>
+              Tags "Save" with this tournament so it shows up in its Results tab, and pre-fills Scoring Rules below from this tournament's own defaults when you pick a Sport — only pick one here to override this canvas's own bound tournament.
+            </p>
+          </CollapsibleSection>
+
+          <CollapsibleSection label="Teams">
+            <p className="app-settings-hint" style={{ margin: '0 0 6px' }}>
+              Use the team picker on the scoreboard itself to pull from the Team DB (a doubles pair, a sepaktakraw regu, a whole club/country squad, or a single player — any SavedTeam works), or edit directly here.
+            </p>
+              <Field label="Team A Name">
+                <input className="field-input" value={cfg.teamAName ?? 'Team A'} onChange={e => up({ teamAName: e.target.value })} />
+              </Field>
+              <Field label="Team A Color">
+                <input type="color" className="color-custom" value={cfg.teamAColor ?? '#e74c3c'} onChange={e => up({ teamAColor: e.target.value })} />
+              </Field>
+              <Field label="Team A Logo">
+                <LogoUrlPicker value={cfg.teamALogo ?? ''} onChange={url => up({ teamALogo: url })} placeholder="Team A logo URL" />
+              </Field>
+              <Field label="Starters A">
+                <input
+                  className="field-input"
+                  value={(cfg.startersA ?? []).map(normalizePlayerEntry).map((s: RacketPlayerEntry) => s.name).join(' / ')}
+                  placeholder="e.g. Kevin Sanjaya / Marcus Gideon"
+                  title="Names only — jersey number/position are per-slot fields on the scoreboard itself"
+                  onChange={e => {
+                    const existing = (cfg.startersA ?? []).map(normalizePlayerEntry);
+                    up({ startersA: e.target.value.split('/').map((name: string) => name.trim()).map((name: string, i: number) => ({ ...existing[i], name })) });
+                  }}
+                />
+              </Field>
+              <Field label="Subs A">
+                <input className="field-input" value={(cfg.subsA ?? []).join(', ')} placeholder="e.g. Fajar Alfian" onChange={e => up({ subsA: e.target.value.split(',').map((s: string) => s.trim()).filter(Boolean) })} />
+              </Field>
+              <Field label="Team B Name">
+                <input className="field-input" value={cfg.teamBName ?? 'Team B'} onChange={e => up({ teamBName: e.target.value })} />
+              </Field>
+              <Field label="Team B Color">
+                <input type="color" className="color-custom" value={cfg.teamBColor ?? '#3498db'} onChange={e => up({ teamBColor: e.target.value })} />
+              </Field>
+              <Field label="Team B Logo">
+                <LogoUrlPicker value={cfg.teamBLogo ?? ''} onChange={url => up({ teamBLogo: url })} placeholder="Team B logo URL" />
+              </Field>
+              <Field label="Starters B">
+                <input
+                  className="field-input"
+                  value={(cfg.startersB ?? []).map(normalizePlayerEntry).map((s: RacketPlayerEntry) => s.name).join(' / ')}
+                  placeholder="e.g. Mohammad Ahsan / Hendra Setiawan"
+                  title="Names only — jersey number/position are per-slot fields on the scoreboard itself"
+                  onChange={e => {
+                    const existing = (cfg.startersB ?? []).map(normalizePlayerEntry);
+                    up({ startersB: e.target.value.split('/').map((name: string) => name.trim()).map((name: string, i: number) => ({ ...existing[i], name })) });
+                  }}
+                />
+              </Field>
+              <Field label="Subs B">
+                <input className="field-input" value={(cfg.subsB ?? []).join(', ')} placeholder="e.g. Muhammad Rian Ardianto" onChange={e => up({ subsB: e.target.value.split(',').map((s: string) => s.trim()).filter(Boolean) })} />
+              </Field>
+              <Field label="Players per Team">
+                <input className="field-input" type="number" min={1} max={6} value={cfg.playerCount ?? 1} onChange={e => up({ playerCount: Math.max(1, Math.min(6, Number(e.target.value) || 1)) })} />
+              </Field>
+              <p className="app-settings-hint" style={{ margin: '4px 0 0' }}>
+                Starters are who's actually on court this match — often different from the Team name above (e.g. Team = "Indonesia", Starters = the doubles pair). Use the roster picker on the scoreboard itself to add from a linked team's own players (jersey number/position included), or type names freely here (separate with "/") — jersey number and position are per-slot fields on the scoreboard itself, not editable from this text field.
+              </p>
+          </CollapsibleSection>
+
+          <CollapsibleSection label="Match Info">
+            <Field label="Competition">
+              <input className="field-input" value={cfg.competition ?? ''} placeholder="e.g. Open Championship" onChange={e => up({ competition: e.target.value })} />
+            </Field>
+            <Field label="Round / Subtitle">
+              <input className="field-input" value={cfg.subtitle ?? ''} placeholder="e.g. Final" onChange={e => up({ subtitle: e.target.value })} />
+            </Field>
+            <Field label="Category">
+              <input className="field-input" value={cfg.category ?? ''} placeholder="e.g. Men, Women, Mixed Doubles" onChange={e => up({ category: e.target.value })} />
+            </Field>
+            <Field label="Group">
+              <input className="field-input" value={cfg.group ?? ''} placeholder="e.g. Group A" onChange={e => up({ group: e.target.value })} />
+            </Field>
+            <Field label="Tier">
+              <input className="field-input" value={cfg.tier ?? ''} placeholder="e.g. Cup, Plate" onChange={e => up({ tier: e.target.value })} />
+            </Field>
+          </CollapsibleSection>
+
+          <CollapsibleSection label="Scoring Rules">
+            {/* Card grid + Details/Duration — same "Match Settings" design
+               as Tournament Manager's own sport/format picker (see
+               TournamentManager.tsx's SettingsBar), reused here since this
+               widget's own Sport/Scoring Rules picker is the same kind of
+               control, just scoped to the 4 racket/net sports this widget
+               actually supports (SPORT_ICON itself covers every sport —
+               imported from TournamentManager.tsx rather than redefined). */}
+            <div className="tm-ms-sport-grid" style={{ marginBottom: 10 }}>
+              {(['badminton', 'table_tennis', 'tennis', 'sepaktakraw'] as SportType[]).map(sp => {
+                const Icon = SPORT_ICON[sp];
+                const active = sport === sp;
+                const spRs = SPORT_DEFAULTS[sp].racketScoring!;
+                const headline = spRs.mode === 'tennis' ? `${spRs.tiebreakAtGames} games` : `${spRs.pointsToWin} pts`;
+                return (
+                  <button
+                    key={sp}
+                    type="button"
+                    className={`tm-ms-sport-card${active ? ' tm-ms-sport-card--active' : ''}`}
+                    onClick={() => applySport(sp)}
+                  >
+                    <Icon size={20} strokeWidth={1.75} />
+                    <span className="tm-ms-sport-card-name">{sp === 'table_tennis' ? 'Table Tennis' : sp[0].toUpperCase() + sp.slice(1)}</span>
+                    <span className="tm-ms-sport-card-sub">{headline}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="tm-ms-details" style={{ marginBottom: 10 }}>
+              <div className="tm-ms-details-label"><Info size={13} strokeWidth={2} /> Details</div>
+              <div className="tm-ms-details-row">
+                <Flag size={13} strokeWidth={2} />
+                <span className="tm-ms-details-key">{isTennis ? 'Games per set' : 'Points per set'}:</span>
+                <span className="tm-ms-details-val">{isTennis ? (cfg.tiebreakAtGames ?? 6) : (cfg.pointsToWin ?? 21)}</span>
+              </div>
+              {!isTennis && (
+                <div className="tm-ms-details-row">
+                  <Star size={13} strokeWidth={2} />
+                  <span className="tm-ms-details-key">Tie-break:</span>
+                  <span className="tm-ms-details-val">
+                    {cfg.deuceTarget != null ? `First to ${cfg.deuceTarget}` : cfg.pointCap != null ? `Cap at ${cfg.pointCap}` : (cfg.winBy2 ?? true) ? 'Win by 2' : 'None'}
+                  </span>
+                </div>
+              )}
+              <div className="tm-ms-details-row">
+                <ArrowLeftRight size={13} strokeWidth={2} />
+                <span className="tm-ms-details-key">Serve:</span>
+                <span className="tm-ms-details-val">{(cfg.serviceRule ?? 'rally-winner') === 'alternate' ? `Rotates every ${cfg.serviceAlternateEvery ?? 2}` : 'Winner serves next'}</span>
+              </div>
+            </div>
+
+            <Field label="Match Duration">
+              <div className="tm-ms-duration-grid">
+                {([
+                  { key: 1, label: '1 Set' },
+                  { key: 2, label: 'Best of 3' },
+                  { key: 3, label: 'Best of 5' },
+                  { key: 999, label: 'Endless' },
+                ] as const).map((opt, i) => {
+                  const active = (cfg.gamesToWin ?? 2) === opt.key;
+                  return (
+                    <button
+                      key={opt.key}
+                      type="button"
+                      className={`tm-ms-duration-pill${active ? ' tm-ms-duration-pill--active' : ''}`}
+                      onClick={() => up({ gamesToWin: opt.key })}
+                    >
+                      <span className="tm-ms-duration-badge">{opt.key === 999 ? <InfinityIcon size={11} strokeWidth={2.5} /> : i + 1}</span>
+                      {opt.label}
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="app-settings-hint" style={{ margin: '4px 0 0' }}>
+                "Endless" is modeled as an effectively-unreachable 999 {isTennis ? 'sets' : 'games'} to win — the match simply never gets confirmed as decided, so sets/games keep being played and recorded as long as you keep scoring.
+              </p>
+            </Field>
+
+            <CollapsibleSection label="Advanced Match Rules" defaultOpen={false}>
+            {sport === 'sepaktakraw' && (
+              <>
+                <Field label="Team Event (multiple regu)">
+                  <ToggleCard checked={!!cfg.teamEventOn} onChange={v => up({ teamEventOn: v })} title="A squad fields several regu (Regu 1, Regu 2, Regu 3…) across a team tie — the tie is decided by how many individual regu-matches each squad wins, not by points" />
+                </Field>
+                {cfg.teamEventOn && (
+                  <Field label="Regu Wins Needed">
+                    <input
+                      className="field-input" type="number" min={1}
+                      value={cfg.regusToWin ?? 2}
+                      title="e.g. 2 for a best-of-3 regu tie, 3 for a best-of-5"
+                      onChange={e => up({ regusToWin: Math.max(1, Number(e.target.value) || 2) })}
+                    />
+                  </Field>
+                )}
+              </>
+            )}
+            {!isTennis ? (
+              <>
+                <Field label="Points to Win">
+                  <input className="field-input" type="number" min={1} value={cfg.pointsToWin ?? 21} onChange={e => up({ pointsToWin: Math.max(1, Number(e.target.value) || 21) })} />
+                </Field>
+                <Field label="Deadlock Rule (sepaktakraw-style)">
+                  <ToggleCard checked={cfg.deuceTarget != null} onChange={v => up(v
+                      ? { deuceTarget: (cfg.pointsToWin ?? 21) + 2, winBy2: false, pointCap: undefined }
+                      : { deuceTarget: undefined })} title="Race straight to Points to Win with no lead needed, but an exact deadlock at one point short raises the target to a fixed number instead (first to reach it wins outright)" />
+                </Field>
+                {cfg.deuceTarget != null ? (
+                  <Field label="Deadlock Target (first to reach wins)">
+                    <input className="field-input" type="number" min={(cfg.pointsToWin ?? 21) + 1} value={cfg.deuceTarget} onChange={e => up({ deuceTarget: Math.max(1, Number(e.target.value) || (cfg.pointsToWin ?? 21) + 2) })} />
+                  </Field>
+                ) : (
+                  <>
+                    <Field label="Win by 2">
+                      <ToggleCard checked={cfg.winBy2 ?? true} onChange={v => up({ winBy2: v })} />
+                    </Field>
+                    <Field label="Point Cap">
+                      <input className="field-input" type="number" min={1} placeholder="none" value={cfg.pointCap ?? ''} onChange={e => up({ pointCap: e.target.value === '' ? undefined : Math.max(1, Number(e.target.value) || 1) })} />
+                    </Field>
+                  </>
+                )}
+              </>
+            ) : (
+              <>
+                <Field label="Tiebreak at (games each)">
+                  <input className="field-input" type="number" min={1} value={cfg.tiebreakAtGames ?? 6} onChange={e => up({ tiebreakAtGames: Math.max(1, Number(e.target.value) || 6) })} />
+                </Field>
+                <Field label="No-Ad Scoring">
+                  <ToggleCard checked={!!cfg.noAd} onChange={v => up({ noAd: v })} />
+                </Field>
+              </>
+            )}
+            <Field label={`Play All ${isTennis ? 'Sets' : 'Games'}`}>
+              <ToggleCard checked={!!cfg.playAllGames} onChange={v => up({ playAllGames: v, totalGames: v ? (cfg.totalGames ?? (cfg.gamesToWin ?? 2) * 2 - 1) : cfg.totalGames })} title={`Play out every ${isTennis ? 'set' : 'game'} up to Total ${isTennis ? 'Sets' : 'Games'} below, even once the match is already decided — e.g. 3 games with 2 needed to win still plays the 3rd game after a 2-0 lead, instead of stopping there`} />
+            </Field>
+            {cfg.playAllGames && (
+              <Field label={`Total ${isTennis ? 'Sets' : 'Games'} to Play`}>
+                <input
+                  className="field-input" type="number" min={cfg.gamesToWin ?? 2}
+                  value={cfg.totalGames ?? (cfg.gamesToWin ?? 2) * 2 - 1}
+                  onChange={e => up({ totalGames: Math.max(cfg.gamesToWin ?? 2, Number(e.target.value) || (cfg.gamesToWin ?? 2) * 2 - 1) })}
+                />
+              </Field>
+            )}
+            <p className="app-settings-hint" style={{ margin: '4px 0 0' }}>
+              Every number here is freely customizable regardless of Sport above — picking a Sport just pre-fills its own usual numbers as a starting point.
+            </p>
+            </CollapsibleSection>
+          </CollapsibleSection>
+
+          <CollapsibleSection label="Serving">
+            <Field label="Mode">
+              <CardSelect
+                value={cfg.serviceMode ?? 'auto'}
+                onChange={v => up({ serviceMode: v })}
+                options={[{ value: 'auto', label: 'Auto' }, { value: 'manual', label: 'Manual' }]}
+              />
+            </Field>
+            {(cfg.serviceMode ?? 'auto') === 'manual' ? (
+              <p className="app-settings-hint" style={{ margin: '4px 0 0' }}>
+                Nothing updates who's serving automatically — click the server dot next to either side, right on the scoreboard itself, to set it.
+              </p>
+            ) : !isTennis ? (
+              <>
+                <Field label="Rule">
+                  <CardSelect
+                    value={cfg.serviceRule ?? 'rally-winner'}
+                    onChange={v => up({ serviceRule: v })}
+                    options={[{ value: 'rally-winner', label: 'Winner serves' }, { value: 'alternate', label: 'Rotate after N points' }]}
+                  />
+                </Field>
+                {(cfg.serviceRule ?? 'rally-winner') === 'alternate' && (
+                  <Field label="Attempts per turn">
+                    <CardSelect
+                      value={cfg.serviceAlternateEvery ?? 2}
+                      onChange={v => up({ serviceAlternateEvery: v })}
+                      options={[{ value: 1, label: 'One (every serve)' }, { value: 2, label: 'Two (table tennis rule)' }]}
+                    />
+                  </Field>
+                )}
+                <p className="app-settings-hint" style={{ margin: '4px 0 0' }}>
+                  "Winner serves" is the real badminton/sepaktakraw rule — the server keeps serving until they lose a rally or fault. "Rotate after N points" is table tennis's actual rule — narrows to every 1 point automatically once both sides reach deuce, whatever's picked here.
+                </p>
+              </>
+            ) : (
+              <p className="app-settings-hint" style={{ margin: '4px 0 0' }}>
+                Tennis's own serve order (strict alternation by game/tiebreak point) always applies in Auto — this toggle is only for switching to Manual if you ever need to correct it by hand.
+              </p>
+            )}
+          </CollapsibleSection>
+
+          <CollapsibleSection label="Appearance" defaultOpen={false}>
+            <Field label="Layout">
+              <CardSelect
+                value={cfg.layoutStyle ?? 'vertical'}
+                onChange={v => up({ layoutStyle: v })}
+                options={[
+                  { value: 'vertical', label: 'Vertical', sub: 'Team cards', icon: RectangleVertical },
+                  { value: 'horizontal', label: 'Horizontal', sub: 'Scorebug', icon: RectangleHorizontal },
+                  { value: 'lowerthird', label: 'Lower Third', sub: 'Slim bar', icon: PanelBottom },
+                  { value: 'liveCard', label: 'Live Card', sub: 'Mobile style', icon: Smartphone },
+                ]}
+              />
+            </Field>
+            <CustomBox label="Score Button Size">
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <input type="range" min={0.5} max={2} step={0.05} className="field-range"
+                  value={cfg.scoreButtonScale ?? 1} onChange={e => up({ scoreButtonScale: Number(e.target.value) })} />
+                <span style={{ minWidth: 36, textAlign: 'right', fontSize: 12, color: 'var(--text-secondary)' }}>{Math.round((cfg.scoreButtonScale ?? 1) * 100)}%</span>
+              </div>
+            </CustomBox>
+            <CustomBox label="Start Button Size">
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <input type="range" min={0.5} max={2.5} step={0.05} className="field-range"
+                  value={cfg.startButtonScale ?? 1} onChange={e => up({ startButtonScale: Number(e.target.value) })} />
+                <span style={{ minWidth: 36, textAlign: 'right', fontSize: 12, color: 'var(--text-secondary)' }}>{Math.round((cfg.startButtonScale ?? 1) * 100)}%</span>
+              </div>
+              <p className="app-settings-hint" style={{ margin: '4px 0 0' }}>
+                It already pulses to stay noticeable — this makes it bigger too.
+              </p>
+            </CustomBox>
+            <Field label="Start Button Style">
+              <CardSelect
+                value={cfg.startButtonStyle ?? 'solid'}
+                onChange={v => up({ startButtonStyle: v })}
+                options={[{ value: 'solid', label: 'Solid' }, { value: 'outline', label: 'Outline' }, { value: 'ghost', label: 'Ghost' }]}
+              />
+            </Field>
+            <CustomBox label="Start Button Color">
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <input type="color" className="color-custom" value={cfg.startButtonColor || '#3b82f6'} onChange={e => up({ startButtonColor: e.target.value })} />
+                {cfg.startButtonColor && (
+                  <button className="field-input" style={{ padding: '2px 8px', cursor: 'pointer' }} onClick={() => up({ startButtonColor: undefined })}>
+                    Reset to theme
+                  </button>
+                )}
+              </div>
+              <p className="app-settings-hint" style={{ margin: '4px 0 0' }}>
+                Also colors the pulse ring.
+              </p>
+            </CustomBox>
+            {(cfg.layoutStyle ?? 'vertical') !== 'vertical' && (
+              <Field label="Score Button Position">
+                <CardSelect
+                  value={cfg.scoreButtonPosition ?? 'sides'}
+                  onChange={v => up({ scoreButtonPosition: v })}
+                  options={[{ value: 'sides', label: 'Sides' }, { value: 'grouped', label: 'Grouped' }]}
+                />
+                <p className="app-settings-hint" style={{ margin: '4px 0 0' }}>
+                  Sides — each side's own +1/-1 sits right on its own row/name. Grouped — both sides' +1/-1 sit together in one shared strip instead.
+                </p>
+              </Field>
+            )}
+            <Field label="Score size (px)">
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <input type="range" min={16} max={100} step={2} className="field-range"
+                  value={cfg.scoreFontSize ?? 36} onChange={e => up({ scoreFontSize: Number(e.target.value) })} />
+                <span style={{ minWidth: 32, textAlign: 'right', fontSize: 12, color: 'var(--text-secondary)' }}>{cfg.scoreFontSize ?? 36}px</span>
+              </div>
+            </Field>
+            <Field label="Name size (px)">
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <input type="range" min={8} max={48} step={1} className="field-range"
+                  value={cfg.nameFontSize ?? 16} onChange={e => up({ nameFontSize: Number(e.target.value) })} />
+                <span style={{ minWidth: 32, textAlign: 'right', fontSize: 12, color: 'var(--text-secondary)' }}>{cfg.nameFontSize ?? 16}px</span>
+              </div>
+            </Field>
+            <Field label="Logo size (px)">
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <input type="range" min={24} max={100} step={2} className="field-range"
+                  value={cfg.logoSize ?? 54} onChange={e => up({ logoSize: Number(e.target.value) })} />
+                <span style={{ minWidth: 32, textAlign: 'right', fontSize: 12, color: 'var(--text-secondary)' }}>{cfg.logoSize ?? 54}px</span>
+              </div>
+              <p className="app-settings-hint" style={{ margin: '4px 0 0' }}>
+                Applies across all three layouts — Horizontal/Lower Third's own flag shape scales proportionally to this same value.
+              </p>
+            </Field>
+            <Field label="Require Start to Score">
+              <ToggleCard checked={!!cfg.requireStartToScore} onChange={v => up({ requireStartToScore: v })} title="While on, +1/-1 and changing serve are all locked out until the operator presses Start Game for the current game — re-applies fresh every game. Entirely optional, off by default." />
+            </Field>
+            {/* Show/hide — every one of these stays fully available (the
+               underlying data is never deleted, just not painted) and
+               defaults to ON, so an existing widget saved before these
+               fields existed looks exactly as it always has. Applies across
+               every layoutStyle alike — see RacketScoreboardWidget.tsx's own
+               return statement, where each of these is rendered once,
+               shared by all four layouts, not per-layout. */}
+            <Field label="Show Game Timer">
+              <ToggleCard checked={cfg.showTimer ?? true} onChange={v => up({ showTimer: v })} />
+            </Field>
+            <Field label="Show Game/Set/Match Point Badge">
+              <ToggleCard checked={cfg.showMatchPointBadge ?? true} onChange={v => up({ showMatchPointBadge: v })} />
+            </Field>
+            <Field label="Show Completed Sets">
+              <ToggleCard checked={cfg.showCompletedGames ?? true} onChange={v => up({ showCompletedGames: v })} />
+            </Field>
+            <Field label="Show Players Section">
+              <ToggleCard checked={cfg.showPlayers ?? true} onChange={v => up({ showPlayers: v })} />
+            </Field>
+            <Field label="Show Match Report / Set History">
+              <ToggleCard checked={cfg.showMatchReport ?? true} onChange={v => up({ showMatchReport: v })} />
+            </Field>
+          </CollapsibleSection>
+        </>
+        );
+
+        const vmix = (
+          <CollapsibleSection label="vMix Output" defaultOpen={false}>
+            <Field label="Input">
+              <input className="field-input" value={cfg.vmixInputKey ?? ''} placeholder="Input name/number" onChange={e => up({ vmixInputKey: e.target.value })} />
+            </Field>
+            <Field label="Score A Field">
+              <input className="field-input" value={cfg.fieldScoreA ?? ''} placeholder="ScoreA.Text" onChange={e => up({ fieldScoreA: e.target.value })} />
+            </Field>
+            <Field label="Score B Field">
+              <input className="field-input" value={cfg.fieldScoreB ?? ''} placeholder="ScoreB.Text" onChange={e => up({ fieldScoreB: e.target.value })} />
+            </Field>
+            <Field label="Team A Field">
+              <input className="field-input" value={cfg.fieldTeamA ?? ''} placeholder="TeamA.Text" onChange={e => up({ fieldTeamA: e.target.value })} />
+            </Field>
+            <Field label="Team B Field">
+              <input className="field-input" value={cfg.fieldTeamB ?? ''} placeholder="TeamB.Text" onChange={e => up({ fieldTeamB: e.target.value })} />
+            </Field>
+          </CollapsibleSection>
+        );
+
+        return renderTabbed(general, vmix);
       }
 
       case 'scoreboard': {
         const allScoreboardWidgets = pages.flatMap(p => p.widgets).filter(w => w.type === 'scoreboard' && w.id !== widget.id);
-        return (
+        const general = (
         <>
           <CollapsibleSection label="Link to Scoreboard">
             <Field label="Source Scoreboard">
-              <select className="field-input" value={cfg.linkedScoreboardSourceId ?? ''} onChange={e => up({ linkedScoreboardSourceId: e.target.value })}>
-                <option value="">— standalone (own scoreboard) —</option>
-                {allScoreboardWidgets.map(w => (
-                  <option key={w.id} value={w.id}>{w.label || w.config?.teamAName + ' vs ' + w.config?.teamBName || w.id}</option>
-                ))}
-              </select>
+              <CustomBox>
+                <select className="field-input" value={cfg.linkedScoreboardSourceId ?? ''} onChange={e => up({ linkedScoreboardSourceId: e.target.value })}>
+                  <option value="">— standalone (own scoreboard) —</option>
+                  {allScoreboardWidgets.map(w => (
+                    <option key={w.id} value={w.id}>{w.label || w.config?.teamAName + ' vs ' + w.config?.teamBName || w.id}</option>
+                  ))}
+                </select>
+              </CustomBox>
             </Field>
             {cfg.linkedScoreboardSourceId && (
               <p className="timer-db-hint">This widget mirrors the selected scoreboard. Controls are hidden — score from the source widget.</p>
@@ -1057,7 +1919,8 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
                         <ActionListEditor actions={h.actions} onChange={(next) => updateHk(i, { actions: next })} sectionKey={`hk-${i}`}
                           pages={pages} timerWidgets={pages.flatMap(p => p.widgets.filter(w => w.type === 'timer'))}
                           scoreboardWidgets={pages.flatMap(p => p.widgets.filter(w => w.type === 'scoreboard'))}
-                          globalVariables={globalVariables} allInputs={allInputs} />
+                          globalVariables={globalVariables} allInputs={allInputs}
+                          cgTemplateWidgets={[...pages, ...store.libraryPages].flatMap(p => p.widgets.filter(w => w.type === 'cg-template'))} />
                       </CollapsibleSection>
                     </div>
                   ))}
@@ -1072,10 +1935,12 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
 
           <CollapsibleSection label="Tournament Database">
             <Field label="Link Tournament">
-              <select className="field-input" value={cfg.linkedTournamentId ?? ''} onChange={e => up({ linkedTournamentId: e.target.value })}>
-                <option value="">{pageTournament ? `— Auto: ${pageTournament.name} (this canvas) —` : '— none (set automatically from Load Match) —'}</option>
-                {tournaments.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-              </select>
+              <CustomBox>
+                <select className="field-input" value={cfg.linkedTournamentId ?? ''} onChange={e => up({ linkedTournamentId: e.target.value })}>
+                  <option value="">{pageTournament ? `— Auto: ${pageTournament.name} (this canvas) —` : '— none (set automatically from Load Match) —'}</option>
+                  {tournaments.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                </select>
+              </CustomBox>
             </Field>
             <p className="app-settings-hint" style={{ margin: '4px 0 0' }}>
               Tags "Save Result" with this tournament so it shows up in its Results tab. Loading a fixture from the Schedule tab sets this automatically, and it otherwise falls back to this canvas's bound tournament (see the Canvas picker in the status bar) — only pick one here to override that.
@@ -1123,15 +1988,15 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
 
           <CollapsibleSection label="Head to Head">
             <Field label="Show Head to Head">
-              <input type="checkbox" checked={cfg.showHeadToHead ?? false} onChange={e => up({ showHeadToHead: e.target.checked })} />
+              <ToggleCard checked={cfg.showHeadToHead ?? false} onChange={v => up({ showHeadToHead: v })} />
             </Field>
             {cfg.showHeadToHead && (
               <>
                 <Field label="Show Record">
-                  <input type="checkbox" checked={cfg.h2hShowRecord ?? true} onChange={e => up({ h2hShowRecord: e.target.checked })} />
+                  <ToggleCard checked={cfg.h2hShowRecord ?? true} onChange={v => up({ h2hShowRecord: v })} />
                 </Field>
                 <Field label="Show Last Meetings">
-                  <input type="checkbox" checked={cfg.h2hShowLastMeetings ?? true} onChange={e => up({ h2hShowLastMeetings: e.target.checked })} />
+                  <ToggleCard checked={cfg.h2hShowLastMeetings ?? true} onChange={v => up({ h2hShowLastMeetings: v })} />
                 </Field>
                 {cfg.h2hShowLastMeetings !== false && (
                   <Field label="Max meetings shown">
@@ -1140,13 +2005,13 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
                   </Field>
                 )}
                 <Field label="Show Score Breakdown">
-                  <input type="checkbox" checked={cfg.h2hShowBreakdown ?? true} onChange={e => up({ h2hShowBreakdown: e.target.checked })} />
+                  <ToggleCard checked={cfg.h2hShowBreakdown ?? true} onChange={v => up({ h2hShowBreakdown: v })} />
                 </Field>
                 <Field label="Show Team Stats (this tournament)">
-                  <input type="checkbox" checked={cfg.h2hShowTeamStats ?? true} onChange={e => up({ h2hShowTeamStats: e.target.checked })} />
+                  <ToggleCard checked={cfg.h2hShowTeamStats ?? true} onChange={v => up({ h2hShowTeamStats: v })} />
                 </Field>
                 <Field label="Show Previous & Upcoming">
-                  <input type="checkbox" checked={cfg.h2hShowForm ?? true} onChange={e => up({ h2hShowForm: e.target.checked })} />
+                  <ToggleCard checked={cfg.h2hShowForm ?? true} onChange={v => up({ h2hShowForm: v })} />
                 </Field>
               </>
             )}
@@ -1154,7 +2019,7 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
 
           <CollapsibleSection label="Penalty Shootout / Place-Kick Competition">
             <Field label="Enable Shootout">
-              <input type="checkbox" checked={cfg.enableShootout ?? false} onChange={e => up({ enableShootout: e.target.checked })} />
+              <ToggleCard checked={cfg.enableShootout ?? false} onChange={v => up({ enableShootout: v })} />
             </Field>
             {cfg.enableShootout && (
               <Field label="Kicks per round">
@@ -1166,12 +2031,14 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
 
           <CollapsibleSection label="Sport Style">
           <Field label="Style">
-            <select className="field-input" value={cfg.style ?? 'basic'} onChange={e => {
-              const found = SCORE_STYLES.find(s => s.value === e.target.value);
-              up({ style: e.target.value, increments: found?.increments ?? [1] });
-            }}>
-              {SCORE_STYLES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
-            </select>
+            <CustomBox>
+              <select className="field-input" value={cfg.style ?? 'basic'} onChange={e => {
+                const found = SCORE_STYLES.find(s => s.value === e.target.value);
+                up({ style: e.target.value, increments: found?.increments ?? [1] });
+              }}>
+                {SCORE_STYLES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
+              </select>
+            </CustomBox>
           </Field>
           {/* ── Increment editor ── */}
           {(() => {
@@ -1186,6 +2053,7 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
               setIncs(incs.map((inc, i) => i === idx ? { ...inc, ...patch } : inc));
             const incTimerWidgets = pages.flatMap(p => p.widgets.filter(w => w.type === 'timer'));
             const incScoreboardWidgets = pages.flatMap(p => p.widgets.filter(w => w.type === 'scoreboard'));
+            const incCgTemplateWidgets = [...pages, ...store.libraryPages].flatMap(p => p.widgets.filter(w => w.type === 'cg-template'));
             return (
               <div className="sb-incs">
                 <div className="sb-incs-hdr">
@@ -1232,13 +2100,14 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
                             scoreboardWidgets={incScoreboardWidgets}
                             globalVariables={globalVariables}
                             allInputs={allInputs}
+                            cgTemplateWidgets={incCgTemplateWidgets}
                           />
                           <Field label="Manual trigger button">
-                            <input type="checkbox" checked={inc.manualTrigger ?? false} onChange={e => updateInc(idx, { manualTrigger: e.target.checked })} />
+                            <ToggleCard checked={inc.manualTrigger ?? false} onChange={v => updateInc(idx, { manualTrigger: v })} />
                           </Field>
                           {inc.manualTrigger && (
                             <Field label="Confirm before firing">
-                              <input type="checkbox" checked={inc.manualTriggerConfirm ?? true} onChange={e => updateInc(idx, { manualTriggerConfirm: e.target.checked })} />
+                              <ToggleCard checked={inc.manualTriggerConfirm ?? true} onChange={v => updateInc(idx, { manualTriggerConfirm: v })} />
                             </Field>
                           )}
                         </div>
@@ -1279,7 +2148,11 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
             </div>
           </Field>
           </CollapsibleSection>
+        </>
+        );
 
+        const vmix = (
+          <>
           {/* ── Multiple vMix Title Inputs ── */}
           {(() => {
             type SbInput = {
@@ -1526,45 +2399,60 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
               </>
             );
           })()}
+          </>
+        );
+
+        const generalAfter = (
+          <>
           <CollapsibleSection label="Score Log">
             <Field label="Linked Score Log Widget">
-              <select className="field-input" value={cfg.linkedScoreLogWidgetId ?? ''} onChange={e => up({ linkedScoreLogWidgetId: e.target.value })}>
-                <option value="">— none —</option>
-                {pages.flatMap(p => p.widgets.filter(w => w.type === 'score-log')).map(w => (
-                  <option key={w.id} value={w.id}>Score Log</option>
-                ))}
-              </select>
+              <CustomBox>
+                <select className="field-input" value={cfg.linkedScoreLogWidgetId ?? ''} onChange={e => up({ linkedScoreLogWidgetId: e.target.value })}>
+                  <option value="">— none —</option>
+                  {pages.flatMap(p => p.widgets.filter(w => w.type === 'score-log')).map(w => (
+                    <option key={w.id} value={w.id}>Score Log</option>
+                  ))}
+                </select>
+              </CustomBox>
             </Field>
             <Field label="Linked Timer (for timestamps)">
-              <select className="field-input" value={cfg.linkedTimerWidgetId ?? ''} onChange={e => up({ linkedTimerWidgetId: e.target.value })}>
-                <option value="">— wall clock —</option>
-                {pages.flatMap(p => p.widgets.filter(w => w.type === 'timer')).map(w => (
-                  <option key={w.id} value={w.id}>{w.config.name || 'Timer'}</option>
-                ))}
-              </select>
+              <CustomBox>
+                <select className="field-input" value={cfg.linkedTimerWidgetId ?? ''} onChange={e => up({ linkedTimerWidgetId: e.target.value })}>
+                  <option value="">— wall clock —</option>
+                  {pages.flatMap(p => p.widgets.filter(w => w.type === 'timer')).map(w => (
+                    <option key={w.id} value={w.id}>{w.config.name || 'Timer'}</option>
+                  ))}
+                </select>
+              </CustomBox>
             </Field>
           </CollapsibleSection>
 
           <CollapsibleSection label="Player Picker">
             <Field label="Team A Player List">
-              <select className="field-input" value={cfg.linkedPlayerListA ?? ''} onChange={e => up({ linkedPlayerListA: e.target.value })}>
-                <option value="">— none —</option>
-                {pages.flatMap(p => p.widgets.filter(w => w.type === 'player-list')).map(w => (
-                  <option key={w.id} value={w.id}>{plWidgetLabel(w, teamDbTeams)}</option>
-                ))}
-              </select>
+              <CustomBox>
+                <select className="field-input" value={cfg.linkedPlayerListA ?? ''} onChange={e => up({ linkedPlayerListA: e.target.value })}>
+                  <option value="">— none —</option>
+                  {pages.flatMap(p => p.widgets.filter(w => w.type === 'player-list')).map(w => (
+                    <option key={w.id} value={w.id}>{plWidgetLabel(w, teamDbTeams)}</option>
+                  ))}
+                </select>
+              </CustomBox>
             </Field>
             <Field label="Team B Player List">
-              <select className="field-input" value={cfg.linkedPlayerListB ?? ''} onChange={e => up({ linkedPlayerListB: e.target.value })}>
-                <option value="">— none —</option>
-                {pages.flatMap(p => p.widgets.filter(w => w.type === 'player-list')).map(w => (
-                  <option key={w.id} value={w.id}>{plWidgetLabel(w, teamDbTeams)}</option>
-                ))}
-              </select>
+              <CustomBox>
+                <select className="field-input" value={cfg.linkedPlayerListB ?? ''} onChange={e => up({ linkedPlayerListB: e.target.value })}>
+                  <option value="">— none —</option>
+                  {pages.flatMap(p => p.widgets.filter(w => w.type === 'player-list')).map(w => (
+                    <option key={w.id} value={w.id}>{plWidgetLabel(w, teamDbTeams)}</option>
+                  ))}
+                </select>
+              </CustomBox>
             </Field>
           </CollapsibleSection>
-        </>
+          </>
         );
+
+        return renderTabbed(<>{general}{generalAfter}</>, vmix);
       }
 
       case 'score-lower-third': {
@@ -1585,31 +2473,37 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
         const nameA = sb?.config.teamAName ?? 'Team A';
         const nameB = sb?.config.teamBName ?? 'Team B';
 
-        return (
+        const general = (
           <>
             <CollapsibleSection label="Data Source">
               <Field label="Linked Scoreboard">
-                <select className="field-input" value={cfg.linkedScoreboardId ?? ''} onChange={e => up({ linkedScoreboardId: e.target.value })}>
-                  <option value="">— select scoreboard —</option>
-                  {scoreboards.map(w => (
-                    <option key={w.id} value={w.id}>{w.config.teamAName ?? 'Team A'} vs {w.config.teamBName ?? 'Team B'}</option>
-                  ))}
-                </select>
+                <CustomBox>
+                  <select className="field-input" value={cfg.linkedScoreboardId ?? ''} onChange={e => up({ linkedScoreboardId: e.target.value })}>
+                    <option value="">— select scoreboard —</option>
+                    {scoreboards.map(w => (
+                      <option key={w.id} value={w.id}>{w.config.teamAName ?? 'Team A'} vs {w.config.teamBName ?? 'Team B'}</option>
+                    ))}
+                  </select>
+                </CustomBox>
               </Field>
               <Field label="Team Filter">
-                <select className="field-input" value={cfg.teamFilter ?? 'all'} onChange={e => up({ teamFilter: e.target.value })}>
-                  <option value="all">Both teams (last scorer)</option>
-                  <option value="A">{nameA} only</option>
-                  <option value="B">{nameB} only</option>
-                </select>
-              </Field>
-              <Field label="Auto-send on new goal">
-                <label className="tf-autosend-label">
-                  <input type="checkbox" checked={cfg.autoSend ?? false} onChange={e => up({ autoSend: e.target.checked })} />
-                  Send automatically when score changes
-                </label>
+                <CustomBox>
+                  <select className="field-input" value={cfg.teamFilter ?? 'all'} onChange={e => up({ teamFilter: e.target.value })}>
+                    <option value="all">Both teams (last scorer)</option>
+                    <option value="A">{nameA} only</option>
+                    <option value="B">{nameB} only</option>
+                  </select>
+                </CustomBox>
               </Field>
             </CollapsibleSection>
+          </>
+        );
+
+        const vmix = (
+          <>
+            <Field label="Auto-send on new goal">
+              <ToggleCard checked={cfg.autoSend ?? false} onChange={v => up({ autoSend: v })} desc="Send automatically when score changes" />
+            </Field>
 
             <CollapsibleSection label="vMix Title Inputs">
               <p style={{ fontSize: 10, color: 'var(--text-muted)', margin: '0 0 6px', lineHeight: 1.4 }}>
@@ -1685,43 +2579,54 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
 
             <CollapsibleSection label="Overlay">
               <Field label="Overlay Channel">
-                <select className="field-input" value={cfg.overlayChannel ?? 1} onChange={e => up({ overlayChannel: Number(e.target.value) })}>
-                  {[1, 2, 3, 4].map(n => <option key={n} value={n}>Overlay {n}</option>)}
-                </select>
+                <CardSelect
+                  value={cfg.overlayChannel ?? 1}
+                  onChange={v => up({ overlayChannel: v })}
+                  columns={4}
+                  options={[1, 2, 3, 4].map(n => ({ value: n, label: `Overlay ${n}` }))}
+                />
               </Field>
             </CollapsibleSection>
           </>
         );
+
+        return renderTabbed(general, vmix);
       }
 
       case 'player-lower-third': {
         const playerListWidgets = pages.flatMap(p => p.widgets.filter(w => w.type === 'player-list'));
-        return (
+        const general = (
           <>
             <CollapsibleSection label="Data Source">
               <Field label="Linked Player List">
-                <select className="field-input" value={cfg.linkedPlayerListId ?? ''} onChange={e => up({ linkedPlayerListId: e.target.value })}>
-                  <option value="">— select player list —</option>
-                  {playerListWidgets.map(w => (
-                    <option key={w.id} value={w.id}>{plWidgetLabel(w, teamDbTeams)}</option>
-                  ))}
-                </select>
+                <CustomBox>
+                  <select className="field-input" value={cfg.linkedPlayerListId ?? ''} onChange={e => up({ linkedPlayerListId: e.target.value })}>
+                    <option value="">— select player list —</option>
+                    {playerListWidgets.map(w => (
+                      <option key={w.id} value={w.id}>{plWidgetLabel(w, teamDbTeams)}</option>
+                    ))}
+                  </select>
+                </CustomBox>
               </Field>
               <Field label="Linked Scoreboard (for score summary)">
-                <select className="field-input" value={cfg.linkedScoreboardId ?? ''} onChange={e => up({ linkedScoreboardId: e.target.value })}>
-                  <option value="">— none —</option>
-                  {pages.flatMap(p => p.widgets.filter(w => w.type === 'scoreboard')).map(w => (
-                    <option key={w.id} value={w.id}>{w.config.teamAName ?? 'Team A'} vs {w.config.teamBName ?? 'Team B'}</option>
-                  ))}
-                </select>
-              </Field>
-              <Field label="Auto-send on highlight">
-                <label className="tf-autosend-label">
-                  <input type="checkbox" checked={cfg.autoSend ?? true} onChange={e => up({ autoSend: e.target.checked })} />
-                  Send automatically when player is highlighted
-                </label>
+                <CustomBox>
+                  <select className="field-input" value={cfg.linkedScoreboardId ?? ''} onChange={e => up({ linkedScoreboardId: e.target.value })}>
+                    <option value="">— none —</option>
+                    {pages.flatMap(p => p.widgets.filter(w => w.type === 'scoreboard')).map(w => (
+                      <option key={w.id} value={w.id}>{w.config.teamAName ?? 'Team A'} vs {w.config.teamBName ?? 'Team B'}</option>
+                    ))}
+                  </select>
+                </CustomBox>
               </Field>
             </CollapsibleSection>
+          </>
+        );
+
+        const vmix = (
+          <>
+            <Field label="Auto-send on highlight">
+              <ToggleCard checked={cfg.autoSend ?? true} onChange={v => up({ autoSend: v })} desc="Send automatically when player is highlighted" />
+            </Field>
 
             <CollapsibleSection label="vMix Title Input">
               {renderInputPicker('vMix Input', cfg.vmixInputKey ?? '', cfg.vmixInputTitle,
@@ -1759,37 +2664,46 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
 
             <CollapsibleSection label="Overlay">
               <Field label="Overlay Channel">
-                <select className="field-input" value={cfg.overlayChannel ?? 1} onChange={e => up({ overlayChannel: Number(e.target.value) })}>
-                  {[1, 2, 3, 4].map(n => <option key={n} value={n}>Overlay {n}</option>)}
-                </select>
+                <CardSelect
+                  value={cfg.overlayChannel ?? 1}
+                  onChange={v => up({ overlayChannel: v })}
+                  columns={4}
+                  options={[1, 2, 3, 4].map(n => ({ value: n, label: `Overlay ${n}` }))}
+                />
               </Field>
             </CollapsibleSection>
           </>
         );
+
+        return renderTabbed(general, vmix);
       }
 
       case 'sin-bin-lower-third': {
         const playerListWidgets = pages.flatMap(p => p.widgets.filter(w => w.type === 'player-list'));
         const plLabel = (w: any) => plWidgetLabel(w, teamDbTeams);
-        return (
+        const general = (
           <>
             <CollapsibleSection label="Team">
               <p className="app-settings-hint" style={{ margin: '0 0 6px' }}>
                 Link one player list (one team). Add a second widget for the other team.
               </p>
               <Field label="Player List">
-                <select className="field-input" value={cfg.linkedPlayerListId ?? ''} onChange={e => up({ linkedPlayerListId: e.target.value })}>
-                  <option value="">— select player list —</option>
-                  {playerListWidgets.map(w => <option key={w.id} value={w.id}>{plLabel(w)}</option>)}
-                </select>
-              </Field>
-              <Field label="Auto-send on change">
-                <label className="tf-autosend-label">
-                  <input type="checkbox" checked={cfg.autoSend ?? false} onChange={e => up({ autoSend: e.target.checked })} />
-                  Send automatically when player changes
-                </label>
+                <CustomBox>
+                  <select className="field-input" value={cfg.linkedPlayerListId ?? ''} onChange={e => up({ linkedPlayerListId: e.target.value })}>
+                    <option value="">— select player list —</option>
+                    {playerListWidgets.map(w => <option key={w.id} value={w.id}>{plLabel(w)}</option>)}
+                  </select>
+                </CustomBox>
               </Field>
             </CollapsibleSection>
+          </>
+        );
+
+        const vmix = (
+          <>
+            <Field label="Auto-send on change">
+              <ToggleCard checked={cfg.autoSend ?? false} onChange={v => up({ autoSend: v })} desc="Send automatically when player changes" />
+            </Field>
 
             <CollapsibleSection label="vMix Title Input">
               {renderInputPicker('vMix Input', cfg.vmixInputKey ?? '', cfg.vmixInputTitle,
@@ -1825,13 +2739,18 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
 
             <CollapsibleSection label="Overlay">
               <Field label="Overlay Channel">
-                <select className="field-input" value={cfg.overlayChannel ?? 1} onChange={e => up({ overlayChannel: Number(e.target.value) })}>
-                  {[1, 2, 3, 4].map(n => <option key={n} value={n}>Overlay {n}</option>)}
-                </select>
+                <CardSelect
+                  value={cfg.overlayChannel ?? 1}
+                  onChange={v => up({ overlayChannel: v })}
+                  columns={4}
+                  options={[1, 2, 3, 4].map(n => ({ value: n, label: `Overlay ${n}` }))}
+                />
               </Field>
             </CollapsibleSection>
           </>
         );
+
+        return renderTabbed(general, vmix);
       }
 
       case 'timer': {
@@ -1849,12 +2768,14 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
         <>
           <CollapsibleSection label="Link to Timer">
             <Field label="Source Timer">
-              <select className="field-input" value={cfg.linkedTimerSourceId ?? ''} onChange={e => up({ linkedTimerSourceId: e.target.value })}>
-                <option value="">— standalone (own timer) —</option>
-                {allTimerWidgets.map(w => (
-                  <option key={w.id} value={w.id}>{w.label || w.config?.name || w.id}</option>
-                ))}
-              </select>
+              <CustomBox>
+                <select className="field-input" value={cfg.linkedTimerSourceId ?? ''} onChange={e => up({ linkedTimerSourceId: e.target.value })}>
+                  <option value="">— standalone (own timer) —</option>
+                  {allTimerWidgets.map(w => (
+                    <option key={w.id} value={w.id}>{w.label || w.config?.name || w.id}</option>
+                  ))}
+                </select>
+              </CustomBox>
             </Field>
             {cfg.linkedTimerSourceId && (
               <p className="timer-db-hint">This widget mirrors the selected timer. Controls are hidden — manage from the source timer.</p>
@@ -1862,10 +2783,12 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
           </CollapsibleSection>
           <CollapsibleSection label="Tournament Database">
             <Field label="Link Tournament">
-              <select className="field-input" value={cfg.linkedTournamentId ?? ''} onChange={e => up({ linkedTournamentId: e.target.value })}>
-                <option value="">{pageTournament ? `— Auto: ${pageTournament.name} (this canvas) —` : '— none (manual) —'}</option>
-                {tournaments.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-              </select>
+              <CustomBox>
+                <select className="field-input" value={cfg.linkedTournamentId ?? ''} onChange={e => up({ linkedTournamentId: e.target.value })}>
+                  <option value="">{pageTournament ? `— Auto: ${pageTournament.name} (this canvas) —` : '— none (manual) —'}</option>
+                  {tournaments.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                </select>
+              </CustomBox>
             </Field>
             {timerTournSettings && (
               <div className="timer-db-settings">
@@ -1883,45 +2806,42 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
             )}
           </CollapsibleSection>
           <CollapsibleSection label="Timer">
+          <SettingsSummary rows={[
+            { icon: cfg.mode === 'countup' ? ArrowUp : ArrowDown, label: 'Mode', value: cfg.mode === 'countup' ? 'Count Up' : 'Countdown' },
+            { icon: Timer, label: 'Format', value: cfg.format ?? 'mm:ss' },
+            { icon: Hourglass, label: 'Periods', value: (cfg.periods ?? 1) <= 1 ? 'None' : `${cfg.periods} (${cfg.periodMode === 'continue' ? 'continues' : 'resets'} after break)` },
+          ]} />
           <Field label="Mode">
-            <select className="field-input" value={cfg.mode ?? 'countdown'} onChange={e => {
-              const mode = e.target.value;
-              up({ mode, currentMs: mode === 'countdown' ? cfg.durationMs : 0 });
-            }}>
-              <option value="countdown">Countdown</option>
-              <option value="countup">Count Up</option>
-            </select>
+            <CardSelect
+              value={cfg.mode ?? 'countdown'}
+              onChange={mode => up({ mode, currentMs: mode === 'countdown' ? cfg.durationMs : 0 })}
+              options={[{ value: 'countdown', label: 'Countdown' }, { value: 'countup', label: 'Count Up' }]}
+            />
           </Field>
           <Field label="Display Format">
-            <select className="field-input" value={cfg.format ?? 'mm:ss'} onChange={e => up({ format: e.target.value })}>
-              <option value="hh:mm:ss">hh:mm:ss</option>
-              <option value="h:mm:ss">h:mm:ss</option>
-              <option value="mm:ss">mm:ss</option>
-              <option value="ss">seconds only</option>
-            </select>
+            <CardSelect
+              value={cfg.format ?? 'mm:ss'}
+              onChange={v => up({ format: v })}
+              options={[
+                { value: 'hh:mm:ss', label: 'hh:mm:ss' },
+                { value: 'h:mm:ss', label: 'h:mm:ss' },
+                { value: 'mm:ss', label: 'mm:ss' },
+                { value: 'ss', label: 'seconds only' },
+              ]}
+            />
           </Field>
+
+          <CollapsibleSection label="Advanced Format Rules" defaultOpen={false}>
           <Field label="Time format options">
-            <label className="tf-autosend-label">
-              <input type="checkbox" checked={cfg.showMs ?? false} onChange={e => up({ showMs: e.target.checked })} />
-              Show milliseconds (adds a :FF hundredths segment)
-            </label>
-            <label className="tf-autosend-label" style={{ marginTop: 4 }}>
-              <input type="checkbox" checked={cfg.noLeadingZero ?? false} onChange={e => up({ noLeadingZero: e.target.checked })} />
-              Remove leading zero (e.g. "07:00" → "7:00")
-            </label>
-            <label className="tf-autosend-label" style={{ marginTop: 4 }}>
-              <input type="checkbox" checked={cfg.subMinuteMs ?? false} onChange={e => up({ subMinuteMs: e.target.checked })} />
-              Below 1 minute, show seconds:milliseconds (e.g. "58:58")
-            </label>
+            <ToggleCard checked={cfg.showMs ?? false} onChange={v => up({ showMs: v })} desc="Show milliseconds (adds a :FF hundredths segment)" />
+            <ToggleCard checked={cfg.noLeadingZero ?? false} onChange={v => up({ noLeadingZero: v })} desc={"Remove leading zero (e.g. \"07:00\" → \"7:00\")"} />
+            <ToggleCard checked={cfg.subMinuteMs ?? false} onChange={v => up({ subMinuteMs: v })} desc={"Below 1 minute, show seconds:milliseconds (e.g. \"58:58\")"} />
             <p className="app-settings-hint" style={{ margin: '6px 0 0' }}>
               Preview: {formatTime(425580, cfg.format ?? 'mm:ss', cfg)} · under 1 min: {formatTime(58580, cfg.format ?? 'mm:ss', cfg)}
             </p>
           </Field>
           <Field label="vMix text format">
-            <label className="tf-autosend-label">
-              <input type="checkbox" checked={cfg.vmixFollowsFormat ?? true} onChange={e => up({ vmixFollowsFormat: e.target.checked })} />
-              Match the on-screen display format above
-            </label>
+            <ToggleCard checked={cfg.vmixFollowsFormat ?? true} onChange={v => up({ vmixFollowsFormat: v })} desc="Match the on-screen display format above" />
             <p className="app-settings-hint" style={{ margin: '4px 0 0' }}>
               {cfg.vmixFollowsFormat === false
                 ? 'Off — the vMix text field uses its own format below, independent of what the widget shows on screen.'
@@ -1929,33 +2849,30 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
             </p>
             {cfg.vmixFollowsFormat === false && (
               <div style={{ marginTop: 8, paddingLeft: 8, borderLeft: '2px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <label className="tf-autosend-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  Format:
-                  <select className="field-input" style={{ width: 'auto' }} value={cfg.vmixFormat ?? 'mm:ss'} onChange={e => up({ vmixFormat: e.target.value })}>
-                    <option value="hh:mm:ss">hh:mm:ss</option>
-                    <option value="h:mm:ss">h:mm:ss</option>
-                    <option value="mm:ss">mm:ss</option>
-                    <option value="ss">seconds only</option>
-                  </select>
-                </label>
-                <label className="tf-autosend-label">
-                  <input type="checkbox" checked={cfg.vmixShowMs ?? false} onChange={e => up({ vmixShowMs: e.target.checked })} />
-                  Show milliseconds
-                </label>
-                <label className="tf-autosend-label">
-                  <input type="checkbox" checked={cfg.vmixNoLeadingZero ?? false} onChange={e => up({ vmixNoLeadingZero: e.target.checked })} />
-                  Remove leading zero
-                </label>
-                <label className="tf-autosend-label">
-                  <input type="checkbox" checked={cfg.vmixSubMinuteMs ?? false} onChange={e => up({ vmixSubMinuteMs: e.target.checked })} />
-                  Below 1 minute, show seconds:milliseconds
-                </label>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <span className="tf-autosend-label">Format:</span>
+                  <CardSelect
+                    value={cfg.vmixFormat ?? 'mm:ss'}
+                    onChange={v => up({ vmixFormat: v })}
+                    options={[
+                      { value: 'hh:mm:ss', label: 'hh:mm:ss' },
+                      { value: 'h:mm:ss', label: 'h:mm:ss' },
+                      { value: 'mm:ss', label: 'mm:ss' },
+                      { value: 'ss', label: 'seconds only' },
+                    ]}
+                  />
+                </div>
+                <ToggleCard checked={cfg.vmixShowMs ?? false} onChange={v => up({ vmixShowMs: v })} desc="Show milliseconds" />
+                <ToggleCard checked={cfg.vmixNoLeadingZero ?? false} onChange={v => up({ vmixNoLeadingZero: v })} desc="Remove leading zero" />
+                <ToggleCard checked={cfg.vmixSubMinuteMs ?? false} onChange={v => up({ vmixSubMinuteMs: v })} desc="Below 1 minute, show seconds:milliseconds" />
                 <p className="app-settings-hint" style={{ margin: 0 }}>
                   vMix preview: {formatTime(425580, cfg.vmixFormat ?? 'mm:ss', { showMs: cfg.vmixShowMs, noLeadingZero: cfg.vmixNoLeadingZero, subMinuteMs: cfg.vmixSubMinuteMs })}
                 </p>
               </div>
             )}
           </Field>
+          </CollapsibleSection>
+
           <Field label="Timer font size (px)">
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <input type="range" min={12} max={120} step={2} className="field-range"
@@ -1990,49 +2907,43 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
             />
           </Field>
           <Field label="Periods">
-            <select className="field-input" value={cfg.periods ?? 1} onChange={e => {
-              up({ periods: Number(e.target.value), currentPeriod: 1, periodStartMs: 0, inBreak: false, breakCurrentMs: 0 });
-            }}>
-              <option value={1}>None (no periods)</option>
-              <option value={2}>2 Halves</option>
-              <option value={3}>3 Periods</option>
-              <option value={4}>4 Quarters</option>
-            </select>
+            <CardSelect
+              value={cfg.periods ?? 1}
+              onChange={periods => up({ periods, currentPeriod: 1, periodStartMs: 0, inBreak: false, breakCurrentMs: 0 })}
+              options={[
+                { value: 1, label: 'None', sub: 'One running clock' },
+                { value: 2, label: '2 Halves', sub: 'Football/rugby style' },
+                { value: 3, label: '3 Periods', sub: 'Ice hockey style' },
+                { value: 4, label: '4 Quarters', sub: 'Basketball style' },
+              ]}
+            />
           </Field>
           {(cfg.periods ?? 1) > 1 && (
             <Field label="After Break">
-              <select className="field-input" value={cfg.periodMode ?? 'reset'} onChange={e => up({ periodMode: e.target.value })}>
-                <option value="reset">Reset timer each period</option>
-                <option value="continue">Continue from last period</option>
-              </select>
+              <CardSelect
+                value={cfg.periodMode ?? 'reset'}
+                onChange={v => up({ periodMode: v })}
+                options={[{ value: 'reset', label: 'Reset each period' }, { value: 'continue', label: 'Continue from last' }]}
+              />
             </Field>
           )}
           {(cfg.periods ?? 1) > 1 && (
             <Field label="Current Period">
-              <select
-                className="field-input"
+              <CardSelect
                 value={Math.min(cfg.currentPeriod ?? 1, cfg.periods ?? 1)}
-                onChange={e => store.jumpToPeriod(widget.id, Number(e.target.value))}
-              >
-                {Array.from({ length: cfg.periods ?? 1 }, (_, i) => i + 1).map(p => (
-                  <option key={p} value={p}>Period {p}</option>
-                ))}
-              </select>
+                onChange={v => store.jumpToPeriod(widget.id, v)}
+                columns={cfg.periods ?? 1}
+                options={Array.from({ length: cfg.periods ?? 1 }, (_, i) => i + 1).map(p => ({ value: p, label: `Period ${p}` }))}
+              />
             </Field>
           )}
           <Field label="Overrun (manual end)">
-            <label className="tf-autosend-label">
-              <input type="checkbox" checked={cfg.overrun ?? false} onChange={e => up({ overrun: e.target.checked })} />
-              Keep running after time — end manually
-            </label>
+            <ToggleCard checked={cfg.overrun ?? false} onChange={v => up({ overrun: v })} desc="Keep running after time — end manually" />
           </Field>
           {cfg.overrun && (
             <>
               <Field label="Change title color on overrun">
-                <label className="tf-autosend-label">
-                  <input type="checkbox" checked={cfg.overrunColorEnabled ?? false} onChange={e => up({ overrunColorEnabled: e.target.checked })} />
-                  Send a vMix function on overrun
-                </label>
+                <ToggleCard checked={cfg.overrunColorEnabled ?? false} onChange={v => up({ overrunColorEnabled: v })} desc="Send a vMix function on overrun" />
               </Field>
               {cfg.overrunColorEnabled && (() => {
                 const ocFn = cfg.overrunColorFn ?? 'SetColor';
@@ -2041,17 +2952,19 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
                 return (
                   <>
                     <Field label="Function">
-                      <select className="field-input" value={selectValOc} onChange={e => {
-                        if (e.target.value === '__custom__') up({ overrunColorFn: '' });
-                        else up({ overrunColorFn: e.target.value });
-                      }}>
-                        <option value="">— select function —</option>
-                        {VMIX_FUNCTIONS.map(g => (
-                          <optgroup key={g.group} label={g.group}>
-                            {g.fns.map(f => <option key={f.fn} value={f.fn}>{f.label}</option>)}
-                          </optgroup>
-                        ))}
-                      </select>
+                      <CustomBox>
+                        <select className="field-input" value={selectValOc} onChange={e => {
+                          if (e.target.value === '__custom__') up({ overrunColorFn: '' });
+                          else up({ overrunColorFn: e.target.value });
+                        }}>
+                          <option value="">— select function —</option>
+                          {VMIX_FUNCTIONS.map(g => (
+                            <optgroup key={g.group} label={g.group}>
+                              {g.fns.map(f => <option key={f.fn} value={f.fn}>{f.label}</option>)}
+                            </optgroup>
+                          ))}
+                        </select>
+                      </CustomBox>
                     </Field>
                     {isCustomOc && (
                       <Field label="Custom Function">
@@ -2167,11 +3080,7 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
           </CollapsibleSection>
             <CollapsibleSection label="Final Play">
             <Field label="Enable Final Play">
-              <label className="tf-autosend-label">
-                <input type="checkbox" checked={cfg.finalPlayEnabled ?? false}
-                  onChange={e => up({ finalPlayEnabled: e.target.checked })} />
-                Auto-start when period ends (overrun off)
-              </label>
+              <ToggleCard checked={cfg.finalPlayEnabled ?? false} onChange={v => up({ finalPlayEnabled: v })} desc="Auto-start when period ends (overrun off)" />
             </Field>
             {cfg.finalPlayEnabled && (<>
               <Field label="vMix Input">
@@ -2189,11 +3098,7 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
                   onKeyDown={e => { if (e.key === 'Enter') { up({ finalPlayDurationMs: formatStrToMs(finalPlayDurationText, cfg.format ?? 'mm:ss') }); (e.target as HTMLInputElement).blur(); } }} />
               </Field>
               <Field label="End Trigger">
-                <label className="tf-autosend-label">
-                  <input type="checkbox" checked={cfg.finalPlayEndTriggerEnabled ?? false}
-                    onChange={e => up({ finalPlayEndTriggerEnabled: e.target.checked })} />
-                  Fire vMix function when Final Play ends
-                </label>
+                <ToggleCard checked={cfg.finalPlayEndTriggerEnabled ?? false} onChange={v => up({ finalPlayEndTriggerEnabled: v })} desc="Fire vMix function when Final Play ends" />
               </Field>
               {cfg.finalPlayEndTriggerEnabled && (() => {
                 const fpFn = cfg.finalPlayEndTriggerFn ?? '';
@@ -2206,17 +3111,19 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
                 return (
                   <>
                     <Field label="Function">
-                      <select className="field-input" value={selectVal} onChange={e => {
-                        if (e.target.value === '__custom__') up({ finalPlayEndTriggerFn: '' });
-                        else up({ finalPlayEndTriggerFn: e.target.value });
-                      }}>
-                        <option value="">— select function —</option>
-                        {VMIX_FUNCTIONS.map(g => (
-                          <optgroup key={g.group} label={g.group}>
-                            {g.fns.map(f => <option key={f.fn} value={f.fn}>{f.label}</option>)}
-                          </optgroup>
-                        ))}
-                      </select>
+                      <CustomBox>
+                        <select className="field-input" value={selectVal} onChange={e => {
+                          if (e.target.value === '__custom__') up({ finalPlayEndTriggerFn: '' });
+                          else up({ finalPlayEndTriggerFn: e.target.value });
+                        }}>
+                          <option value="">— select function —</option>
+                          {VMIX_FUNCTIONS.map(g => (
+                            <optgroup key={g.group} label={g.group}>
+                              {g.fns.map(f => <option key={f.fn} value={f.fn}>{f.label}</option>)}
+                            </optgroup>
+                          ))}
+                        </select>
+                      </CustomBox>
                     </Field>
                     {isCustom && (
                       <Field label="Custom Function">
@@ -2252,11 +3159,7 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
           </CollapsibleSection>
             <CollapsibleSection label="Period End Trigger">
             <Field label="Enable">
-              <label className="tf-autosend-label">
-                <input type="checkbox" checked={cfg.periodEndTriggerEnabled ?? false}
-                  onChange={e => up({ periodEndTriggerEnabled: e.target.checked })} />
-                Fire vMix function after each period ends
-              </label>
+              <ToggleCard checked={cfg.periodEndTriggerEnabled ?? false} onChange={v => up({ periodEndTriggerEnabled: v })} desc="Fire vMix function after each period ends" />
             </Field>
             {cfg.periodEndTriggerEnabled && (() => {
               const petFn = cfg.periodEndTriggerFn ?? '';
@@ -2269,17 +3172,19 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
               return (
                 <>
                   <Field label="Function">
-                    <select className="field-input" value={selectVal} onChange={e => {
-                      if (e.target.value === '__custom__') up({ periodEndTriggerFn: '' });
-                      else up({ periodEndTriggerFn: e.target.value });
-                    }}>
-                      <option value="">— select function —</option>
-                      {VMIX_FUNCTIONS.map(g => (
-                        <optgroup key={g.group} label={g.group}>
-                          {g.fns.map(f => <option key={f.fn} value={f.fn}>{f.label}</option>)}
-                        </optgroup>
-                      ))}
-                    </select>
+                    <CustomBox>
+                      <select className="field-input" value={selectVal} onChange={e => {
+                        if (e.target.value === '__custom__') up({ periodEndTriggerFn: '' });
+                        else up({ periodEndTriggerFn: e.target.value });
+                      }}>
+                        <option value="">— select function —</option>
+                        {VMIX_FUNCTIONS.map(g => (
+                          <optgroup key={g.group} label={g.group}>
+                            {g.fns.map(f => <option key={f.fn} value={f.fn}>{f.label}</option>)}
+                          </optgroup>
+                        ))}
+                      </select>
+                    </CustomBox>
                   </Field>
                   {isCustomPet && (
                     <Field label="Custom Function">
@@ -2334,22 +3239,13 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
           )}
           {(cfg.periods ?? 1) > 1 && (cfg.breakDurationMs ?? 0) > 0 && (
             <Field label="Break Direction">
-              <div className="tm-timer-mode-toggle">
-                {([['down','Count Down'],['up','Count Up']] as [string,string][]).map(([val, lbl]) => (
-                  <button key={val}
-                    className={`tm-timer-mode-btn ${(cfg.breakCountMode ?? 'down') === val ? 'tm-timer-mode-btn--active' : ''}`}
-                    onClick={() => up({ breakCountMode: val })}
-                  >{lbl}</button>
-                ))}
-              </div>
+              <CardSelect value={cfg.breakCountMode ?? 'down'} onChange={v => up({ breakCountMode: v })}
+                options={[{ value: 'down', label: 'Count Down' }, { value: 'up', label: 'Count Up' }]} />
             </Field>
           )}
           {(cfg.periods ?? 1) > 1 && (
             <Field label="Auto-advance">
-              <label className="tf-autosend-label">
-                <input type="checkbox" checked={cfg.autoAdvance ?? false} onChange={e => up({ autoAdvance: e.target.checked })} />
-                Flow straight through period → break → next period automatically
-              </label>
+              <ToggleCard checked={cfg.autoAdvance ?? false} onChange={v => up({ autoAdvance: v })} desc="Flow straight through period → break → next period automatically" />
               <p className="app-settings-hint" style={{ margin: '4px 0 0' }}>
                 {cfg.autoAdvance
                   ? 'Auto: no manual step needed between periods and breaks.'
@@ -2359,10 +3255,7 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
           )}
           {(cfg.periods ?? 1) > 1 && !cfg.autoAdvance && (cfg.breakDurationMs ?? 0) > 0 && (
             <Field label="Auto-start break">
-              <label className="tf-autosend-label">
-                <input type="checkbox" checked={cfg.autoStartBreak ?? false} onChange={e => up({ autoStartBreak: e.target.checked })} />
-                Start the half-time/break timer immediately once "End Period" is confirmed
-              </label>
+              <ToggleCard checked={cfg.autoStartBreak ?? false} onChange={v => up({ autoStartBreak: v })} desc={"Start the half-time/break timer immediately once \"End Period\" is confirmed"} />
               <p className="app-settings-hint" style={{ margin: '4px 0 0' }}>
                 Still asks for confirmation to end the period — just skips the extra Play press to start the break countdown afterward.
               </p>
@@ -2372,40 +3265,37 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
           {/* ── Extra Time ── */}
           <CollapsibleSection label="Extra Time">
           <Field label="ET Halves">
-            <div className="tm-timer-mode-toggle">
-              {([['0','None'],['1','1 Half'],['2','2 Halves']] as [string,string][]).map(([val, lbl]) => (
-                <button key={val}
-                  className={`tm-timer-mode-btn ${(cfg.extraTimePeriods ?? 0) === Number(val) ? 'tm-timer-mode-btn--active' : ''}`}
-                  onClick={() => up({ extraTimePeriods: Number(val) })}>
-                  {lbl}
-                </button>
-              ))}
-            </div>
+            <CardSelect value={cfg.extraTimePeriods ?? 0} onChange={v => up({ extraTimePeriods: v })} columns={3}
+              options={[{ value: 0, label: 'None' }, { value: 1, label: '1 Half' }, { value: 2, label: '2 Halves' }]} />
           </Field>
           {(cfg.extraTimePeriods ?? 0) > 0 && (() => {
             const etFmt = cfg.format ?? 'mm:ss';
             return (
               <>
                 <Field label={`ET Duration (${etFmt})`}>
-                  <input
-                    className="field-input"
-                    defaultValue={msToFormatStr(cfg.etDurationMs ?? 300000, etFmt)}
-                    key={cfg.etDurationMs + etFmt}
-                    placeholder={etFmt === 'mm:ss' ? '05:00' : '00:05:00'}
-                    onBlur={e => up({ etDurationMs: formatStrToMs(e.target.value, etFmt) })}
-                    onKeyDown={e => { if (e.key === 'Enter') { up({ etDurationMs: formatStrToMs((e.target as HTMLInputElement).value, etFmt) }); (e.target as HTMLInputElement).blur(); } }}
-                  />
+                  <CustomBox>
+                    <input
+                      className="field-input"
+                      defaultValue={msToFormatStr(cfg.etDurationMs ?? 300000, etFmt)}
+                      key={cfg.etDurationMs + etFmt}
+                      placeholder={etFmt === 'mm:ss' ? '05:00' : '00:05:00'}
+                      onBlur={e => up({ etDurationMs: formatStrToMs(e.target.value, etFmt) })}
+                      onKeyDown={e => { if (e.key === 'Enter') { up({ etDurationMs: formatStrToMs((e.target as HTMLInputElement).value, etFmt) }); (e.target as HTMLInputElement).blur(); } }}
+                    />
+                  </CustomBox>
                 </Field>
                 {(cfg.extraTimePeriods ?? 0) === 2 && (
                   <Field label={`ET Break (${etFmt})`}>
-                    <input
-                      className="field-input"
-                      defaultValue={msToFormatStr(cfg.etBreakDurationMs ?? 0, etFmt)}
-                      key={cfg.etBreakDurationMs + etFmt}
-                      placeholder={etFmt === 'mm:ss' ? '00:00' : '00:00:00'}
-                      onBlur={e => up({ etBreakDurationMs: formatStrToMs(e.target.value, etFmt) })}
-                      onKeyDown={e => { if (e.key === 'Enter') { up({ etBreakDurationMs: formatStrToMs((e.target as HTMLInputElement).value, etFmt) }); (e.target as HTMLInputElement).blur(); } }}
-                    />
+                    <CustomBox>
+                      <input
+                        className="field-input"
+                        defaultValue={msToFormatStr(cfg.etBreakDurationMs ?? 0, etFmt)}
+                        key={cfg.etBreakDurationMs + etFmt}
+                        placeholder={etFmt === 'mm:ss' ? '00:00' : '00:00:00'}
+                        onBlur={e => up({ etBreakDurationMs: formatStrToMs(e.target.value, etFmt) })}
+                        onKeyDown={e => { if (e.key === 'Enter') { up({ etBreakDurationMs: formatStrToMs((e.target as HTMLInputElement).value, etFmt) }); (e.target as HTMLInputElement).blur(); } }}
+                      />
+                    </CustomBox>
                   </Field>
                 )}
               </>
@@ -2415,33 +3305,28 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
           {/* ── After Extra Time ── */}
           <CollapsibleSection label="After Extra Time">
           <Field label="Mode">
-            <div className="tm-timer-mode-toggle">
-              {([['none','None'],['suddenDeath','Sudden Death'],['goldenPoint','Golden Point']] as [string,string][]).map(([val, lbl]) => (
-                <button key={val}
-                  className={`tm-timer-mode-btn ${(cfg.afterEtMode ?? 'none') === val ? 'tm-timer-mode-btn--active' : ''}`}
-                  onClick={() => up({ afterEtMode: val })}>
-                  {lbl}
-                </button>
-              ))}
-            </div>
+            <CardSelect value={cfg.afterEtMode ?? 'none'} onChange={v => up({ afterEtMode: v })} columns={3}
+              options={[{ value: 'none', label: 'None' }, { value: 'suddenDeath', label: 'Sudden Death' }, { value: 'goldenPoint', label: 'Golden Point' }]} />
           </Field>
           {(cfg.afterEtMode ?? 'none') !== 'none' && (() => {
             const etFmt = cfg.format ?? 'mm:ss';
             return (
               <Field label={`Max Duration (${etFmt}, 0=unlimited)`}>
-                <input
-                  className="field-input"
-                  defaultValue={msToFormatStr(cfg.afterEtDurationMs ?? 0, etFmt)}
-                  key={cfg.afterEtDurationMs + etFmt}
-                  placeholder={etFmt === 'mm:ss' ? '00:00' : '00:00:00'}
-                  onBlur={e => up({ afterEtDurationMs: formatStrToMs(e.target.value, etFmt) })}
-                  onKeyDown={e => { if (e.key === 'Enter') { up({ afterEtDurationMs: formatStrToMs((e.target as HTMLInputElement).value, etFmt) }); (e.target as HTMLInputElement).blur(); } }}
-                />
+                <CustomBox>
+                  <input
+                    className="field-input"
+                    defaultValue={msToFormatStr(cfg.afterEtDurationMs ?? 0, etFmt)}
+                    key={cfg.afterEtDurationMs + etFmt}
+                    placeholder={etFmt === 'mm:ss' ? '00:00' : '00:00:00'}
+                    onBlur={e => up({ afterEtDurationMs: formatStrToMs(e.target.value, etFmt) })}
+                    onKeyDown={e => { if (e.key === 'Enter') { up({ afterEtDurationMs: formatStrToMs((e.target as HTMLInputElement).value, etFmt) }); (e.target as HTMLInputElement).blur(); } }}
+                  />
+                </CustomBox>
               </Field>
             );
           })()}
           <Field label="High Precision (100ms)">
-            <input type="checkbox" checked={cfg.highPrecision ?? false} onChange={e => up({ highPrecision: e.target.checked })} />
+            <ToggleCard checked={cfg.highPrecision ?? false} onChange={v => up({ highPrecision: v })} />
           </Field>
           </CollapsibleSection>
           {/* ── Period Labels & Images ── */}
@@ -2592,11 +3477,26 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
         );
       }
 
-      case 'file-path': return (
+      case 'file-path': return renderTabbed(
         <>
           <Field label="Label">
             <input className="field-input" value={cfg.label ?? ''} onChange={e => up({ label: e.target.value })} />
           </Field>
+          <Field label="File Filter">
+            <CardSelect
+              value={cfg.accept ?? 'image/*'}
+              onChange={v => up({ accept: v })}
+              options={[
+                { value: 'image/*', label: 'Images (any)' },
+                { value: 'image/jpeg,image/jpg', label: 'JPEG only' },
+                { value: 'image/png', label: 'PNG only' },
+                { value: 'image/gif', label: 'GIF only' },
+                { value: 'image/webp', label: 'WebP only' },
+              ]}
+            />
+          </Field>
+        </>,
+        <>
           {renderInputPicker(
             'vMix Title Input',
             cfg.inputKey ?? '',
@@ -2606,25 +3506,13 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
             allInputs,
           )}
           <Field label="Field Name">{renderFieldPicker(cfg.inputKey ?? '', cfg.fieldName ?? '', v => up({ fieldName: v }), 'Title.Text', undefined, allInputs)}</Field>
-          <Field label="File Filter">
-            <select className="field-input" value={cfg.accept ?? 'image/*'} onChange={e => up({ accept: e.target.value })}>
-              <option value="image/*">Images only (jpg, png, gif…)</option>
-              <option value="image/jpeg,image/jpg">JPEG only</option>
-              <option value="image/png">PNG only</option>
-              <option value="image/gif">GIF only</option>
-              <option value="image/webp">WebP only</option>
-            </select>
-          </Field>
           <Field label="Auto-send on browse">
-            <label className="tf-autosend-label">
-              <input type="checkbox" checked={cfg.autoSend ?? false} onChange={e => up({ autoSend: e.target.checked })} />
-              Send path immediately after selecting file
-            </label>
+            <ToggleCard checked={cfg.autoSend ?? false} onChange={v => up({ autoSend: v })} desc="Send path immediately after selecting file" />
           </Field>
         </>
       );
 
-      case 'tbar': return (
+      case 'tbar': return renderTabbed(
         <>
           <Field label="Label">
             <input className="field-input" value={cfg.label ?? 'T-Bar'} onChange={e => up({ label: e.target.value })} />
@@ -2632,48 +3520,59 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
         </>
       );
 
-      case 'volume': return (
+      case 'volume': return renderTabbed(
         <>
           <Field label="Target">
-            <select className="field-input" value={cfg.target ?? 'master'} onChange={e => up({ target: e.target.value })}>
-              <option value="master">Master</option>
-              <option value="input">Input</option>
-              <option value="bus">Audio Bus</option>
-            </select>
+            <CardSelect
+              value={cfg.target ?? 'master'}
+              onChange={v => up({ target: v })}
+              columns={3}
+              options={[
+                { value: 'master', label: 'Master', icon: Volume2 },
+                { value: 'input', label: 'Input', icon: Mic },
+                { value: 'bus', label: 'Audio Bus', icon: RadioIcon },
+              ]}
+            />
           </Field>
-          {cfg.target === 'input' && renderInputPicker(
-            'Input',
-            cfg.inputKey ?? '',
-            cfg.inputTitle,
-            (key, title) => up({ inputKey: key, inputTitle: title, label: title || 'Volume' }),
-          )}
           {cfg.target === 'bus' && (
             <Field label="Bus">
-              <select className="field-input" value={cfg.busName ?? 'M'} onChange={e => up({ busName: e.target.value, label: `Bus ${e.target.value}` })}>
-                {['M','A','B','C','D','E','F','G'].map(b => <option key={b} value={b}>{b}</option>)}
-              </select>
+              <CardSelect
+                value={cfg.busName ?? 'M'}
+                onChange={v => up({ busName: v, label: `Bus ${v}` })}
+                columns={4}
+                options={['M', 'A', 'B', 'C', 'D', 'E', 'F', 'G'].map(b => ({ value: b, label: b }))}
+              />
             </Field>
           )}
           <Field label="Label">
             <input className="field-input" value={cfg.label ?? ''} onChange={e => up({ label: e.target.value })} />
           </Field>
           <Field label="Show Mute Button">
-            <input type="checkbox" checked={cfg.showMute !== false} onChange={e => up({ showMute: e.target.checked })} />
+            <ToggleCard checked={cfg.showMute !== false} onChange={v => up({ showMute: v })} />
           </Field>
-        </>
+        </>,
+        cfg.target === 'input' ? renderInputPicker(
+          'Input',
+          cfg.inputKey ?? '',
+          cfg.inputTitle,
+          (key, title) => up({ inputKey: key, inputTitle: title, label: title || 'Volume' }),
+        ) : undefined
       );
 
       case 'overlay': return (
         <>
           <Field label="Overlay Channel">
-            <select className="field-input" value={cfg.channel ?? 1} onChange={e => up({ channel: Number(e.target.value) })}>
-              {[1,2,3,4].map(n => <option key={n} value={n}>Overlay {n}</option>)}
-            </select>
+            <CardSelect
+              value={cfg.channel ?? 1}
+              onChange={v => up({ channel: v })}
+              columns={4}
+              options={[1, 2, 3, 4].map(n => ({ value: n, label: `Overlay ${n}` }))}
+            />
           </Field>
         </>
       );
 
-      case 'label': return (
+      case 'label': return renderTabbed(
         <>
           <Field label="Text">
             <input className="field-input" value={cfg.text ?? ''} onChange={e => up({ text: e.target.value })} />
@@ -2688,19 +3587,19 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
             <input type="color" className="color-custom" value={cfg.bgColor === 'transparent' ? '#1a1a2e' : cfg.bgColor ?? '#1a1a2e'} onChange={e => up({ bgColor: e.target.value })} />
           </Field>
           <Field label="Bold">
-            <input type="checkbox" checked={cfg.bold ?? false} onChange={e => up({ bold: e.target.checked })} />
+            <ToggleCard checked={cfg.bold ?? false} onChange={v => up({ bold: v })} />
           </Field>
           <Field label="Align">
-            <select className="field-input" value={cfg.align ?? 'center'} onChange={e => up({ align: e.target.value })}>
-              <option value="left">Left</option>
-              <option value="center">Center</option>
-              <option value="right">Right</option>
-            </select>
+            <CardSelect
+              value={cfg.align ?? 'center'}
+              onChange={v => up({ align: v })}
+              options={[{ value: 'left', label: 'Left' }, { value: 'center', label: 'Center' }, { value: 'right', label: 'Right' }]}
+            />
           </Field>
         </>
       );
 
-      case 'image-display': return (
+      case 'image-display': return renderTabbed(
         <>
           <Field label="Image">
             <LogoUrlPicker
@@ -2710,12 +3609,16 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
             />
           </Field>
           <Field label="Fit">
-            <select className="field-input" value={cfg.objectFit ?? 'contain'} onChange={e => up({ objectFit: e.target.value })}>
-              <option value="contain">Contain</option>
-              <option value="cover">Cover</option>
-              <option value="fill">Stretch</option>
-              <option value="none">Original size</option>
-            </select>
+            <CardSelect
+              value={cfg.objectFit ?? 'contain'}
+              onChange={v => up({ objectFit: v })}
+              options={[
+                { value: 'contain', label: 'Contain', sub: 'Fits, no crop', icon: Scan },
+                { value: 'cover', label: 'Cover', sub: 'Fills, crops', icon: Crop },
+                { value: 'fill', label: 'Stretch', sub: 'Fills, distorts', icon: Expand },
+                { value: 'none', label: 'Original', sub: 'No scaling', icon: Square },
+              ]}
+            />
           </Field>
           <Field label="Background">
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -2723,8 +3626,7 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
                 value={cfg.bgColor && cfg.bgColor !== 'transparent' ? cfg.bgColor : '#000000'}
                 onChange={e => up({ bgColor: e.target.value })} />
               <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11 }}>
-                <input type="checkbox" checked={!cfg.bgColor || cfg.bgColor === 'transparent'}
-                  onChange={e => up({ bgColor: e.target.checked ? 'transparent' : '#000000' })} />
+                <ToggleCard checked={!cfg.bgColor || cfg.bgColor === 'transparent'} onChange={v => up({ bgColor: v ? 'transparent' : '#000000' })} />
                 Transparent
               </label>
             </div>
@@ -2733,6 +3635,19 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
             <input className="field-input" value={cfg.caption ?? ''} placeholder="Optional label"
               onChange={e => up({ caption: e.target.value })} />
           </Field>
+        </>
+      );
+
+      case 'cg-template': return renderTabbed(
+        <>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10 }}>
+            {(cfg.elements ?? []).length} element{(cfg.elements ?? []).length === 1 ? '' : 's'}. Text, image, and
+            rectangle elements are positioned and styled in the dedicated designer, including binding any element to
+            live data from another widget in this project.
+          </div>
+          <button className="cgo-copy-btn" onClick={() => onOpenTemplateDesigner?.(widget.id)}>
+            Open Designer
+          </button>
         </>
       );
 
@@ -2765,8 +3680,13 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
           </Field>
         );
 
-        return (
+        const general = (
           <>
+            <SettingsSummary rows={[
+              { icon: Hourglass, label: 'Max shown', value: String(cfg.maxResults ?? 8) },
+              { icon: Flag, label: 'Team name', value: (cfg.nameDisplay ?? 'short') === 'full' ? 'Full name' : 'Short name' },
+              { icon: Square, label: 'Size', value: cfg.compactSize ? 'Compact' : 'Bigger' },
+            ]} />
             <Field label="Title">
               <input className="field-input" value={cfg.title ?? ''} placeholder="Latest Results"
                 onChange={e => up({ title: e.target.value })} />
@@ -2776,37 +3696,42 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
                 onChange={e => up({ maxResults: Math.max(1, parseInt(e.target.value) || 8) })} />
             </Field>
             <Field label="Group by competition">
-              <input type="checkbox" checked={cfg.groupByCompetition ?? true}
-                onChange={e => up({ groupByCompetition: e.target.checked })} />
+              <ToggleCard checked={cfg.groupByCompetition ?? true} onChange={v => up({ groupByCompetition: v })} />
             </Field>
             <Field label="Show date">
-              <input type="checkbox" checked={cfg.showDate ?? true}
-                onChange={e => up({ showDate: e.target.checked })} />
+              <ToggleCard checked={cfg.showDate ?? true} onChange={v => up({ showDate: v })} />
             </Field>
             <Field label="Team name">
-              <select className="field-input" value={cfg.nameDisplay ?? 'short'} onChange={e => up({ nameDisplay: e.target.value })}>
-                <option value="short">Short name (falls back to full)</option>
-                <option value="full">Full name</option>
-              </select>
+              <CardSelect
+                value={cfg.nameDisplay ?? 'short'}
+                onChange={v => up({ nameDisplay: v })}
+                options={[{ value: 'short', label: 'Short name' }, { value: 'full', label: 'Full name' }]}
+              />
             </Field>
             <Field label="Widget size">
-              <select className="field-input" value={cfg.compactSize ? 'compact' : 'normal'} onChange={e => up({ compactSize: e.target.value === 'compact' })}>
-                <option value="normal">Bigger (default)</option>
-                <option value="compact">Compact</option>
-              </select>
+              <CardSelect
+                value={cfg.compactSize ? 'compact' : 'normal'}
+                onChange={v => up({ compactSize: v === 'compact' })}
+                options={[{ value: 'normal', label: 'Bigger' }, { value: 'compact', label: 'Compact' }]}
+              />
             </Field>
             <Field label="Tournament">
-              <select className="field-input" value={cfg.filterTournamentId ?? ''} onChange={e => up({ filterTournamentId: e.target.value })}>
-                <option value="">{pageTournament ? `— Auto: ${pageTournament.name} (this canvas) —` : '— all tournaments —'}</option>
-                {tournaments.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-              </select>
+              <CustomBox>
+                <select className="field-input" value={cfg.filterTournamentId ?? ''} onChange={e => up({ filterTournamentId: e.target.value })}>
+                  <option value="">{pageTournament ? `— Auto: ${pageTournament.name} (this canvas) —` : '— all tournaments —'}</option>
+                  {tournaments.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                </select>
+              </CustomBox>
             </Field>
             <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '4px 2px' }}>
               Results are added from a scoreboard widget's "Save Result" button.
             </div>
+          </>
+        );
 
-            <CollapsibleSection label="vMix Output">
-              <p style={{ fontSize: 10, color: 'var(--text-muted)', margin: '0 0 6px', lineHeight: 1.4 }}>
+        const vmix = (
+          <CollapsibleSection label="vMix Output">
+            <p style={{ fontSize: 10, color: 'var(--text-muted)', margin: '0 0 6px', lineHeight: 1.4 }}>
                 Same one-input/several-numbered-slots push Match Schedule uses, plus Score A/B and a "finished" status field
                 (text like "FT", or an image badge — whichever the field you pick is). "Reuse a Schedule widget" points this at
                 that widget's own vMix input and team/date/time/round field mapping, so the same graphic slot just gets
@@ -2834,26 +3759,30 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
                     {!isCollapsed && (
                       <>
                         <Field label="Source">
-                          <select className="field-input" value={mode} onChange={e => updateResultTarget(idx, { mode: e.target.value as 'standalone' | 'linked' })}>
-                            <option value="standalone">Own vMix input</option>
-                            <option value="linked">Reuse a Schedule widget's input</option>
-                          </select>
+                          <CardSelect
+                            value={mode}
+                            onChange={v => updateResultTarget(idx, { mode: v })}
+                            options={[{ value: 'standalone' as const, label: 'Own vMix input' }, { value: 'linked' as const, label: 'Linked Schedule' }]}
+                          />
                         </Field>
 
                         {mode === 'linked' ? (
                           <>
                             <Field label="Match Schedule widget">
-                              <select className="field-input" value={t.linkedWidgetId ?? ''} onChange={e => updateResultTarget(idx, { linkedWidgetId: e.target.value })}>
-                                <option value="">— select —</option>
-                                {scheduleWidgets.map(w => <option key={w.id} value={w.id}>{w.label || w.config?.title || 'Match Schedule'}</option>)}
-                              </select>
+                              <CustomBox>
+                                <select className="field-input" value={t.linkedWidgetId ?? ''} onChange={e => updateResultTarget(idx, { linkedWidgetId: e.target.value })}>
+                                  <option value="">— select —</option>
+                                  {scheduleWidgets.map(w => <option key={w.id} value={w.id}>{w.label || w.config?.title || 'Match Schedule'}</option>)}
+                                </select>
+                              </CustomBox>
                             </Field>
                             {t.linkedWidgetId && (
                               <Field label="Its target list">
-                                <select className="field-input" value={t.linkedListKey ?? 'scheduleVmixInputs'} onChange={e => updateResultTarget(idx, { linkedListKey: e.target.value as 'scheduleVmixInputs' | 'nextVmixInputs' })}>
-                                  <option value="scheduleVmixInputs">Full Schedule</option>
-                                  <option value="nextVmixInputs">Next Fixture(s)</option>
-                                </select>
+                                <CardSelect
+                                  value={t.linkedListKey ?? 'scheduleVmixInputs'}
+                                  onChange={v => updateResultTarget(idx, { linkedListKey: v })}
+                                  options={[{ value: 'scheduleVmixInputs' as const, label: 'Full Schedule' }, { value: 'nextVmixInputs' as const, label: 'Next Fixture(s)' }]}
+                                />
                               </Field>
                             )}
                             {linkedWidget && (
@@ -2887,10 +3816,11 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
                             {resultPrefixField(t, idx, 'scoreBPrefix', 'Score B prefix', 'Pick ScoreB1.Text → auto-prefix', effectiveInputKey)}
 
                             <Field label="Status field type">
-                              <select className="field-input" value={t.statusFieldType ?? 'text'} onChange={e => updateResultTarget(idx, { statusFieldType: e.target.value as 'text' | 'image' })}>
-                                <option value="text">Text (e.g. "FT")</option>
-                                <option value="image">Image (e.g. checkmark badge)</option>
-                              </select>
+                              <CardSelect
+                                value={t.statusFieldType ?? 'text'}
+                                onChange={v => updateResultTarget(idx, { statusFieldType: v })}
+                                options={[{ value: 'text' as const, label: 'Text (e.g. "FT")' }, { value: 'image' as const, label: 'Image badge' }]}
+                              />
                             </Field>
                             {resultPrefixField(t, idx, 'statusFieldPrefix', 'Status field prefix', 'Pick Status1.Text/.Source → auto-prefix', effectiveInputKey)}
                             {t.statusFieldType === 'image' ? (
@@ -2928,7 +3858,7 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
                             />
 
                             <Field label="Auto-sync on change">
-                              <input type="checkbox" checked={t.autoSync ?? false} onChange={e => updateResultTarget(idx, { autoSync: e.target.checked })} />
+                              <ToggleCard checked={t.autoSync ?? false} onChange={v => updateResultTarget(idx, { autoSync: v })} />
                             </Field>
                           </>
                         )}
@@ -2937,10 +3867,11 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
                   </div>
                 );
               })}
-              <button className="btn btn--ghost btn--small" onClick={() => setResultTargets([...resultTargets, { id: crypto.randomUUID(), mode: 'standalone', inputKey: '' }])}>+ Add vMix Target</button>
-            </CollapsibleSection>
-          </>
+            <button className="btn btn--ghost btn--small" onClick={() => setResultTargets([...resultTargets, { id: crypto.randomUUID(), mode: 'standalone', inputKey: '' }])}>+ Add vMix Target</button>
+          </CollapsibleSection>
         );
+
+        return renderTabbed(general, vmix);
       }
 
       case 'match-schedule': {
@@ -3036,7 +3967,7 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
                         />
 
                         <Field label="Auto-sync on change">
-                          <input type="checkbox" checked={t.autoSync ?? false} onChange={e => updateTarget(idx, { autoSync: e.target.checked })} />
+                          <ToggleCard checked={t.autoSync ?? false} onChange={v => updateTarget(idx, { autoSync: v })} />
                         </Field>
                       </>
                     )}
@@ -3048,46 +3979,56 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
           );
         };
 
-        return (
+        const general = (
         <>
           <Field label="Title">
             <input className="field-input" value={cfg.title ?? ''} placeholder="Upcoming Matches"
               onChange={e => up({ title: e.target.value })} />
           </Field>
           <Field label="Send To Scoreboard">
-            <select className="field-input" value={cfg.linkedScoreboardId ?? ''} onChange={e => up({ linkedScoreboardId: e.target.value })}>
-              <option value="">— none —</option>
-              {pages.flatMap(p => p.widgets.filter(w => w.type === 'scoreboard')).map(w => (
-                <option key={w.id} value={w.id}>{w.config.name || `Scoreboard (${w.config.teamAName || 'A'} vs ${w.config.teamBName || 'B'})`}</option>
-              ))}
-            </select>
+            <CustomBox>
+              <select className="field-input" value={cfg.linkedScoreboardId ?? ''} onChange={e => up({ linkedScoreboardId: e.target.value })}>
+                <option value="">— none —</option>
+                {pages.flatMap(p => p.widgets.filter(w => w.type === 'scoreboard')).map(w => (
+                  <option key={w.id} value={w.id}>{w.config.name || `Scoreboard (${w.config.teamAName || 'A'} vs ${w.config.teamBName || 'B'})`}</option>
+                ))}
+              </select>
+            </CustomBox>
           </Field>
           <Field label="Tournament">
-            <select className="field-input" value={cfg.filterTournamentId ?? ''}
-              onChange={e => up({ filterTournamentId: e.target.value, filterVenue: '', filterCategory: '', filterGroup: '' })}>
-              <option value="">{pageTournament ? `— Auto: ${pageTournament.name} (this canvas) —` : '— Follow title bar picker —'}</option>
-              {tournaments.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-            </select>
+            <CustomBox>
+              <select className="field-input" value={cfg.filterTournamentId ?? ''}
+                onChange={e => up({ filterTournamentId: e.target.value, filterVenue: '', filterCategory: '', filterGroup: '' })}>
+                <option value="">{pageTournament ? `— Auto: ${pageTournament.name} (this canvas) —` : '— Follow title bar picker —'}</option>
+                {tournaments.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+              </select>
+            </CustomBox>
           </Field>
           {filterTournament && (
             <>
               <Field label="Venue">
-                <select className="field-input" value={cfg.filterVenue ?? ''} onChange={e => up({ filterVenue: e.target.value })} disabled={filterVenues.length === 0}>
-                  <option value="">All Venues</option>
-                  {filterVenues.map(v => <option key={v} value={v}>{v}</option>)}
-                </select>
+                <CustomBox>
+                  <select className="field-input" value={cfg.filterVenue ?? ''} onChange={e => up({ filterVenue: e.target.value })} disabled={filterVenues.length === 0}>
+                    <option value="">All Venues</option>
+                    {filterVenues.map(v => <option key={v} value={v}>{v}</option>)}
+                  </select>
+                </CustomBox>
               </Field>
               <Field label="Category">
-                <select className="field-input" value={cfg.filterCategory ?? ''} onChange={e => up({ filterCategory: e.target.value })} disabled={filterCategories.length === 0}>
-                  <option value="">All Categories</option>
-                  {filterCategories.map(c => <option key={c} value={c}>{c}</option>)}
-                </select>
+                <CustomBox>
+                  <select className="field-input" value={cfg.filterCategory ?? ''} onChange={e => up({ filterCategory: e.target.value })} disabled={filterCategories.length === 0}>
+                    <option value="">All Categories</option>
+                    {filterCategories.map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </CustomBox>
               </Field>
               <Field label="Group">
-                <select className="field-input" value={cfg.filterGroup ?? ''} onChange={e => up({ filterGroup: e.target.value })} disabled={filterGroups.length === 0}>
-                  <option value="">All Groups</option>
-                  {filterGroups.map(g => <option key={g} value={g}>{g}</option>)}
-                </select>
+                <CustomBox>
+                  <select className="field-input" value={cfg.filterGroup ?? ''} onChange={e => up({ filterGroup: e.target.value })} disabled={filterGroups.length === 0}>
+                    <option value="">All Groups</option>
+                    {filterGroups.map(g => <option key={g} value={g}>{g}</option>)}
+                  </select>
+                </CustomBox>
               </Field>
             </>
           )}
@@ -3095,7 +4036,11 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
             Manage fixtures in DB → Schedule. Sent matches grey out here automatically.
             {!filterTournament && ' Leave Tournament blank to follow the title bar’s tournament/venue picker instead.'}
           </div>
+        </>
+        );
 
+        const vmix = (
+        <>
           {renderFixtureVmixSection('scheduleVmixInputs', 'vMix Full Schedule Sync',
             <>
               <Field label="Fixtures per page (0 = no limit)">
@@ -3119,11 +4064,13 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
             </Field>
           )}
         </>
-      );
+        );
+
+        return renderTabbed(general, vmix);
       }
 
       case 'rundown': {
-        return (
+        return renderTabbed(
         <>
           <Field label="Title">
             <input className="field-input" value={cfg.title ?? ''} placeholder="Rundown"
@@ -3141,25 +4088,29 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
       case 'standings': {
         const filterTournament = tournaments.find(t => t.id === (cfg.filterTournamentId || pageTournamentId));
         const filterCategories: string[] = filterTournament?.categories ?? [];
-        return (
+        return renderTabbed(
         <>
           <Field label="Title">
             <input className="field-input" value={cfg.title ?? ''} placeholder="Standings"
               onChange={e => up({ title: e.target.value })} />
           </Field>
           <Field label="Tournament">
-            <select className="field-input" value={cfg.filterTournamentId ?? ''}
-              onChange={e => up({ filterTournamentId: e.target.value, filterCategory: '' })}>
-              <option value="">{pageTournament ? `— Auto: ${pageTournament.name} (this canvas) —` : '— pick tournament —'}</option>
-              {tournaments.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-            </select>
+            <CustomBox>
+              <select className="field-input" value={cfg.filterTournamentId ?? ''}
+                onChange={e => up({ filterTournamentId: e.target.value, filterCategory: '' })}>
+                <option value="">{pageTournament ? `— Auto: ${pageTournament.name} (this canvas) —` : '— pick tournament —'}</option>
+                {tournaments.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+              </select>
+            </CustomBox>
           </Field>
           {filterCategories.length > 0 && (
             <Field label="Category">
-              <select className="field-input" value={cfg.filterCategory ?? ''} onChange={e => up({ filterCategory: e.target.value })}>
-                <option value="">All Categories</option>
-                {filterCategories.map(c => <option key={c} value={c}>{c}</option>)}
-              </select>
+              <CustomBox>
+                <select className="field-input" value={cfg.filterCategory ?? ''} onChange={e => up({ filterCategory: e.target.value })}>
+                  <option value="">All Categories</option>
+                  {filterCategories.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </CustomBox>
             </Field>
           )}
           <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '4px 2px' }}>
@@ -3202,34 +4153,44 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
             .map(m => m.tier)
             .filter((t): t is string => !!t && !t.includes('/'))
         ));
-        return (
+        const general = (
         <>
           <Field label="Tournament">
-            <select className="field-input" value={cfg.filterTournamentId ?? ''}
-              onChange={e => up({ filterTournamentId: e.target.value, filterCategory: '', filterTier: '' })}>
-              <option value="">{pageTournament ? `— Auto: ${pageTournament.name} (this canvas) —` : '— pick tournament —'}</option>
-              {tournaments.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-            </select>
+            <CustomBox>
+              <select className="field-input" value={cfg.filterTournamentId ?? ''}
+                onChange={e => up({ filterTournamentId: e.target.value, filterCategory: '', filterTier: '' })}>
+                <option value="">{pageTournament ? `— Auto: ${pageTournament.name} (this canvas) —` : '— pick tournament —'}</option>
+                {tournaments.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+              </select>
+            </CustomBox>
           </Field>
           {filterCategories.length > 0 && (
             <Field label="Category">
-              <select className="field-input" value={cfg.filterCategory ?? ''} onChange={e => up({ filterCategory: e.target.value, filterTier: '' })}>
-                <option value="">— pick category —</option>
-                {filterCategories.map(c => <option key={c} value={c}>{c}</option>)}
-              </select>
+              <CustomBox>
+                <select className="field-input" value={cfg.filterCategory ?? ''} onChange={e => up({ filterCategory: e.target.value, filterTier: '' })}>
+                  <option value="">— pick category —</option>
+                  {filterCategories.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </CustomBox>
             </Field>
           )}
           {filterTiers.length > 0 && (
             <Field label="Tier">
-              <select className="field-input" value={cfg.filterTier ?? ''} onChange={e => up({ filterTier: e.target.value })}>
-                <option value="">— pick tier —</option>
-                {filterTiers.map(t => <option key={t} value={t}>{t}</option>)}
-              </select>
+              <CustomBox>
+                <select className="field-input" value={cfg.filterTier ?? ''} onChange={e => up({ filterTier: e.target.value })}>
+                  <option value="">— pick tier —</option>
+                  {filterTiers.map(t => <option key={t} value={t}>{t}</option>)}
+                </select>
+              </CustomBox>
             </Field>
           )}
           <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '4px 2px' }}>
             Read-only display — edit bracket arrangement in DB → Bracket. A category must be picked once the tournament has any; same for tier on a Cup/Plate/Bowl/Shield tournament.
           </div>
+        </>
+        );
+
+        const vmix = (
           <CollapsibleSection label="vMix Output">
             <p style={{ fontSize: 10, color: 'var(--text-muted)', margin: '0 0 6px' }}>
               One input, one row per match (Stage1.Text, Stage2.Text, ...) in bracket order — earliest round first, 3rd Place Playoff (if any) last. Sent whenever a result changes.
@@ -3241,7 +4202,7 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
             {cfg.vmixInputKey && (
               <>
                 <Field label="Auto-sync on change">
-                  <input type="checkbox" checked={cfg.vmixAutoSync === true} onChange={e => up({ vmixAutoSync: e.target.checked })} />
+                  <ToggleCard checked={cfg.vmixAutoSync === true} onChange={v => up({ vmixAutoSync: v })} />
                 </Field>
                 {bracketPrefixField('stagePrefix', 'Stage/Round prefix', 'Pick Stage1.Text → auto-prefix')}
                 {bracketPrefixField('teamAPrefix', 'Team A prefix', 'Pick TeamA1.Text → auto-prefix')}
@@ -3268,8 +4229,9 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
               </>
             )}
           </CollapsibleSection>
-        </>
-      );
+        );
+
+        return renderTabbed(general, vmix);
       }
 
       case 'team-form': {
@@ -3278,15 +4240,17 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
           : null;
         const teamAName = linkedSb?.config.teamAName ?? 'Team A';
         const teamBName = linkedSb?.config.teamBName ?? 'Team B';
-        return (
+        const general = (
           <>
             <Field label="Linked Scoreboard">
-              <select className="field-input" value={cfg.linkedScoreboardId ?? ''} onChange={e => up({ linkedScoreboardId: e.target.value })}>
-                <option value="">— select scoreboard —</option>
-                {pages.flatMap(p => p.widgets.filter(w => w.type === 'scoreboard')).map(w => (
-                  <option key={w.id} value={w.id}>{w.config.teamAName ?? 'Team A'} vs {w.config.teamBName ?? 'Team B'}</option>
-                ))}
-              </select>
+              <CustomBox>
+                <select className="field-input" value={cfg.linkedScoreboardId ?? ''} onChange={e => up({ linkedScoreboardId: e.target.value })}>
+                  <option value="">— select scoreboard —</option>
+                  {pages.flatMap(p => p.widgets.filter(w => w.type === 'scoreboard')).map(w => (
+                    <option key={w.id} value={w.id}>{w.config.teamAName ?? 'Team A'} vs {w.config.teamBName ?? 'Team B'}</option>
+                  ))}
+                </select>
+              </CustomBox>
             </Field>
             <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '4px 2px' }}>
               Shows each team's recent results and upcoming fixtures, round by round — same data as the Scoreboard widget's own Head-to-Head panel.
@@ -3311,6 +4275,11 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
                 </div>
               ))}
             </CollapsibleSection>
+          </>
+        );
+
+        const vmix = (
+          <>
             <CollapsibleSection label={`vMix Output — ${teamAName}`}>
               <p style={{ fontSize: 10, color: 'var(--text-muted)', margin: '0 0 6px' }}>
                 Each field gets every row for that section joined with " | ", sent whenever the data changes.
@@ -3386,6 +4355,8 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
             </CollapsibleSection>
           </>
         );
+
+        return renderTabbed(general, vmix);
       }
 
       case 'player-h2h': {
@@ -3395,20 +4366,27 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
         const sbCfg = linkedSb?.config ?? {};
         const teamAName = sbCfg.teamAName ?? 'Team A';
         const teamBName = sbCfg.teamBName ?? 'Team B';
-        return (
+        const general = (
           <>
             <Field label="Linked Scoreboard">
-              <select className="field-input" value={cfg.linkedScoreboardId ?? ''}
-                onChange={e => up({ linkedScoreboardId: e.target.value, playerAId: '', playerBId: '' })}>
-                <option value="">— select scoreboard —</option>
-                {pages.flatMap(p => p.widgets.filter(w => w.type === 'scoreboard')).map(w => (
-                  <option key={w.id} value={w.id}>{w.config.teamAName ?? 'Team A'} vs {w.config.teamBName ?? 'Team B'}</option>
-                ))}
-              </select>
+              <CustomBox>
+                <select className="field-input" value={cfg.linkedScoreboardId ?? ''}
+                  onChange={e => up({ linkedScoreboardId: e.target.value, playerAId: '', playerBId: '' })}>
+                  <option value="">— select scoreboard —</option>
+                  {pages.flatMap(p => p.widgets.filter(w => w.type === 'scoreboard')).map(w => (
+                    <option key={w.id} value={w.id}>{w.config.teamAName ?? 'Team A'} vs {w.config.teamBName ?? 'Team B'}</option>
+                  ))}
+                </select>
+              </CustomBox>
             </Field>
             <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '4px 2px' }}>
               Which two players are compared is picked on the widget itself, not here — that's a frequent live choice, not a one-time setup step.
             </div>
+          </>
+        );
+
+        const vmix = (
+          <>
             <CollapsibleSection label="vMix Output">
               <p style={{ fontSize: 10, color: 'var(--text-muted)', margin: '0 0 6px' }}>
                 One input, one field per data point per player — sent whenever either player's data changes.
@@ -3474,30 +4452,42 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
             </CollapsibleSection>
             <CollapsibleSection label="Overlay">
               <Field label="Overlay Channel">
-                <select className="field-input" value={cfg.overlayChannel ?? 1} onChange={e => up({ overlayChannel: Number(e.target.value) })}>
-                  {[1, 2, 3, 4].map(n => <option key={n} value={n}>Overlay {n}</option>)}
-                </select>
+                <CardSelect
+                  value={cfg.overlayChannel ?? 1}
+                  onChange={v => up({ overlayChannel: v })}
+                  columns={4}
+                  options={[1, 2, 3, 4].map(n => ({ value: n, label: `Overlay ${n}` }))}
+                />
               </Field>
             </CollapsibleSection>
           </>
         );
+
+        return renderTabbed(general, vmix);
       }
 
       case 'player-stats': {
-        return (
+        const general = (
           <>
             <Field label="Linked Scoreboard">
-              <select className="field-input" value={cfg.linkedScoreboardId ?? ''}
-                onChange={e => up({ linkedScoreboardId: e.target.value, playerId: '' })}>
-                <option value="">— select scoreboard —</option>
-                {pages.flatMap(p => p.widgets.filter(w => w.type === 'scoreboard')).map(w => (
-                  <option key={w.id} value={w.id}>{w.config.teamAName ?? 'Team A'} vs {w.config.teamBName ?? 'Team B'}</option>
-                ))}
-              </select>
+              <CustomBox>
+                <select className="field-input" value={cfg.linkedScoreboardId ?? ''}
+                  onChange={e => up({ linkedScoreboardId: e.target.value, playerId: '' })}>
+                  <option value="">— select scoreboard —</option>
+                  {pages.flatMap(p => p.widgets.filter(w => w.type === 'scoreboard')).map(w => (
+                    <option key={w.id} value={w.id}>{w.config.teamAName ?? 'Team A'} vs {w.config.teamBName ?? 'Team B'}</option>
+                  ))}
+                </select>
+              </CustomBox>
             </Field>
             <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '4px 2px' }}>
               Team (Home/Away) and Player are picked on the widget itself, not here — that's a frequent live choice, not a one-time setup step.
             </div>
+          </>
+        );
+
+        const vmix = (
+          <>
             <CollapsibleSection label="vMix Output">
               <p style={{ fontSize: 10, color: 'var(--text-muted)', margin: '0 0 6px' }}>
                 One input, one field per data point — sent whenever the player's data changes.
@@ -3509,7 +4499,7 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
               {cfg.vmixInputKey && (
                 <>
                   <Field label="Auto-sync on change">
-                    <input type="checkbox" checked={cfg.vmixAutoSync === true} onChange={e => up({ vmixAutoSync: e.target.checked })} />
+                    <ToggleCard checked={cfg.vmixAutoSync === true} onChange={v => up({ vmixAutoSync: v })} />
                   </Field>
                   <Field label="Name Field">{renderFieldPicker(cfg.vmixInputKey, cfg.fieldName ?? '', v => up({ fieldName: v }), 'Title.Text', undefined, allInputs)}</Field>
                   <Field label="Jersey Field">{renderFieldPicker(cfg.vmixInputKey, cfg.fieldJersey ?? '', v => up({ fieldJersey: v }), 'Title.Text', undefined, allInputs)}</Field>
@@ -3538,30 +4528,42 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
             </CollapsibleSection>
             <CollapsibleSection label="Overlay">
               <Field label="Overlay Channel">
-                <select className="field-input" value={cfg.overlayChannel ?? 1} onChange={e => up({ overlayChannel: Number(e.target.value) })}>
-                  {[1, 2, 3, 4].map(n => <option key={n} value={n}>Overlay {n}</option>)}
-                </select>
+                <CardSelect
+                  value={cfg.overlayChannel ?? 1}
+                  onChange={v => up({ overlayChannel: v })}
+                  columns={4}
+                  options={[1, 2, 3, 4].map(n => ({ value: n, label: `Overlay ${n}` }))}
+                />
               </Field>
             </CollapsibleSection>
           </>
         );
+
+        return renderTabbed(general, vmix);
       }
 
       case 'player-highlight': {
-        return (
+        const general = (
           <>
             <Field label="Linked Scoreboard">
-              <select className="field-input" value={cfg.linkedScoreboardId ?? ''}
-                onChange={e => up({ linkedScoreboardId: e.target.value, playerId: '' })}>
-                <option value="">— select scoreboard —</option>
-                {pages.flatMap(p => p.widgets.filter(w => w.type === 'scoreboard')).map(w => (
-                  <option key={w.id} value={w.id}>{w.config.teamAName ?? 'Team A'} vs {w.config.teamBName ?? 'Team B'}</option>
-                ))}
-              </select>
+              <CustomBox>
+                <select className="field-input" value={cfg.linkedScoreboardId ?? ''}
+                  onChange={e => up({ linkedScoreboardId: e.target.value, playerId: '' })}>
+                  <option value="">— select scoreboard —</option>
+                  {pages.flatMap(p => p.widgets.filter(w => w.type === 'scoreboard')).map(w => (
+                    <option key={w.id} value={w.id}>{w.config.teamAName ?? 'Team A'} vs {w.config.teamBName ?? 'Team B'}</option>
+                  ))}
+                </select>
+              </CustomBox>
             </Field>
             <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '4px 2px' }}>
               Title (MVP, Best Player, etc.), Team (Home/Away) and Player are all picked on the widget itself, not here — frequent live choices, not one-time setup steps.
             </div>
+          </>
+        );
+
+        const vmix = (
+          <>
             <CollapsibleSection label="vMix Output">
               <p style={{ fontSize: 10, color: 'var(--text-muted)', margin: '0 0 6px' }}>
                 One input, one field per data point — sent whenever the highlighted player or title changes.
@@ -3573,7 +4575,7 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
               {cfg.vmixInputKey && (
                 <>
                   <Field label="Auto-sync on change">
-                    <input type="checkbox" checked={cfg.vmixAutoSync === true} onChange={e => up({ vmixAutoSync: e.target.checked })} />
+                    <ToggleCard checked={cfg.vmixAutoSync === true} onChange={v => up({ vmixAutoSync: v })} />
                   </Field>
                   <Field label="Title Field">{renderFieldPicker(cfg.vmixInputKey, cfg.fieldTitle ?? '', v => up({ fieldTitle: v }), 'Title.Text', undefined, allInputs)}</Field>
                   <Field label="Name Field">{renderFieldPicker(cfg.vmixInputKey, cfg.fieldName ?? '', v => up({ fieldName: v }), 'Title.Text', undefined, allInputs)}</Field>
@@ -3607,6 +4609,8 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
             </CollapsibleSection>
           </>
         );
+
+        return renderTabbed(general, vmix);
       }
 
       case 'group-standings': {
@@ -3622,16 +4626,18 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
             )}
           </Field>
         );
-        return (
+        const general = (
           <>
             <Field label="Linked Scoreboard">
-              <select className="field-input" value={cfg.linkedScoreboardId ?? ''}
-                onChange={e => up({ linkedScoreboardId: e.target.value })}>
-                <option value="">— select scoreboard —</option>
-                {pages.flatMap(p => p.widgets.filter(w => w.type === 'scoreboard')).map(w => (
-                  <option key={w.id} value={w.id}>{w.config.teamAName ?? 'Team A'} vs {w.config.teamBName ?? 'Team B'}</option>
-                ))}
-              </select>
+              <CustomBox>
+                <select className="field-input" value={cfg.linkedScoreboardId ?? ''}
+                  onChange={e => up({ linkedScoreboardId: e.target.value })}>
+                  <option value="">— select scoreboard —</option>
+                  {pages.flatMap(p => p.widgets.filter(w => w.type === 'scoreboard')).map(w => (
+                    <option key={w.id} value={w.id}>{w.config.teamAName ?? 'Team A'} vs {w.config.teamBName ?? 'Team B'}</option>
+                  ))}
+                </select>
+              </CustomBox>
             </Field>
             <Field label="Title">
               <input className="field-input" value={cfg.title ?? ''} placeholder="Standings"
@@ -3640,6 +4646,11 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
             <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '4px 2px' }}>
               Which group shows here follows the linked scoreboard's current teams automatically — no separate group picker needed.
             </div>
+          </>
+        );
+
+        const vmix = (
+          <>
             <CollapsibleSection label="vMix Output">
               <p style={{ fontSize: 10, color: 'var(--text-muted)', margin: '0 0 6px' }}>
                 One input, one row per team (Rank1.Text, Rank2.Text, ...) — sent whenever the group's standings change.
@@ -3651,7 +4662,7 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
               {cfg.vmixInputKey && (
                 <>
                   <Field label="Auto-sync on change">
-                    <input type="checkbox" checked={cfg.vmixAutoSync === true} onChange={e => up({ vmixAutoSync: e.target.checked })} />
+                    <ToggleCard checked={cfg.vmixAutoSync === true} onChange={v => up({ vmixAutoSync: v })} />
                   </Field>
                   <Field label="Group/Pool Name field">
                     {renderFieldPicker(cfg.vmixInputKey ?? '', cfg.groupField ?? '', v => up({ groupField: v }), 'Group.Text')}
@@ -3688,43 +4699,49 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
             </CollapsibleSection>
           </>
         );
+
+        return renderTabbed(general, vmix);
       }
 
-      case 'input-tally': return (
+      case 'input-tally': return renderTabbed(
         <>
-          {renderInputPicker(
-            'Input',
-            cfg.inputKey ?? '',
-            cfg.inputTitle,
-            (key, title) => up({ inputKey: key, inputTitle: title }),
-            undefined,
-            allInputs,
-          )}
           <Field label="Show Title">
-            <input type="checkbox" checked={cfg.showTitle !== false} onChange={e => up({ showTitle: e.target.checked })} />
+            <ToggleCard checked={cfg.showTitle !== false} onChange={v => up({ showTitle: v })} />
           </Field>
           <Field label="Show Type">
-            <input type="checkbox" checked={cfg.showType !== false} onChange={e => up({ showType: e.target.checked })} />
+            <ToggleCard checked={cfg.showType !== false} onChange={v => up({ showType: v })} />
           </Field>
-        </>
+        </>,
+        renderInputPicker(
+          'Input',
+          cfg.inputKey ?? '',
+          cfg.inputTitle,
+          (key, title) => up({ inputKey: key, inputTitle: title }),
+          undefined,
+          allInputs,
+        )
       );
 
-      case 'transitions': return (
+      case 'transitions': return renderTabbed(
         <>
           <Field label="Buttons">
-            <div className="trans-picker">
-              {TRANS_KEYS.map(key => (
-                <label key={key} className="trans-picker-item">
-                  <input type="checkbox"
-                    checked={(cfg.buttons ?? ['cut','fade','auto']).includes(key)}
-                    onChange={e => {
-                      const current: string[] = cfg.buttons ?? ['cut','fade','auto'];
-                      const next = e.target.checked ? [...current, key] : current.filter(k => k !== key);
-                      up({ buttons: next });
-                    }} />
-                  {key.toUpperCase()}
-                </label>
-              ))}
+            <div className="tm-ms-duration-grid" style={{ gridTemplateColumns: `repeat(${TRANS_KEYS.length + 1}, 1fr)` }}>
+              {TRANS_KEYS.map(key => {
+                const current: string[] = cfg.buttons ?? ['cut', 'fade', 'auto'];
+                const active = current.includes(key);
+                return (
+                  <button key={key} type="button"
+                    className={`tm-ms-sport-card${active ? ' tm-ms-sport-card--active' : ''}`}
+                    onClick={() => up({ buttons: active ? current.filter(k => k !== key) : [...current, key] })}>
+                    <span className="tm-ms-sport-card-name">{key.toUpperCase()}</span>
+                  </button>
+                );
+              })}
+              <button type="button"
+                className={`tm-ms-sport-card${(cfg.buttons ?? ['cut', 'fade', 'auto']).length === 0 ? ' tm-ms-sport-card--active' : ''}`}
+                onClick={() => up({ buttons: [] })}>
+                <span className="tm-ms-sport-card-name">None</span>
+              </button>
             </div>
           </Field>
         </>
@@ -3738,15 +4755,17 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
         const teamBName = linkedSb?.config.teamBName ?? 'Team B';
         const teamAColor = linkedSb?.config.teamAColor ?? '#e74c3c';
         const teamBColor = linkedSb?.config.teamBColor ?? '#3498db';
-        return (
+        const general = (
           <>
             <Field label="Linked Scoreboard">
-              <select className="field-input" value={cfg.linkedScoreboardId ?? ''} onChange={e => up({ linkedScoreboardId: e.target.value })}>
-                <option value="">— select scoreboard —</option>
-                {pages.flatMap(p => p.widgets.filter(w => w.type === 'scoreboard')).map(w => (
-                  <option key={w.id} value={w.id}>{w.config.teamAName ?? 'Team A'} vs {w.config.teamBName ?? 'Team B'}</option>
-                ))}
-              </select>
+              <CustomBox>
+                <select className="field-input" value={cfg.linkedScoreboardId ?? ''} onChange={e => up({ linkedScoreboardId: e.target.value })}>
+                  <option value="">— select scoreboard —</option>
+                  {pages.flatMap(p => p.widgets.filter(w => w.type === 'scoreboard')).map(w => (
+                    <option key={w.id} value={w.id}>{w.config.teamAName ?? 'Team A'} vs {w.config.teamBName ?? 'Team B'}</option>
+                  ))}
+                </select>
+              </CustomBox>
             </Field>
             <Field label="Show team">
               <div className="team-side-picker">
@@ -3764,6 +4783,21 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
                 ))}
               </div>
             </Field>
+            <Field label="Player Highlight Widget">
+              <CustomBox>
+                <select className="field-input" value={cfg.linkedPlayerHighlightId ?? ''} onChange={e => up({ linkedPlayerHighlightId: e.target.value })}>
+                  <option value="">— none —</option>
+                  {pages.flatMap(p => p.widgets).filter(w => w.type === 'player-lower-third').map(w => (
+                    <option key={w.id} value={w.id}>Player Highlight {w.id.slice(0, 6)}</option>
+                  ))}
+                </select>
+              </CustomBox>
+            </Field>
+          </>
+        );
+
+        const vmix = (
+          <>
             <CollapsibleSection label="vMix Summary Output">
               <p style={{ fontSize: 10, color: 'var(--text-muted)', margin: '0 0 6px' }}>
                 Sends a per-player score summary (jersey · name: count×action pts) to a vMix text field whenever the log changes.
@@ -3780,44 +4814,42 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
                 </Field>
               )}
             </CollapsibleSection>
-            <Field label="Player Highlight Widget">
-              <select className="field-input" value={cfg.linkedPlayerHighlightId ?? ''} onChange={e => up({ linkedPlayerHighlightId: e.target.value })}>
-                <option value="">— none —</option>
-                {pages.flatMap(p => p.widgets).filter(w => w.type === 'player-lower-third').map(w => (
-                  <option key={w.id} value={w.id}>Player Highlight {w.id.slice(0, 6)}</option>
-                ))}
-              </select>
-            </Field>
           </>
         );
+
+        return renderTabbed(general, vmix);
       }
 
-      case 'timeline': return (
+      case 'timeline': return renderTabbed(
         <>
           <Field label="Title">
             <input className="field-input" value={cfg.title ?? 'Match Timeline'} onChange={e => up({ title: e.target.value })} />
           </Field>
           <Field label="Linked Timer">
-            <select className="field-input" value={cfg.linkedTimerWidgetId ?? ''} onChange={e => up({ linkedTimerWidgetId: e.target.value })}>
-              <option value="">— wall clock —</option>
-              {pages.flatMap(p => p.widgets.filter(w => w.type === 'timer')).map(w => (
-                <option key={w.id} value={w.id}>{w.config.name || 'Timer'}</option>
-              ))}
-            </select>
+            <CustomBox>
+              <select className="field-input" value={cfg.linkedTimerWidgetId ?? ''} onChange={e => up({ linkedTimerWidgetId: e.target.value })}>
+                <option value="">— wall clock —</option>
+                {pages.flatMap(p => p.widgets.filter(w => w.type === 'timer')).map(w => (
+                  <option key={w.id} value={w.id}>{w.config.name || 'Timer'}</option>
+                ))}
+              </select>
+            </CustomBox>
           </Field>
           <Field label="Linked Scoreboard">
-            <select className="field-input" value={cfg.linkedScoreboardId ?? ''} onChange={e => up({ linkedScoreboardId: e.target.value })}>
-              <option value="">— none —</option>
-              {pages.flatMap(p => p.widgets.filter(w => w.type === 'scoreboard')).map(w => (
-                <option key={w.id} value={w.id}>{w.config.teamAName ?? 'Team A'} vs {w.config.teamBName ?? 'Team B'}</option>
-              ))}
-            </select>
+            <CustomBox>
+              <select className="field-input" value={cfg.linkedScoreboardId ?? ''} onChange={e => up({ linkedScoreboardId: e.target.value })}>
+                <option value="">— none —</option>
+                {pages.flatMap(p => p.widgets.filter(w => w.type === 'scoreboard')).map(w => (
+                  <option key={w.id} value={w.id}>{w.config.teamAName ?? 'Team A'} vs {w.config.teamBName ?? 'Team B'}</option>
+                ))}
+              </select>
+            </CustomBox>
           </Field>
 
           <CollapsibleSection label="Appearance">
             <Field label="Show team header">
               <label className="toggle-row">
-                <input type="checkbox" checked={cfg.showTeamHeader ?? true} onChange={e => up({ showTeamHeader: e.target.checked })} />
+                <ToggleCard checked={cfg.showTeamHeader ?? true} onChange={v => up({ showTeamHeader: v })} />
                 <span>Show team names bar</span>
               </label>
             </Field>
@@ -3947,7 +4979,7 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
                       dragKey={`${widget.id}_${keyPrefix}_teamtitle`}
                     />
                     <Field label="Auto-sync on change">
-                      <input type="checkbox" checked={cfg[pk('vmixTeamAutoSync')] ?? false} onChange={e => pup({ vmixTeamAutoSync: e.target.checked })} />
+                      <ToggleCard checked={cfg[pk('vmixTeamAutoSync')] ?? false} onChange={v => pup({ vmixTeamAutoSync: v })} />
                     </Field>
                   </>
                 )}
@@ -4008,7 +5040,7 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
                               )}
                             </Field>
                             <Field label="Auto-sync on edit">
-                              <input type="checkbox" checked={inp.vmixAutoSync} onChange={e => updatePl(idx, { vmixAutoSync: e.target.checked })} />
+                              <ToggleCard checked={inp.vmixAutoSync} onChange={v => updatePl(idx, { vmixAutoSync: v })} />
                             </Field>
                           </>
                         )}
@@ -4054,7 +5086,7 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
                       dragKey={`${widget.id}_${keyPrefix}_staff`}
                     />
                     <Field label="Auto-sync on edit">
-                      <input type="checkbox" checked={cfg[pk('vmixStaffAutoSync')] ?? false} onChange={e => pup({ vmixStaffAutoSync: e.target.checked })} />
+                      <ToggleCard checked={cfg[pk('vmixStaffAutoSync')] ?? false} onChange={v => pup({ vmixStaffAutoSync: v })} />
                     </Field>
                   </>
                 )}
@@ -4076,89 +5108,112 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
 
         return (
           <>
+            <SettingsSummary rows={[
+              { icon: Users, label: 'Layout', value: dualLayout ? 'Both teams' : 'One side' },
+              { icon: Square, label: 'Size', value: (cfg.viewSize ?? 'normal')[0].toUpperCase() + (cfg.viewSize ?? 'normal').slice(1) },
+              { icon: Star, label: 'Stats', value: cfg.showStats ? 'Shown' : 'Hidden' },
+            ]} />
             <Field label="Tournament">
-              <select className="field-input" value={cfg.linkedTournamentId ?? ''} onChange={e => up({ linkedTournamentId: e.target.value })}>
-                <option value="">{pageTournament ? `— Auto: ${pageTournament.name} (this canvas) —` : '— select tournament (for periods/settings) —'}</option>
-                {tournaments.map(t => (
-                  <option key={t.id} value={t.id}>{t.name}</option>
-                ))}
-              </select>
+              <CustomBox>
+                <select className="field-input" value={cfg.linkedTournamentId ?? ''} onChange={e => up({ linkedTournamentId: e.target.value })}>
+                  <option value="">{pageTournament ? `— Auto: ${pageTournament.name} (this canvas) —` : '— select tournament (for periods/settings) —'}</option>
+                  {tournaments.map(t => (
+                    <option key={t.id} value={t.id}>{t.name}</option>
+                  ))}
+                </select>
+              </CustomBox>
             </Field>
 
             {isNextMatch ? (
               <>
                 <Field label="Venue">
-                  <select className="field-input" value={cfg.filterVenue ?? ''} onChange={e => up({ filterVenue: e.target.value })} disabled={nextMatchVenues.length === 0}>
-                    <option value="">All Venues</option>
-                    {nextMatchVenues.map(v => <option key={v} value={v}>{v}</option>)}
-                  </select>
+                  <CustomBox>
+                    <select className="field-input" value={cfg.filterVenue ?? ''} onChange={e => up({ filterVenue: e.target.value })} disabled={nextMatchVenues.length === 0}>
+                      <option value="">All Venues</option>
+                      {nextMatchVenues.map(v => <option key={v} value={v}>{v}</option>)}
+                    </select>
+                  </CustomBox>
                 </Field>
                 <Field label="Category">
-                  <select className="field-input" value={cfg.filterCategory ?? ''} onChange={e => up({ filterCategory: e.target.value })} disabled={nextMatchCategories.length === 0}>
-                    <option value="">All Categories</option>
-                    {nextMatchCategories.map(c => <option key={c} value={c}>{c}</option>)}
-                  </select>
+                  <CustomBox>
+                    <select className="field-input" value={cfg.filterCategory ?? ''} onChange={e => up({ filterCategory: e.target.value })} disabled={nextMatchCategories.length === 0}>
+                      <option value="">All Categories</option>
+                      {nextMatchCategories.map(c => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  </CustomBox>
                 </Field>
               </>
             ) : (
               <>
                 <Field label="Link Scoreboard">
-                  <select className="field-input" value={cfg.linkedScoreboardId ?? ''} onChange={e => up({ linkedScoreboardId: e.target.value })}>
-                    <option value="">— none (pick team directly) —</option>
-                    {scoreboardWidgets.map(w => (
-                      <option key={w.id} value={w.id}>{w.config.name || `Scoreboard (${w.config.teamAName || 'A'} vs ${w.config.teamBName || 'B'})`}</option>
-                    ))}
-                  </select>
+                  <CustomBox>
+                    <select className="field-input" value={cfg.linkedScoreboardId ?? ''} onChange={e => up({ linkedScoreboardId: e.target.value })}>
+                      <option value="">— none (pick team directly) —</option>
+                      {scoreboardWidgets.map(w => (
+                        <option key={w.id} value={w.id}>{w.config.name || `Scoreboard (${w.config.teamAName || 'A'} vs ${w.config.teamBName || 'B'})`}</option>
+                      ))}
+                    </select>
+                  </CustomBox>
                 </Field>
                 {cfg.linkedScoreboardId ? (
                   <>
                     <Field label="Layout">
-                      <select className="field-input" value={cfg.layout ?? 'single'} onChange={e => up({ layout: e.target.value })}>
-                        <option value="single">Follow one side</option>
-                        <option value="side-by-side">Both teams side by side</option>
-                      </select>
+                      <CardSelect
+                        value={cfg.layout ?? 'single'}
+                        onChange={v => up({ layout: v })}
+                        options={[{ value: 'single', label: 'Follow one side' }, { value: 'side-by-side', label: 'Both sides' }]}
+                      />
                     </Field>
                     {(cfg.layout ?? 'single') !== 'side-by-side' && (
                       <Field label="Team Side">
-                        <select className="field-input" value={cfg.teamSide ?? 'A'} onChange={e => up({ teamSide: e.target.value })}>
-                          <option value="A">Team A</option>
-                          <option value="B">Team B</option>
-                        </select>
+                        <CardSelect
+                          value={cfg.teamSide ?? 'A'}
+                          onChange={v => up({ teamSide: v })}
+                          options={[{ value: 'A', label: 'Team A' }, { value: 'B', label: 'Team B' }]}
+                        />
                       </Field>
                     )}
                   </>
                 ) : (
                   <Field label="Team">
-                    <select className="field-input" value={cfg.linkedTeamId ?? ''} onChange={e => up({ linkedTeamId: e.target.value })}>
-                      <option value="">— select team —</option>
-                      {scopedTeams.map(t => (
-                        <option key={t.id} value={t.id}>{t.name}</option>
-                      ))}
-                    </select>
+                    <CustomBox>
+                      <select className="field-input" value={cfg.linkedTeamId ?? ''} onChange={e => up({ linkedTeamId: e.target.value })}>
+                        <option value="">— select team —</option>
+                        {scopedTeams.map(t => (
+                          <option key={t.id} value={t.id}>{t.name}</option>
+                        ))}
+                      </select>
+                    </CustomBox>
                   </Field>
                 )}
               </>
             )}
 
             <Field label="Player Highlight Widget">
-              <select className="field-input" value={cfg.linkedPlayerHighlightId ?? ''} onChange={e => up({ linkedPlayerHighlightId: e.target.value })}>
-                <option value="">— none —</option>
-                {pages.flatMap(p => p.widgets).filter(w => w.type === 'player-lower-third').map(w => (
-                  <option key={w.id} value={w.id}>Player Highlight {w.id.slice(0, 6)}</option>
-                ))}
-              </select>
+              <CustomBox>
+                <select className="field-input" value={cfg.linkedPlayerHighlightId ?? ''} onChange={e => up({ linkedPlayerHighlightId: e.target.value })}>
+                  <option value="">— none —</option>
+                  {pages.flatMap(p => p.widgets).filter(w => w.type === 'player-lower-third').map(w => (
+                    <option key={w.id} value={w.id}>Player Highlight {w.id.slice(0, 6)}</option>
+                  ))}
+                </select>
+              </CustomBox>
             </Field>
             <Field label="Linked Timer">
-              <select className="field-input" value={cfg.linkedTimerWidgetId ?? ''} onChange={e => up({ linkedTimerWidgetId: e.target.value })}>
-                <option value="">— none —</option>
-                {timerWidgets.map(w => <option key={w.id} value={w.id}>{w.config.name || 'Timer'}</option>)}
-              </select>
+              <CustomBox>
+                <select className="field-input" value={cfg.linkedTimerWidgetId ?? ''} onChange={e => up({ linkedTimerWidgetId: e.target.value })}>
+                  <option value="">— none —</option>
+                  {timerWidgets.map(w => <option key={w.id} value={w.id}>{w.config.name || 'Timer'}</option>)}
+                </select>
+              </CustomBox>
             </Field>
             <Field label="Linked Timeline (for auto-log)">
-              <select className="field-input" value={cfg.linkedTimelineId ?? ''} onChange={e => up({ linkedTimelineId: e.target.value })}>
-                <option value="">— none —</option>
-                {timelineWidgets.map(w => <option key={w.id} value={w.id}>{w.config.title || 'Timeline'}</option>)}
-              </select>
+              <CustomBox>
+                <select className="field-input" value={cfg.linkedTimelineId ?? ''} onChange={e => up({ linkedTimelineId: e.target.value })}>
+                  <option value="">— none —</option>
+                  {timelineWidgets.map(w => <option key={w.id} value={w.id}>{w.config.title || 'Timeline'}</option>)}
+                </select>
+              </CustomBox>
             </Field>
 
             {dualLayout ? (
@@ -4170,26 +5225,31 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
 
             <CollapsibleSection label="Display">
             <Field label="Show time played">
-              <input type="checkbox" checked={cfg.showTime !== false} onChange={e => up({ showTime: e.target.checked })} />
+              <ToggleCard checked={cfg.showTime !== false} onChange={v => up({ showTime: v })} />
             </Field>
             <Field label="Show sin bin timer">
-              <input type="checkbox" checked={cfg.showSinBinTimer !== false} onChange={e => up({ showSinBinTimer: e.target.checked })} />
+              <ToggleCard checked={cfg.showSinBinTimer !== false} onChange={v => up({ showSinBinTimer: v })} />
             </Field>
             <Field label="Show position">
-              <input type="checkbox" checked={cfg.showPosition !== false} onChange={e => up({ showPosition: e.target.checked })} />
+              <ToggleCard checked={cfg.showPosition !== false} onChange={v => up({ showPosition: v })} />
             </Field>
             <Field label="Show card buttons">
-              <input type="checkbox" checked={cfg.showCards !== false} onChange={e => up({ showCards: e.target.checked })} />
+              <ToggleCard checked={cfg.showCards !== false} onChange={v => up({ showCards: v })} />
             </Field>
             <Field label="Show player stats (T/C/P/DG/YC/RC/APP)">
-              <input type="checkbox" checked={cfg.showStats === true} onChange={e => up({ showStats: e.target.checked })} />
+              <ToggleCard checked={cfg.showStats === true} onChange={v => up({ showStats: v })} />
             </Field>
             <Field label="Widget size">
-              <select className="field-input" value={cfg.viewSize ?? 'normal'} onChange={e => up({ viewSize: e.target.value })}>
-                <option value="compact">Compact</option>
-                <option value="normal">Normal</option>
-                <option value="large">Large</option>
-              </select>
+              <CardSelect
+                value={cfg.viewSize ?? 'normal'}
+                onChange={v => up({ viewSize: v })}
+                columns={3}
+                options={[
+                  { value: 'compact', label: 'Compact', icon: Minimize },
+                  { value: 'normal', label: 'Normal', icon: Square },
+                  { value: 'large', label: 'Large', icon: Maximize },
+                ]}
+              />
             </Field>
             <Field label="Sin bin duration (min)">
               <input
@@ -4217,21 +5277,27 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
         // Player List automatically; Player List below only matters as a
         // manual override (or the sole way in, for a standalone widget with
         // no Scoreboard on the page).
-        return (
+        const general = (
           <>
             <Field label="Link Scoreboard">
-              <select className="field-input" value={cfg.linkedScoreboardId ?? ''} onChange={e => up({ linkedScoreboardId: e.target.value })}>
-                <option value="">— none (pick Player List directly below) —</option>
-                {scoreboardWidgetsForSub.map(w => (
-                  <option key={w.id} value={w.id}>{w.config.name || `Scoreboard (${w.config.teamAName || 'A'} vs ${w.config.teamBName || 'B'})`}</option>
-                ))}
-              </select>
+              <CustomBox>
+                <select className="field-input" value={cfg.linkedScoreboardId ?? ''} onChange={e => up({ linkedScoreboardId: e.target.value })}>
+                  <option value="">— none (pick Player List directly below) —</option>
+                  {scoreboardWidgetsForSub.map(w => (
+                    <option key={w.id} value={w.id}>{w.config.name || `Scoreboard (${w.config.teamAName || 'A'} vs ${w.config.teamBName || 'B'})`}</option>
+                  ))}
+                </select>
+              </CustomBox>
             </Field>
             <Field label="Team Side">
-              <select className="field-input" value={cfg.teamSide ?? 'A'} onChange={e => up({ teamSide: e.target.value })}>
-                <option value="A">{cfg.linkedScoreboardId ? (scoreboardWidgetsForSub.find(w => w.id === cfg.linkedScoreboardId)?.config.teamAName || 'Team A') : 'Team A'}</option>
-                <option value="B">{cfg.linkedScoreboardId ? (scoreboardWidgetsForSub.find(w => w.id === cfg.linkedScoreboardId)?.config.teamBName || 'Team B') : 'Team B'}</option>
-              </select>
+              <CardSelect
+                value={cfg.teamSide ?? 'A'}
+                onChange={v => up({ teamSide: v })}
+                options={[
+                  { value: 'A', label: cfg.linkedScoreboardId ? (scoreboardWidgetsForSub.find(w => w.id === cfg.linkedScoreboardId)?.config.teamAName || 'Team A') : 'Team A' },
+                  { value: 'B', label: cfg.linkedScoreboardId ? (scoreboardWidgetsForSub.find(w => w.id === cfg.linkedScoreboardId)?.config.teamBName || 'Team B') : 'Team B' },
+                ]}
+              />
             </Field>
             <span className="field-hint" style={{ fontSize: 10, color: 'var(--text-muted)', display: 'block', marginTop: -4, marginBottom: 4 }}>
               {cfg.linkedScoreboardId
@@ -4239,28 +5305,42 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
                 : 'No scoreboard linked — pick a Player List directly below.'}
             </span>
             <Field label="Player List">
-              <select className="field-input" value={cfg.linkedPlayerListId ?? ''} onChange={e => up({ linkedPlayerListId: e.target.value })}>
-                <option value="">— auto (follow scoreboard / page) —</option>
-                {allPlayerListWidgets.map(w => <option key={w.id} value={w.id}>{plLabel2(w)}</option>)}
-              </select>
+              <CustomBox>
+                <select className="field-input" value={cfg.linkedPlayerListId ?? ''} onChange={e => up({ linkedPlayerListId: e.target.value })}>
+                  <option value="">— auto (follow scoreboard / page) —</option>
+                  {allPlayerListWidgets.map(w => <option key={w.id} value={w.id}>{plLabel2(w)}</option>)}
+                </select>
+              </CustomBox>
             </Field>
             <Field label="Linked Timer">
-              <select className="field-input" value={cfg.linkedTimerWidgetId ?? ''} onChange={e => up({ linkedTimerWidgetId: e.target.value })}>
-                <option value="">— none —</option>
-                {timerWidgets2.map(w => <option key={w.id} value={w.id}>{w.config.name || 'Timer'}</option>)}
-              </select>
+              <CustomBox>
+                <select className="field-input" value={cfg.linkedTimerWidgetId ?? ''} onChange={e => up({ linkedTimerWidgetId: e.target.value })}>
+                  <option value="">— none —</option>
+                  {timerWidgets2.map(w => <option key={w.id} value={w.id}>{w.config.name || 'Timer'}</option>)}
+                </select>
+              </CustomBox>
             </Field>
             <Field label="Linked Timeline">
-              <select className="field-input" value={cfg.linkedTimelineId ?? ''} onChange={e => up({ linkedTimelineId: e.target.value })}>
-                <option value="">— none —</option>
-                {timelineWidgets2.map(w => <option key={w.id} value={w.id}>{w.config.title || 'Timeline'}</option>)}
-              </select>
+              <CustomBox>
+                <select className="field-input" value={cfg.linkedTimelineId ?? ''} onChange={e => up({ linkedTimelineId: e.target.value })}>
+                  <option value="">— none —</option>
+                  {timelineWidgets2.map(w => <option key={w.id} value={w.id}>{w.config.title || 'Timeline'}</option>)}
+                </select>
+              </CustomBox>
             </Field>
+          </>
+        );
+
+        const vmix = (
+          <>
             <CollapsibleSection label="vMix Sub Overlay">
               <Field label="Overlay Channel">
-                <select className="field-input" value={cfg.overlayChannel ?? 1} onChange={e => up({ overlayChannel: Number(e.target.value) })}>
-                  {[1, 2, 3, 4].map(n => <option key={n} value={n}>Overlay {n}</option>)}
-                </select>
+                <CardSelect
+                  value={cfg.overlayChannel ?? 1}
+                  onChange={v => up({ overlayChannel: v })}
+                  columns={4}
+                  options={[1, 2, 3, 4].map(n => ({ value: n, label: `Overlay ${n}` }))}
+                />
               </Field>
             {(() => {
               type SubInput = { id: string; inputKey: string; inputTitle?: string; vmixFieldOut: string; vmixFieldIn: string; vmixFieldJerseyOut?: string; vmixFieldJerseyIn?: string; vmixFieldLogo?: string; mergedPrefix?: string; mergedParts?: string[]; mergedSeparator?: string };
@@ -4336,28 +5416,39 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
             </CollapsibleSection>
           </>
         );
+
+        return renderTabbed(general, vmix);
       }
 
       case 'card-display': {
         const playerListWidgets = pages.flatMap(p => p.widgets.filter(w => w.type === 'player-list'));
         const plLabel = (w: { id: string; config: Record<string, any> }) => plWidgetLabel(w, teamDbTeams);
-        return (
+        const general = (
           <>
             <Field label="Team A — Player List">
-              <select className="field-input" value={cfg.linkedPlayerListA ?? ''} onChange={e => up({ linkedPlayerListA: e.target.value })}>
-                <option value="">— select —</option>
-                {playerListWidgets.map(w => <option key={w.id} value={w.id}>{plLabel(w)}</option>)}
-              </select>
+              <CustomBox>
+                <select className="field-input" value={cfg.linkedPlayerListA ?? ''} onChange={e => up({ linkedPlayerListA: e.target.value })}>
+                  <option value="">— select —</option>
+                  {playerListWidgets.map(w => <option key={w.id} value={w.id}>{plLabel(w)}</option>)}
+                </select>
+              </CustomBox>
             </Field>
             <Field label="Team B — Player List">
-              <select className="field-input" value={cfg.linkedPlayerListB ?? ''} onChange={e => up({ linkedPlayerListB: e.target.value })}>
-                <option value="">— select —</option>
-                {playerListWidgets.map(w => <option key={w.id} value={w.id}>{plLabel(w)}</option>)}
-              </select>
+              <CustomBox>
+                <select className="field-input" value={cfg.linkedPlayerListB ?? ''} onChange={e => up({ linkedPlayerListB: e.target.value })}>
+                  <option value="">— select —</option>
+                  {playerListWidgets.map(w => <option key={w.id} value={w.id}>{plLabel(w)}</option>)}
+                </select>
+              </CustomBox>
             </Field>
             <Field label="Show player names">
-              <input type="checkbox" checked={cfg.showNames !== false} onChange={e => up({ showNames: e.target.checked })} />
+              <ToggleCard checked={cfg.showNames !== false} onChange={v => up({ showNames: v })} />
             </Field>
+          </>
+        );
+
+        const vmix = (
+          <>
             <CollapsibleSection label="vMix Title Sync">
             {(() => {
               type CdInput = {
@@ -4375,7 +5466,7 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
               return (
                 <>
                   <Field label="Auto-sync">
-                    <input type="checkbox" checked={cfg.vmixAutoSync ?? false} onChange={e => up({ vmixAutoSync: e.target.checked })} />
+                    <ToggleCard checked={cfg.vmixAutoSync ?? false} onChange={v => up({ vmixAutoSync: v })} />
                   </Field>
                   {cdInputs.map((inp, idx) => {
                     const isVilCollapsed = vilCollapsed[inp.id] ?? false;
@@ -4434,33 +5525,41 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
             </CollapsibleSection>
           </>
         );
+
+        return renderTabbed(general, vmix);
       }
 
       case 'card-lower-third': {
         const playerListWidgets = pages.flatMap(p => p.widgets.filter(w => w.type === 'player-list'));
         const plLabel = (w: any) => plWidgetLabel(w, teamDbTeams);
-        return (
+        const general = (
           <>
             <CollapsibleSection label="Teams">
               <Field label="Team A — Player List">
-                <select className="field-input" value={cfg.linkedPlayerListA ?? ''} onChange={e => up({ linkedPlayerListA: e.target.value })}>
-                  <option value="">— select player list —</option>
-                  {playerListWidgets.map(w => <option key={w.id} value={w.id}>{plLabel(w)}</option>)}
-                </select>
+                <CustomBox>
+                  <select className="field-input" value={cfg.linkedPlayerListA ?? ''} onChange={e => up({ linkedPlayerListA: e.target.value })}>
+                    <option value="">— select player list —</option>
+                    {playerListWidgets.map(w => <option key={w.id} value={w.id}>{plLabel(w)}</option>)}
+                  </select>
+                </CustomBox>
               </Field>
               <Field label="Team B — Player List">
-                <select className="field-input" value={cfg.linkedPlayerListB ?? ''} onChange={e => up({ linkedPlayerListB: e.target.value })}>
-                  <option value="">— select player list —</option>
-                  {playerListWidgets.map(w => <option key={w.id} value={w.id}>{plLabel(w)}</option>)}
-                </select>
-              </Field>
-              <Field label="Auto-send on change">
-                <label className="tf-autosend-label">
-                  <input type="checkbox" checked={cfg.autoSend ?? false} onChange={e => up({ autoSend: e.target.checked })} />
-                  Send automatically when player changes
-                </label>
+                <CustomBox>
+                  <select className="field-input" value={cfg.linkedPlayerListB ?? ''} onChange={e => up({ linkedPlayerListB: e.target.value })}>
+                    <option value="">— select player list —</option>
+                    {playerListWidgets.map(w => <option key={w.id} value={w.id}>{plLabel(w)}</option>)}
+                  </select>
+                </CustomBox>
               </Field>
             </CollapsibleSection>
+          </>
+        );
+
+        const vmix = (
+          <>
+            <Field label="Auto-send on change">
+              <ToggleCard checked={cfg.autoSend ?? false} onChange={v => up({ autoSend: v })} desc="Send automatically when player changes" />
+            </Field>
 
             <CollapsibleSection label="Yellow Card — vMix Input">
               {renderInputPicker('vMix Input', cfg.vmixInputKeyYellow ?? '', cfg.vmixInputTitleYellow,
@@ -4510,13 +5609,18 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
 
             <CollapsibleSection label="Overlay">
               <Field label="Overlay Channel">
-                <select className="field-input" value={cfg.overlayChannel ?? 1} onChange={e => up({ overlayChannel: Number(e.target.value) })}>
-                  {[1, 2, 3, 4].map(n => <option key={n} value={n}>Overlay {n}</option>)}
-                </select>
+                <CardSelect
+                  value={cfg.overlayChannel ?? 1}
+                  onChange={v => up({ overlayChannel: v })}
+                  columns={4}
+                  options={[1, 2, 3, 4].map(n => ({ value: n, label: `Overlay ${n}` }))}
+                />
               </Field>
             </CollapsibleSection>
           </>
         );
+
+        return renderTabbed(general, vmix);
       }
 
       case 'placement-lower-third': {
@@ -4538,25 +5642,26 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
           <>
             <CollapsibleSection label="Tournament">
               <Field label="Tournament">
-                <select className="field-input" value={cfg.filterTournamentId ?? ''}
-                  onChange={e => up({ filterTournamentId: e.target.value, filterCategory: '' })}>
-                  <option value="">{pageTournament ? `— Auto: ${pageTournament.name} (this canvas) —` : '— pick tournament —'}</option>
-                  {tournaments.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-                </select>
+                <CustomBox>
+                  <select className="field-input" value={cfg.filterTournamentId ?? ''}
+                    onChange={e => up({ filterTournamentId: e.target.value, filterCategory: '' })}>
+                    <option value="">{pageTournament ? `— Auto: ${pageTournament.name} (this canvas) —` : '— pick tournament —'}</option>
+                    {tournaments.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                  </select>
+                </CustomBox>
               </Field>
               {filterCategories.length > 0 && (
                 <Field label="Category">
-                  <select className="field-input" value={cfg.filterCategory ?? ''} onChange={e => up({ filterCategory: e.target.value })}>
-                    <option value="">All Categories</option>
-                    {filterCategories.map(c => <option key={c} value={c}>{c}</option>)}
-                  </select>
+                  <CustomBox>
+                    <select className="field-input" value={cfg.filterCategory ?? ''} onChange={e => up({ filterCategory: e.target.value })}>
+                      <option value="">All Categories</option>
+                      {filterCategories.map(c => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  </CustomBox>
                 </Field>
               )}
               <Field label="Auto-send once decided">
-                <label className="tf-autosend-label">
-                  <input type="checkbox" checked={cfg.autoSend ?? false} onChange={e => up({ autoSend: e.target.checked })} />
-                  Send automatically once a placement is decided
-                </label>
+                <ToggleCard checked={cfg.autoSend ?? false} onChange={v => up({ autoSend: v })} desc="Send automatically once a placement is decided" />
               </Field>
             </CollapsibleSection>
 
@@ -4638,47 +5743,17 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
 
             <CollapsibleSection label="Overlay">
               <Field label="Overlay Channel">
-                <select className="field-input" value={cfg.overlayChannel ?? 1} onChange={e => up({ overlayChannel: Number(e.target.value) })}>
-                  {[1, 2, 3, 4].map(n => <option key={n} value={n}>Overlay {n}</option>)}
-                </select>
+                <CardSelect
+                  value={cfg.overlayChannel ?? 1}
+                  onChange={v => up({ overlayChannel: v })}
+                  columns={4}
+                  options={[1, 2, 3, 4].map(n => ({ value: n, label: `Overlay ${n}` }))}
+                />
               </Field>
             </CollapsibleSection>
           </>
         );
       }
-
-      case 'ndi-input': return (
-        <>
-          <CollapsibleSection label="NDI Input">
-            <p style={{ fontSize: 10, color: 'var(--text-muted)', margin: '0 0 6px' }}>
-              Save NDI source names from the widget itself. Use the format your network shows, e.g. <em>LAPTOP (Camera 1)</em>.
-            </p>
-          </CollapsibleSection>
-          <CollapsibleSection label="Live Preview">
-            <Field label="Bandwidth">
-              <select className="field-input" value={cfg.ndiLowBandwidth ? 'low' : 'highest'}
-                onChange={e => up({ ndiLowBandwidth: e.target.value === 'low' })}>
-                <option value="highest">Highest quality</option>
-                <option value="low">Low bandwidth</option>
-              </select>
-            </Field>
-            <Field label="Speed (fps)">
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <input type="range" min={1} max={30} step={1} className="field-range"
-                  value={cfg.ndiFps ?? 15} onChange={e => up({ ndiFps: Number(e.target.value) })} />
-                <span style={{ minWidth: 32, textAlign: 'right', fontSize: 12, color: 'var(--text-secondary)' }}>{cfg.ndiFps ?? 15}fps</span>
-              </div>
-            </Field>
-            <Field label="Quality">
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <input type="range" min={10} max={100} step={5} className="field-range"
-                  value={cfg.ndiQuality ?? 75} onChange={e => up({ ndiQuality: Number(e.target.value) })} />
-                <span style={{ minWidth: 32, textAlign: 'right', fontSize: 12, color: 'var(--text-secondary)' }}>{cfg.ndiQuality ?? 75}</span>
-              </div>
-            </Field>
-          </CollapsibleSection>
-        </>
-      );
 
       case 'panel': {
         const panelItems: Array<Record<string, any>> = cfg.items ?? [];
@@ -4753,20 +5828,24 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
 
                       {item.type === 'input' && (
                         <Field label="vMix Input">
-                          <select className="field-input" value={item.inputKey ?? ''} onChange={e => patchItem(item.id, { inputKey: e.target.value })}>
-                            <option value="">— select input —</option>
-                            {allInputs.map(i => <option key={i.key} value={i.key}>{i.number}. {i.title}</option>)}
-                          </select>
+                          <CustomBox>
+                            <select className="field-input" value={item.inputKey ?? ''} onChange={e => patchItem(item.id, { inputKey: e.target.value })}>
+                              <option value="">— select input —</option>
+                              {allInputs.map(i => <option key={i.key} value={i.key}>{i.number}. {i.title}</option>)}
+                            </select>
+                          </CustomBox>
                         </Field>
                       )}
 
                       {item.type === 'text' && (
                         <>
                           <Field label="vMix Title Input">
-                            <select className="field-input" value={item.textInputKey ?? ''} onChange={e => patchItem(item.id, { textInputKey: e.target.value })}>
-                              <option value="">— select input —</option>
-                              {allInputs.filter(i => i.type === 'GT').map(i => <option key={i.key} value={i.key}>{i.number}. {i.title}</option>)}
-                            </select>
+                            <CustomBox>
+                              <select className="field-input" value={item.textInputKey ?? ''} onChange={e => patchItem(item.id, { textInputKey: e.target.value })}>
+                                <option value="">— select input —</option>
+                                {allInputs.filter(i => i.type === 'GT').map(i => <option key={i.key} value={i.key}>{i.number}. {i.title}</option>)}
+                              </select>
+                            </CustomBox>
                           </Field>
                           <Field label="Field Name">{renderFieldPicker(item.textInputKey ?? '', item.fieldName ?? '', v => patchItem(item.id, { fieldName: v }), 'Title.Text')}</Field>
                         </>
@@ -4797,18 +5876,19 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
         const updateVT = (idx: number, patch: Partial<VTInput>) =>
           setVTInputs(vtInputs.map((g, i) => i === idx ? { ...g, ...patch } : g));
 
-        return (
+        return renderTabbed(
+          <p className="app-settings-hint" style={{ margin: '4px 2px' }}>
+            This widget is a direct vMix text/image sync — see the vMix Input page for everything it does.
+          </p>,
           <>
             <CollapsibleSection label="vMix Titles">
             <div style={{ display: 'flex', gap: 12, marginBottom: 8 }}>
               <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11 }}>
-                <input type="checkbox" checked={cfg.showThumbs ?? true}
-                  onChange={e => up({ showThumbs: e.target.checked })} />
+                <ToggleCard checked={cfg.showThumbs ?? true} onChange={v => up({ showThumbs: v })} />
                 Show thumbnails
               </label>
               <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11 }}>
-                <input type="checkbox" checked={cfg.autoSend ?? false}
-                  onChange={e => up({ autoSend: e.target.checked })} />
+                <ToggleCard checked={cfg.autoSend ?? false} onChange={v => up({ autoSend: v })} />
                 Auto-send
               </label>
             </div>
@@ -4928,34 +6008,37 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
           });
           up({ teamName: linkedTeam.name, players: updated });
         };
-        return (
+        return renderTabbed(
           <>
             {isNextMatchLineup ? (
               <>
                 <Field label="Tournament">
-                  <select className="field-input" value={cfg.linkedTournamentId ?? ''}
-                    onChange={e => up({ linkedTournamentId: e.target.value })}>
-                    <option value="">{pageTournament ? `— Auto: ${pageTournament.name} (this canvas) —` : '— select tournament —'}</option>
-                    {tournaments.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-                  </select>
+                  <CustomBox>
+                    <select className="field-input" value={cfg.linkedTournamentId ?? ''}
+                      onChange={e => up({ linkedTournamentId: e.target.value })}>
+                      <option value="">{pageTournament ? `— Auto: ${pageTournament.name} (this canvas) —` : '— select tournament —'}</option>
+                      {tournaments.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                    </select>
+                  </CustomBox>
                 </Field>
                 <Field label="Venue">
-                  <select className="field-input" value={cfg.filterVenue ?? ''} onChange={e => up({ filterVenue: e.target.value })} disabled={nextLineupVenues.length === 0}>
-                    <option value="">All Venues</option>
-                    {nextLineupVenues.map(v => <option key={v} value={v}>{v}</option>)}
-                  </select>
+                  <CustomBox>
+                    <select className="field-input" value={cfg.filterVenue ?? ''} onChange={e => up({ filterVenue: e.target.value })} disabled={nextLineupVenues.length === 0}>
+                      <option value="">All Venues</option>
+                      {nextLineupVenues.map(v => <option key={v} value={v}>{v}</option>)}
+                    </select>
+                  </CustomBox>
                 </Field>
                 <Field label="Category">
-                  <select className="field-input" value={cfg.filterCategory ?? ''} onChange={e => up({ filterCategory: e.target.value })} disabled={nextLineupCategories.length === 0}>
-                    <option value="">All Categories</option>
-                    {nextLineupCategories.map(c => <option key={c} value={c}>{c}</option>)}
-                  </select>
+                  <CustomBox>
+                    <select className="field-input" value={cfg.filterCategory ?? ''} onChange={e => up({ filterCategory: e.target.value })} disabled={nextLineupCategories.length === 0}>
+                      <option value="">All Categories</option>
+                      {nextLineupCategories.map(c => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  </CustomBox>
                 </Field>
                 <Field label="Team Side">
-                  <select className="field-input" value={cfg.teamSide ?? 'A'} onChange={e => up({ teamSide: e.target.value })}>
-                    <option value="A">Team A</option>
-                    <option value="B">Team B</option>
-                  </select>
+                  <CardSelect value={cfg.teamSide ?? 'A'} onChange={v => up({ teamSide: v })} options={[{ value: 'A', label: 'Team A' }, { value: 'B', label: 'Team B' }]} />
                 </Field>
                 <p style={{ fontSize: 10, color: 'var(--text-muted)', margin: '-4px 0 4px' }}>
                   Team and this side's Player List — Next Match both follow the soonest not-yet-sent fixture automatically (scoped by Tournament/Venue/Category above). Drop a second copy of this widget with Team Side set to B for the other side.
@@ -4964,19 +6047,18 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
             ) : (
               <>
                 <Field label="Link Scoreboard">
-                  <select className="field-input" value={cfg.linkedScoreboardId ?? ''} onChange={e => up({ linkedScoreboardId: e.target.value })}>
-                    <option value="">— none (pick team/list directly below) —</option>
-                    {scoreboardWidgets.map(w => (
-                      <option key={w.id} value={w.id}>{w.config.name || `Scoreboard (${w.config.teamAName || 'A'} vs ${w.config.teamBName || 'B'})`}</option>
-                    ))}
-                  </select>
+                  <CustomBox>
+                    <select className="field-input" value={cfg.linkedScoreboardId ?? ''} onChange={e => up({ linkedScoreboardId: e.target.value })}>
+                      <option value="">— none (pick team/list directly below) —</option>
+                      {scoreboardWidgets.map(w => (
+                        <option key={w.id} value={w.id}>{w.config.name || `Scoreboard (${w.config.teamAName || 'A'} vs ${w.config.teamBName || 'B'})`}</option>
+                      ))}
+                    </select>
+                  </CustomBox>
                 </Field>
                 {cfg.linkedScoreboardId && (
                   <Field label="Team Side">
-                    <select className="field-input" value={cfg.teamSide ?? 'A'} onChange={e => up({ teamSide: e.target.value })}>
-                      <option value="A">Team A</option>
-                      <option value="B">Team B</option>
-                    </select>
+                    <CardSelect value={cfg.teamSide ?? 'A'} onChange={v => up({ teamSide: v })} options={[{ value: 'A', label: 'Team A' }, { value: 'B', label: 'Team B' }]} />
                   </Field>
                 )}
                 <p style={{ fontSize: 10, color: 'var(--text-muted)', margin: '-4px 0 4px' }}>
@@ -4987,42 +6069,48 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
               </>
             )}
             <Field label="Player List">
-              <select
-                className="field-input"
-                value={cfg.linkedPlayerListId ?? ''}
-                onChange={e => {
-                  const plw = allPlayerListWidgets.find(w => w.id === e.target.value);
-                  up({
-                    linkedPlayerListId: e.target.value || undefined,
-                    linkedTournamentId: plw?.config.linkedTournamentId ?? cfg.linkedTournamentId,
-                    ...(isNextMatchLineup ? {} : { linkedTeamId: plw?.config.linkedTeamId ?? cfg.linkedTeamId }),
-                  });
-                }}
-              >
-                <option value="">— auto (follow {isNextMatchLineup ? 'Next Match filters' : 'scoreboard'} / page) —</option>
-                {allPlayerListWidgets.map(w => (
-                  <option key={w.id} value={w.id}>{plWidgetLabel(w, teamDbTeams)}</option>
-                ))}
-              </select>
+              <CustomBox>
+                <select
+                  className="field-input"
+                  value={cfg.linkedPlayerListId ?? ''}
+                  onChange={e => {
+                    const plw = allPlayerListWidgets.find(w => w.id === e.target.value);
+                    up({
+                      linkedPlayerListId: e.target.value || undefined,
+                      linkedTournamentId: plw?.config.linkedTournamentId ?? cfg.linkedTournamentId,
+                      ...(isNextMatchLineup ? {} : { linkedTeamId: plw?.config.linkedTeamId ?? cfg.linkedTeamId }),
+                    });
+                  }}
+                >
+                  <option value="">— auto (follow {isNextMatchLineup ? 'Next Match filters' : 'scoreboard'} / page) —</option>
+                  {allPlayerListWidgets.map(w => (
+                    <option key={w.id} value={w.id}>{plWidgetLabel(w, teamDbTeams)}</option>
+                  ))}
+                </select>
+              </CustomBox>
             </Field>
             {!isNextMatchLineup && (
               <>
                 <Field label="Tournament">
-                  <select className="field-input" value={cfg.linkedTournamentId ?? ''}
-                    onChange={e => up({ linkedTournamentId: e.target.value })}>
-                    <option value="">{pageTournament ? `— Auto: ${pageTournament.name} (this canvas) —` : '— select tournament —'}</option>
-                    {tournaments.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-                  </select>
+                  <CustomBox>
+                    <select className="field-input" value={cfg.linkedTournamentId ?? ''}
+                      onChange={e => up({ linkedTournamentId: e.target.value })}>
+                      <option value="">{pageTournament ? `— Auto: ${pageTournament.name} (this canvas) —` : '— select tournament —'}</option>
+                      {tournaments.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                    </select>
+                  </CustomBox>
                 </Field>
                 <Field label="Team">
-                  <select className="field-input" value={cfg.linkedTeamId ?? ''}
-                    onChange={e => {
-                      const t = teamDbTeams.find(t2 => t2.id === e.target.value);
-                      up({ linkedTeamId: e.target.value, ...(t ? { teamName: t.name } : {}) });
-                    }}>
-                    <option value="">— auto (follow scoreboard / Player List) —</option>
-                    {scopedTeams3.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-                  </select>
+                  <CustomBox>
+                    <select className="field-input" value={cfg.linkedTeamId ?? ''}
+                      onChange={e => {
+                        const t = teamDbTeams.find(t2 => t2.id === e.target.value);
+                        up({ linkedTeamId: e.target.value, ...(t ? { teamName: t.name } : {}) });
+                      }}>
+                      <option value="">— auto (follow scoreboard / Player List) —</option>
+                      {scopedTeams3.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                    </select>
+                  </CustomBox>
                 </Field>
                 {linkedTeam && !cfg.linkedPlayerListId && (
                   <Field label="Players">
@@ -5034,13 +6122,13 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
               </>
             )}
             <Field label="Simple Positions">
-              <input type="checkbox" checked={cfg.simplePositions ?? false} onChange={e => up({ simplePositions: e.target.checked })} />
+              <ToggleCard checked={cfg.simplePositions ?? false} onChange={v => up({ simplePositions: v })} />
             </Field>
             <p style={{ fontSize: 10, color: 'var(--text-muted)', margin: '-4px 0 4px' }}>
               Shows just "Forward" / "Back" under each player instead of the specific position (Prop, Fly Half, etc).
             </p>
             <Field label="Truncate Long Names">
-              <input type="checkbox" checked={cfg.truncateNames ?? false} onChange={e => up({ truncateNames: e.target.checked })} />
+              <ToggleCard checked={cfg.truncateNames ?? false} onChange={v => up({ truncateNames: v })} />
             </Field>
             <p style={{ fontSize: 10, color: 'var(--text-muted)', margin: '-4px 0 4px' }}>
               {cfg.truncateNames
@@ -5089,7 +6177,13 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
       </div>
       {!panelCollapsed && (
         <div className="config-panel-body">
-          <Field label="Widget ID">
+          <div className="config-panel-tabs">
+            <button type="button" className={`config-panel-tab${configTab === 'general' ? ' config-panel-tab--active' : ''}`}
+              onClick={() => setConfigTab('general')}>General</button>
+            <button type="button" className={`config-panel-tab${configTab === 'vmix' ? ' config-panel-tab--active' : ''}`}
+              onClick={() => setConfigTab('vmix')}><Cast size={12} strokeWidth={2} /> vMix Input</button>
+          </div>
+          {configTab === 'general' && <Field label="Widget ID">
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               <input
                 key={widget.id}
@@ -5112,19 +6206,15 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
                 ? <span style={{ color: 'var(--red)' }}>{idError}</span>
                 : "Used to link this widget from others (linked scoreboard/timer, buttons, Companion). Renaming it updates every other widget that already points here — safe to change any time."}
             </p>
-          </Field>
+          </Field>}
           {renderConfig()}
-          <CollapsibleSection label="Widget Appearance" defaultOpen={false}>
+          {configTab === 'general' && <CollapsibleSection label="Widget Appearance" defaultOpen={false}>
             <Field label="Theme">
-              <select
-                className="field-input"
+              <CardSelect
                 value={cfg.widgetTheme ?? 'inherit'}
-                onChange={e => up({ widgetTheme: e.target.value === 'inherit' ? undefined : e.target.value })}
-              >
-                <option value="inherit">Inherit app theme</option>
-                <option value="dark">Dark</option>
-                <option value="light">Light</option>
-              </select>
+                onChange={v => up({ widgetTheme: v === 'inherit' ? undefined : v })}
+                options={[{ value: 'inherit', label: 'Inherit app theme' }, { value: 'dark', label: 'Dark' }, { value: 'light', label: 'Light' }]}
+              />
             </Field>
             <Field label="Accent Color">
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -5146,7 +6236,23 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
                 )}
               </div>
             </Field>
-          </CollapsibleSection>
+          </CollapsibleSection>}
+          {configTab === 'general' && <CollapsibleSection label="CG Output" defaultOpen={false}>
+            <p className="app-settings-hint" style={{ margin: '0 0 8px' }}>
+              Assign a channel/layer to play this widget straight to your own
+              CG output — click the <Cast size={11} strokeWidth={2} style={{ verticalAlign: -1 }} /> icon on the widget itself to show/hide it there
+              once set (see CG Playout in the sidebar for the full channel/layer board).
+            </p>
+            <Field label="Channel">
+              <input className="field-input" type="number" min={1} value={cfg.cgChannel ?? 1}
+                onChange={e => up({ cgChannel: Math.max(1, Number(e.target.value) || 1) })} />
+            </Field>
+            <Field label="Layer">
+              <input className="field-input" type="number" min={0} value={cfg.cgLayer ?? 0}
+                onChange={e => up({ cgLayer: Math.max(0, Number(e.target.value) || 0) })}
+                placeholder="0 = not assigned" />
+            </Field>
+          </CollapsibleSection>}
         </div>
       )}
       <div

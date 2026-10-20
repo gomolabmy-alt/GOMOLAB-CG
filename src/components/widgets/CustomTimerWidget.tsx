@@ -1,6 +1,7 @@
-import { useState, useEffect, useRef, useContext } from 'react';
+import { useState, useEffect, useContext } from 'react';
 import { Timer, Pause, Play, Settings, Clock, Minus, Plus, RotateCcw, X, AlarmClock } from 'lucide-react';
-import { useCanvasStore } from '../../stores/canvasStore';
+import { useCanvasStore, registerReliableTick } from '../../stores/canvasStore';
+import { anchorCustomTimer, clearCustomTimerAnchor } from '../../lib/customTimerTickSync';
 import { useUndoStore } from '../../stores/undoStore';
 import { useVmixStore } from '../../stores/vmixStore';
 import { useMatchScheduleStore } from '../../stores/matchScheduleStore';
@@ -11,6 +12,7 @@ import { formatLate } from '../../utils/scoreboardSnapshot';
 import { resolveImageUrl } from '../../lib/imageUrl';
 import { computeCountdownState, buildCountdownVmixPushes, fmtCountdownDuration as fmtDuration } from '../../lib/countdownCompute';
 import { CanvasActionContext } from '../../lib/canvasContext';
+import { CardSelect, ToggleCard, CustomBox } from '../WidgetConfigPanel';
 
 interface Props {
   widgetId: string;
@@ -115,11 +117,15 @@ export function CustomTimerWidget({ widgetId, config }: Props) {
   // Live wall-clock tick — runs while the clock readout is shown, and always
   // in 'target' mode since its remaining time is derived from wall-clock
   // rather than ticked/persisted through config like the other two modes.
+  // registerReliableTick (not a plain setInterval) — see its own doc comment
+  // in canvasStore.ts: a bare setInterval gets throttled by the browser/
+  // WKWebView runtime itself once this window isn't visible/focused, which
+  // is exactly the "countdown slows down/stops while the app is inactive or
+  // minimized" bug this fixes.
   useEffect(() => {
     if (!showClock && timerMode !== 'target') return;
-    const id = setInterval(() => setNow(new Date()), 1000);
-    return () => clearInterval(id);
-  }, [showClock, timerMode]);
+    return registerReliableTick(`${widgetId}:clock`, 1000, () => setNow(new Date()));
+  }, [showClock, timerMode, widgetId]);
 
   // Same computation the background vMix pusher (countdownVmixSync.ts) runs
   // on a plain interval independent of this component ever being mounted —
@@ -134,36 +140,47 @@ export function CustomTimerWidget({ widgetId, config }: Props) {
   const isMatchLinked = linkSource === 'match';
   const isRundownLinked = linkSource === 'rundown';
 
-  // Refs so the tick interval always reads the latest value without a stale
-  // closure, without needing to tear down/recreate the interval every second.
-  const currentMsRef = useRef(currentMs);
-  const timerModeRef = useRef(timerMode);
-  currentMsRef.current = currentMs;
-  timerModeRef.current = timerMode;
-
-  useEffect(() => {
-    if (!running) return;
-    const id = setInterval(() => {
-      if (timerModeRef.current === 'countdown') {
-        const next = Math.max(0, currentMsRef.current - 1000);
-        if (next === 0) up({ currentMs: 0, running: false });
-        else up({ currentMs: next });
-      } else {
-        up({ currentMs: currentMsRef.current + 1000 });
-      }
-    }, 1000);
-    return () => clearInterval(id);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [running, widgetId]);
-
-  const handlePlayPause = () => up({ running: !running });
+  // The actual countdown/countup ticking — wall-clock-anchored, not a
+  // per-tick decrement/increment counter, so a late/skipped tick jumps
+  // straight to the correct value instead of drifting — now lives entirely
+  // in customTimerTickSync.ts, a single background driver independent of
+  // this component (or even this widget's own canvas PAGE) being mounted
+  // at all. It used to live here, in a registerReliableTick'd useEffect:
+  // that fixed the timer going stale while the app was merely inactive/
+  // minimized, but a canvas page only renders (and so only mounts) its own
+  // widgets while it's the ACTIVE tab (see Canvas.tsx) — switching to a
+  // DIFFERENT tab unmounts this component entirely, tearing down that
+  // effect's own tick registration along with it, which silently froze the
+  // timer the moment its own tab stopped being the one on screen. This
+  // component's only remaining job for the actual ticking is telling that
+  // driver exactly when to (re)anchor — see handlePlayPause/handleAddMinute/
+  // handleSubMinute below — and reading back whatever `currentMs` it writes,
+  // same as any other config-driven value here.
+  const handlePlayPause = () => {
+    if (!running) anchorCustomTimer(widgetId, currentMs);
+    else clearCustomTimerAnchor(widgetId);
+    up({ running: !running });
+  };
   const handleReset = () => {
     const before = { running: config.running, currentMs: config.currentMs };
+    clearCustomTimerAnchor(widgetId);
     up({ running: false, currentMs: timerMode === 'countdown' ? durationMs : 0 });
     useUndoStore.getState().pushUndo('Reset timer', () => up(before));
   };
-  const handleAddMinute = () => up({ currentMs: currentMs + 60000 });
-  const handleSubMinute = () => up({ currentMs: Math.max(0, currentMs - 60000) });
+  // Re-anchor to "now" on manual adjustment while running — without this, a
+  // +/-1-minute press mid-run would get silently overwritten by the very
+  // next tick still counting from the OLD anchor as if the adjustment never
+  // happened.
+  const handleAddMinute = () => {
+    const next = currentMs + 60000;
+    if (running) anchorCustomTimer(widgetId, next);
+    up({ currentMs: next });
+  };
+  const handleSubMinute = () => {
+    const next = Math.max(0, currentMs - 60000);
+    if (running) anchorCustomTimer(widgetId, next);
+    up({ currentMs: next });
+  };
 
   const setDurationMins = (mins: number) => {
     const secs = Math.floor((durationMs % 60000) / 1000);
@@ -327,53 +344,50 @@ export function CustomTimerWidget({ widgetId, config }: Props) {
 
           <label className="wgt-ctimer-settings-row">
             <span>Mode</span>
-            <select className="wgt-ctimer-settings-input" value={timerMode} onChange={e => setMode(e.target.value as TimerMode)}>
-              <option value="countdown">Countdown (own duration)</option>
-              <option value="countup">Count Up</option>
-              <option value="target">Countdown to Date/Time</option>
-            </select>
+            <CardSelect className="tm-ms-sport-grid--narrow" value={timerMode} onChange={v => setMode(v)}
+              options={[
+                { value: 'countdown', label: 'Countdown' },
+                { value: 'countup', label: 'Count Up' },
+                { value: 'target', label: 'To Date/Time' },
+              ]} />
           </label>
 
           <label className="wgt-ctimer-settings-row">
             <span>Clock Size</span>
-            <select className="wgt-ctimer-settings-input" value={clockSize} onChange={e => up({ clockSize: e.target.value })}>
-              <option value="small">Small</option>
-              <option value="medium">Medium</option>
-              <option value="large">Large</option>
-              <option value="xlarge">Extra Large</option>
-            </select>
+            <CardSelect className="tm-ms-sport-grid--narrow" value={clockSize} onChange={v => up({ clockSize: v })}
+              options={[{ value: 'small', label: 'Small' }, { value: 'medium', label: 'Medium' }, { value: 'large', label: 'Large' }, { value: 'xlarge', label: 'XL' }]} />
           </label>
 
           {timerMode === 'target' ? (
             <>
               <label className="wgt-ctimer-settings-row">
                 <span>Link to</span>
-                <select className="wgt-ctimer-settings-input" value={linkSource}
-                  onChange={e => setLinkSource(e.target.value as 'none' | 'match' | 'rundown')}>
-                  <option value="none">Manual date/time</option>
-                  <option value="match">Next scheduled match</option>
-                  <option value="rundown">Next rundown item</option>
-                </select>
+                <CardSelect className="tm-ms-sport-grid--narrow" value={linkSource}
+                  onChange={v => setLinkSource(v)}
+                  options={[
+                    { value: 'none', label: 'Manual' },
+                    { value: 'match', label: 'Next match' },
+                    { value: 'rundown', label: 'Next rundown' },
+                  ]} />
               </label>
 
               {isMatchLinked && (
                 <>
                   <label className="wgt-ctimer-settings-row">
                     <span>Tournament</span>
-                    <select className="wgt-ctimer-settings-input" value={filterTournamentId}
-                      onChange={e => up({ filterTournamentId: e.target.value })}>
-                      <option value="">{owningPage?.tournamentId ? '— Auto: this canvas —' : '— all tournaments —'}</option>
-                      {tournaments.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-                    </select>
+                    <CustomBox>
+                      <select className="wgt-ctimer-settings-input" value={filterTournamentId}
+                        onChange={e => up({ filterTournamentId: e.target.value })}>
+                        <option value="">{owningPage?.tournamentId ? '— Auto: this canvas —' : '— all tournaments —'}</option>
+                        {tournaments.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                      </select>
+                    </CustomBox>
                   </label>
                   <label className="wgt-ctimer-settings-row">
                     <span>Details Size</span>
-                    <select className="wgt-ctimer-settings-input" value={matchDetailsSize}
-                      onChange={e => up({ matchDetailsSize: e.target.value })}>
-                      <option value="small">Small</option>
-                      <option value="medium">Medium</option>
-                      <option value="large">Large</option>
-                    </select>
+                    <CardSelect className="tm-ms-sport-grid--narrow" value={matchDetailsSize}
+                      onChange={v => up({ matchDetailsSize: v })}
+                      options={[{ value: 'small', label: 'Small' }, { value: 'medium', label: 'Medium' }, { value: 'large', label: 'Large' }]} />
                   </label>
                   <div className="wgt-ctimer-settings-row" style={{ fontSize: 11, color: 'var(--text-muted)' }}>
                     {nextScheduledMatch
@@ -387,12 +401,9 @@ export function CustomTimerWidget({ widgetId, config }: Props) {
                 <>
                   <label className="wgt-ctimer-settings-row">
                     <span>Details Size</span>
-                    <select className="wgt-ctimer-settings-input" value={matchDetailsSize}
-                      onChange={e => up({ matchDetailsSize: e.target.value })}>
-                      <option value="small">Small</option>
-                      <option value="medium">Medium</option>
-                      <option value="large">Large</option>
-                    </select>
+                    <CardSelect className="tm-ms-sport-grid--narrow" value={matchDetailsSize}
+                      onChange={v => up({ matchDetailsSize: v })}
+                      options={[{ value: 'small', label: 'Small' }, { value: 'medium', label: 'Medium' }, { value: 'large', label: 'Large' }]} />
                   </label>
                   <div className="wgt-ctimer-settings-row" style={{ fontSize: 11, color: 'var(--text-muted)' }}>
                     {nextRundownSegment
@@ -427,26 +438,20 @@ export function CustomTimerWidget({ widgetId, config }: Props) {
 
           <label className="wgt-ctimer-settings-row wgt-ctimer-settings-row--check">
             <span>Show Clock</span>
-            <input type="checkbox" checked={showClock} onChange={e => up({ showClock: e.target.checked })} />
+            <ToggleCard checked={showClock} onChange={v => up({ showClock: v })} />
           </label>
 
           {showClock && (
             <>
               <label className="wgt-ctimer-settings-row">
                 <span>Clock Format</span>
-                <select className="wgt-ctimer-settings-input" value={clockFormat} onChange={e => up({ clockFormat: e.target.value })}>
-                  <option value="24h">24-hour</option>
-                  <option value="12h">12-hour (AM/PM)</option>
-                </select>
+                <CardSelect className="tm-ms-sport-grid--narrow" value={clockFormat} onChange={v => up({ clockFormat: v })}
+                  options={[{ value: '24h', label: '24-hour' }, { value: '12h', label: '12-hour' }]} />
               </label>
               <label className="wgt-ctimer-settings-row">
                 <span>Clock Size</span>
-                <select className="wgt-ctimer-settings-input" value={bottomClockSize} onChange={e => up({ bottomClockSize: e.target.value })}>
-                  <option value="small">Small</option>
-                  <option value="medium">Medium</option>
-                  <option value="large">Large</option>
-                  <option value="xlarge">Extra Large</option>
-                </select>
+                <CardSelect className="tm-ms-sport-grid--narrow" value={bottomClockSize} onChange={v => up({ bottomClockSize: v })}
+                  options={[{ value: 'small', label: 'Small' }, { value: 'medium', label: 'Medium' }, { value: 'large', label: 'Large' }, { value: 'xlarge', label: 'XL' }]} />
               </label>
             </>
           )}
@@ -455,19 +460,21 @@ export function CustomTimerWidget({ widgetId, config }: Props) {
 
           <label className="wgt-ctimer-settings-row">
             <span>vMix Input</span>
-            <select className="wgt-ctimer-settings-input" value={vmixInputKey} onChange={e => up({ vmixInputKey: e.target.value })}>
-              <option value="">— none —</option>
-              {vmixState?.inputs.map(inp => (
-                <option key={inp.key} value={inp.key}>{inp.number}. {inp.title}</option>
-              ))}
-            </select>
+            <CustomBox>
+              <select className="wgt-ctimer-settings-input" value={vmixInputKey} onChange={e => up({ vmixInputKey: e.target.value })}>
+                <option value="">— none —</option>
+                {vmixState?.inputs.map(inp => (
+                  <option key={inp.key} value={inp.key}>{inp.number}. {inp.title}</option>
+                ))}
+              </select>
+            </CustomBox>
           </label>
           {vmixInputKey && (
             <>
               {linkSource !== 'none' && (
                 <label className="wgt-ctimer-settings-row wgt-ctimer-settings-row--check">
                   <span>Merge into one field</span>
-                  <input type="checkbox" checked={vmixMergeFields} onChange={e => up({ vmixMergeFields: e.target.checked })} />
+                  <ToggleCard checked={vmixMergeFields} onChange={v => up({ vmixMergeFields: v })} />
                 </label>
               )}
               <label className="wgt-ctimer-settings-row">

@@ -5,10 +5,10 @@ import { WidgetIcon } from './widgets/WidgetIcon';
 
 const WIDGET_GROUPS: { label: string; types: WidgetType[] }[] = [
   { label: 'Controls',  types: ['button', 'transitions', 'tbar', 'panel'] },
-  { label: 'Input',     types: ['input-tally', 'title-field', 'vmix-titles', 'file-path', 'ndi-input'] },
+  { label: 'Input',     types: ['input-tally', 'title-field', 'vmix-titles', 'file-path'] },
   { label: 'Overlay',   types: ['overlay'] },
   { label: 'Audio',     types: ['volume'] },
-  { label: 'Sports',    types: ['scoreboard', 'score-log', 'score-lower-third', 'sin-bin-lower-third', 'player-lower-third', 'card-lower-third', 'placement-lower-third', 'timer', 'timeline', 'player-list', 'player-list-next', 'substitution', 'card-display', 'rugby-lineup', 'rugby-lineup-next', 'recent-matches', 'match-schedule', 'rundown', 'standings', 'bracket', 'team-form', 'player-h2h', 'player-stats', 'player-highlight', 'group-standings'] },
+  { label: 'Sports',    types: ['scoreboard', 'racket-scoreboard', 'score-log', 'score-lower-third', 'sin-bin-lower-third', 'player-lower-third', 'card-lower-third', 'placement-lower-third', 'timer', 'timeline', 'player-list', 'player-list-next', 'substitution', 'card-display', 'rugby-lineup', 'rugby-lineup-next', 'recent-matches', 'match-schedule', 'rundown', 'standings', 'bracket', 'team-form', 'player-h2h', 'player-stats', 'player-highlight', 'group-standings'] },
   { label: 'Display',   types: ['label', 'image-display'] },
   { label: 'Utility',   types: ['pomodoro'] },
 ];

@@ -366,6 +366,10 @@ pub struct ServerInfo {
     pub readonly_enabled: bool,
     #[serde(rename = "commentatorEnabled")]
     pub commentator_enabled: bool,
+    #[serde(rename = "amcpPort")]
+    pub amcp_port: u16,
+    #[serde(rename = "amcpEnabled")]
+    pub amcp_enabled: bool,
 }
 
 #[derive(Serialize)]
@@ -563,6 +567,7 @@ pub async fn get_server_info(state: State<'_, AppState>) -> Result<ServerInfo, S
     let interactive_enabled = *srv.interactive_enabled.read().await;
     let readonly_enabled = *srv.readonly_enabled.read().await;
     let commentator_enabled = *srv.commentator_enabled.read().await;
+    let amcp_enabled = *srv.amcp_enabled.read().await;
     Ok(ServerInfo {
         ip: srv.lan_ip.clone(),
         port: srv.sync_port,
@@ -574,6 +579,8 @@ pub async fn get_server_info(state: State<'_, AppState>) -> Result<ServerInfo, S
         interactive_enabled,
         readonly_enabled,
         commentator_enabled,
+        amcp_port: srv.amcp_port,
+        amcp_enabled,
     })
 }
 
@@ -607,7 +614,24 @@ pub async fn toggle_commentator(state: State<'_, AppState>) -> Result<bool, Stri
     Ok(*enabled)
 }
 
+#[tauri::command]
+pub async fn toggle_amcp(state: State<'_, AppState>) -> Result<bool, String> {
+    let mut enabled = state.server.amcp_enabled.write().await;
+    *enabled = !*enabled;
+    // No client-list clear here (unlike the three toggles above) — amcp.rs
+    // has no persistent connection registry to prune; a disabled listener
+    // just drops each newly-accepted connection immediately (see amcp.rs).
+    Ok(*enabled)
+}
+
 // ── Power save blocker ───────────────────────────────────────────────────────
+// Two genuinely separate mechanisms, toggled together from this one call
+// site since both share the same "is any timer widget currently running"
+// signal (canvasStore.ts's syncSleepBlock): caffeinate keeps the whole
+// MACHINE from sleeping; app_nap keeps macOS from throttling THIS APP's own
+// threads whenever it isn't the frontmost/key window — the missing half
+// that let timers visibly slow down while the app was minimized or
+// unfocused even though the machine itself stayed awake the whole time.
 
 #[tauri::command]
 pub fn set_sleep_block(block: bool, state: State<'_, AppState>) {
@@ -622,6 +646,7 @@ pub fn set_sleep_block(block: bool, state: State<'_, AppState>) {
     } else if let Some(mut child) = guard.take() {
         let _ = child.kill();
     }
+    crate::app_nap::set_blocked(block);
 }
 
 #[cfg(target_os = "macos")]
@@ -659,13 +684,95 @@ fn spawn_sleep_blocker() -> Option<std::process::Child> {
 // ── Image management ─────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub async fn open_image_dialog() -> Result<Option<String>, String> {
+pub async fn open_image_dialog(window: tauri::Window) -> Result<Option<String>, String> {
     let file = rfd::AsyncFileDialog::new()
+        .set_parent(&window)
         .set_title("Select Logo Image")
         .add_filter("Images", &["png", "jpg", "jpeg", "gif", "webp", "svg"])
         .pick_file()
         .await;
     Ok(file.map(|f| f.path().to_string_lossy().to_string()))
+}
+
+#[derive(Serialize)]
+pub struct SequenceFrameFile {
+    pub name: String,
+    #[serde(rename = "dataBase64")]
+    pub data_base64: String,
+}
+
+// Multi-file picker for the CG template designer's image-sequence import
+// (see CgTemplateDesigner.tsx) — PNG or TGA frames. Returns raw bytes
+// (base64) rather than a saved path/URL like open_image_dialog/save_image,
+// because a TGA frame needs browser-side decoding (see lib/tgaDecoder.ts)
+// before it can become something the app can actually display; the decoded
+// PNG is saved afterward via the existing save_sequence command (bundled
+// into one file — see its own doc comment), same as any other in-memory
+// image this app already handles (src/utils/project.ts, lib/cloudSync.ts).
+#[tauri::command]
+pub async fn pick_sequence_frames(window: tauri::Window) -> Result<Vec<SequenceFrameFile>, String> {
+    use base64::Engine;
+    let files = rfd::AsyncFileDialog::new()
+        .set_parent(&window)
+        .set_title("Select Image Sequence Frames")
+        .add_filter("Images", &["png", "tga"])
+        .pick_files()
+        .await;
+    let Some(files) = files else { return Ok(vec![]) };
+    let mut out = Vec::new();
+    for f in files {
+        let bytes = f.read().await;
+        out.push(SequenceFrameFile {
+            name: f.file_name(),
+            data_base64: base64::engine::general_purpose::STANDARD.encode(&bytes),
+        });
+    }
+    // Sort by filename so typical "frame_001.png, frame_002.png, …" exports
+    // come back in the right playback order.
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(out)
+}
+
+#[derive(Serialize)]
+pub struct SaveSequenceResult {
+    pub name: String,
+    pub urls: Vec<String>,
+}
+
+// Bundles an already-decoded image sequence's frames (PNG bytes, TGA frames
+// already converted client-side — see pick_sequence_frames' own doc comment)
+// into ONE zip file in sequences_dir, instead of the previous behavior of
+// calling import_image once per frame — a 200-frame sequence used to become
+// 200 separate loose files sitting in the shared images library forever
+// (list_images/the logo picker's "Server Images" grid had no way to tell
+// them apart from real standalone logos, and deleting a sequence meant
+// hunting down every one of its frames individually). Stored (not Deflate)
+// compression — frames are already PNG-compressed, so re-compressing would
+// just burn CPU for no size benefit. Returns one resolvable URL per frame
+// (see server.rs's api_get_sequence_frame, which extracts a single frame
+// back out of the zip on demand) — CgTemplateDesigner.tsx/CgTemplateWidget.tsx
+// and cgAnimationEngine.ts's buildSequencePlayback all just treat these as
+// ordinary image URLs, so nothing downstream of `frames: string[]` needs to
+// change at all.
+#[tauri::command]
+pub fn save_sequence(frames: Vec<String>, state: State<'_, AppState>) -> Result<SaveSequenceResult, String> {
+    use base64::Engine;
+    use std::io::Write;
+    let name = format!("seq_{}.cgseq", uuid::Uuid::new_v4().simple());
+    let dest = state.server.sequences_dir.join(&name);
+    let file = std::fs::File::create(&dest).map_err(|e| e.to_string())?;
+    let mut zip = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    for (i, data_base64) in frames.iter().enumerate() {
+        let bytes = base64::engine::general_purpose::STANDARD.decode(data_base64).map_err(|e| e.to_string())?;
+        zip.start_file(format!("{i:05}.png"), options).map_err(|e| e.to_string())?;
+        zip.write_all(&bytes).map_err(|e| e.to_string())?;
+    }
+    zip.finish().map_err(|e| e.to_string())?;
+    let urls = (0..frames.len())
+        .map(|i| format!("http://localhost:{}/sequences/{}/{}", state.server.sync_port, name, i))
+        .collect();
+    Ok(SaveSequenceResult { name, urls })
 }
 
 // Native "Save As" dialog for the Tournament Database's export buttons
@@ -674,13 +781,14 @@ pub async fn open_image_dialog() -> Result<Option<String>, String> {
 // the browser-style default downloads folder under an auto-generated name.
 // Returns false (not an error) when the operator cancels the dialog.
 #[tauri::command]
-pub async fn save_text_file_dialog(default_name: String, content: String) -> Result<bool, String> {
+pub async fn save_text_file_dialog(default_name: String, content: String, window: tauri::Window) -> Result<bool, String> {
     let ext = Path::new(&default_name)
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("txt")
         .to_string();
     let file = rfd::AsyncFileDialog::new()
+        .set_parent(&window)
         .set_title("Export")
         .set_file_name(&default_name)
         .add_filter(&ext.to_uppercase(), &[ext.as_str()])
@@ -692,6 +800,29 @@ pub async fn save_text_file_dialog(default_name: String, content: String) -> Res
             Ok(true)
         }
         None => Ok(false),
+    }
+}
+
+// Native "Open" dialog for the CG Template Designer's Import button (see
+// CgTemplateDesigner.tsx) — the read counterpart to save_text_file_dialog
+// above, mirroring open_image_dialog's dialog setup but returning file
+// *contents* (this is always small JSON, never worth a second round-trip
+// through a saved path). Returns None (not an error) when the operator
+// cancels the dialog.
+#[tauri::command]
+pub async fn open_text_file_dialog(window: tauri::Window) -> Result<Option<String>, String> {
+    let file = rfd::AsyncFileDialog::new()
+        .set_parent(&window)
+        .set_title("Import Template")
+        .add_filter("JSON", &["json"])
+        .pick_file()
+        .await;
+    match file {
+        Some(handle) => {
+            let bytes = handle.read().await;
+            Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
+        }
+        None => Ok(None),
     }
 }
 
@@ -736,6 +867,41 @@ fn unique_dest_name(dir: &Path, safe_stem: &str, ext: &str) -> String {
     }
 }
 
+// vMix's own SetImage fetches this file over HTTP and decodes it itself on
+// EVERY push — so a straight phone-photo-sized source (often several
+// thousand px, several MB) is what makes a logo/image push visibly slower
+// to show up than a text push, not anything in this app's own send path.
+// 1200px comfortably covers how large a logo/image element is ever actually
+// rendered on a broadcast template, while cutting a typical oversized
+// source down to a fraction of its original decode cost.
+const MAX_SAVED_IMAGE_DIMENSION: u32 = 1200;
+
+/// Downscales `bytes` if they decode as a raster image larger than
+/// `MAX_SAVED_IMAGE_DIMENSION` on either axis, always re-encoding as PNG
+/// (not whatever format the source was) so a transparent logo's alpha
+/// channel survives — a plain re-saved JPEG would silently flatten it to a
+/// solid background. Returns the bytes to actually write alongside the
+/// extension they should be saved with (`"png"` whenever the resize path
+/// ran, otherwise `original_ext` unchanged) — anything the `image` crate
+/// can't decode (an unsupported format, a corrupt file) comes back
+/// completely untouched, so an upload/import never just fails because this
+/// optimization couldn't apply to it.
+fn optimize_image_bytes(bytes: &[u8], original_ext: &str) -> (Vec<u8>, String) {
+    let Ok(img) = image::load_from_memory(bytes) else {
+        return (bytes.to_vec(), original_ext.to_string());
+    };
+    let resized = if img.width() > MAX_SAVED_IMAGE_DIMENSION || img.height() > MAX_SAVED_IMAGE_DIMENSION {
+        img.resize(MAX_SAVED_IMAGE_DIMENSION, MAX_SAVED_IMAGE_DIMENSION, image::imageops::FilterType::Lanczos3)
+    } else {
+        img
+    };
+    let mut out = Vec::new();
+    match resized.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png) {
+        Ok(()) => (out, "png".to_string()),
+        Err(_) => (bytes.to_vec(), original_ext.to_string()),
+    }
+}
+
 #[tauri::command]
 pub fn save_image(src_path: String, tournament_id: Option<String>, state: State<'_, AppState>) -> Result<SaveImageResult, String> {
     let src = Path::new(&src_path);
@@ -754,9 +920,10 @@ pub fn save_image(src_path: String, tournament_id: Option<String>, state: State<
             }
         })
         .collect();
-    let name = unique_dest_name(&state.server.images_dir, &safe_stem, ext);
-    let dest = state.server.images_dir.join(&name);
-    std::fs::copy(src, &dest).map_err(|e| e.to_string())?;
+    let bytes = std::fs::read(src).map_err(|e| e.to_string())?;
+    let (out_bytes, out_ext) = optimize_image_bytes(&bytes, ext);
+    let name = unique_dest_name(&state.server.images_dir, &safe_stem, &out_ext);
+    std::fs::write(state.server.images_dir.join(&name), &out_bytes).map_err(|e| e.to_string())?;
     if let Some(tid) = tournament_id.filter(|s| !s.is_empty()) {
         let mut tags = read_image_tags(&state.server.images_dir);
         tags.insert(name.clone(), tid);
@@ -815,14 +982,13 @@ pub fn import_image(name: String, data_base64: String, tournament_id: Option<Str
         .decode(&data_base64)
         .map_err(|e| e.to_string())?;
     let dir = &state.server.images_dir;
-    let safe_name = Path::new(&name)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("image.png")
-        .to_string();
+    let stem = Path::new(&name).file_stem().and_then(|s| s.to_str()).unwrap_or("image");
+    let ext = Path::new(&name).extension().and_then(|e| e.to_str()).unwrap_or("png");
+    let (out_bytes, out_ext) = optimize_image_bytes(&bytes, ext);
+    let safe_name = format!("{stem}.{out_ext}");
     let dest = dir.join(&safe_name);
     if !dest.exists() {
-        std::fs::write(&dest, &bytes).map_err(|e| e.to_string())?;
+        std::fs::write(&dest, &out_bytes).map_err(|e| e.to_string())?;
     }
     if let Some(tid) = tournament_id.filter(|s| !s.is_empty()) {
         let mut tags = read_image_tags(dir);
@@ -974,87 +1140,3 @@ fn is_ipv4(s: &str) -> bool {
         })
 }
 
-// ── NDI source discovery + live preview ─────────────────────────────────────
-
-#[tauri::command]
-pub async fn scan_ndi() -> Vec<String> {
-    // Prefer the real NDI Find API (exact names, no mDNS timing flakiness)
-    // when the NDI runtime is installed — falls back to mDNS below otherwise.
-    if crate::ndi::is_available() {
-        return tokio::task::spawn_blocking(|| crate::ndi::scan_sources(2500))
-            .await
-            .unwrap_or_default();
-    }
-
-    // dns-sd is part of Apple's Bonjour/mDNS and isn't present on Windows —
-    // without the NDI runtime installed there's no discovery path on Windows,
-    // so just report nothing instead of spawning a command that can't exist.
-    #[cfg(not(target_os = "macos"))]
-    return vec![];
-
-    #[cfg(target_os = "macos")]
-    {
-    use std::{collections::HashSet, process::Stdio, time::Duration};
-    use tokio::io::{AsyncBufReadExt, BufReader};
-
-    let mut child = match tokio::process::Command::new("dns-sd")
-        .args(["-B", "_ndi._tcp", "local"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(_) => return vec![],
-    };
-
-    let stdout = match child.stdout.take() {
-        Some(s) => s,
-        None => return vec![],
-    };
-
-    let mut reader = BufReader::new(stdout).lines();
-    let mut sources = HashSet::new();
-
-    let _ = tokio::time::timeout(Duration::from_secs(3), async {
-        while let Ok(Some(line)) = reader.next_line().await {
-            if line.contains("Add") && line.contains("_ndi._tcp") {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if let Some(name) = parts.last() {
-                    if !name.starts_with('_') && !name.is_empty() {
-                        sources.insert(name.to_string());
-                    }
-                }
-            }
-        }
-    })
-    .await;
-
-    let _ = child.kill().await;
-    sources.into_iter().collect()
-    }
-}
-
-#[tauri::command]
-pub fn ndi_runtime_available() -> bool {
-    crate::ndi::is_available()
-}
-
-#[tauri::command]
-pub fn ndi_preview_start(
-    source: String,
-    low_bandwidth: bool,
-    fps: u32,
-    quality: u8,
-) -> Result<String, String> {
-    crate::ndi::start_preview(source, crate::ndi::PreviewOptions { low_bandwidth, fps, quality })
-}
-
-#[tauri::command]
-pub fn ndi_preview_stop(id: String) {
-    crate::ndi::stop_preview(&id);
-}
-
-#[tauri::command]
-pub fn get_ndi_preview_base_url(state: State<'_, AppState>) -> String {
-    format!("http://{}:{}/ndi-preview", state.server.lan_ip, state.server.sync_port)
-}

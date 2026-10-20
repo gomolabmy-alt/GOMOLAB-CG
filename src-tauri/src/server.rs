@@ -51,11 +51,20 @@ pub struct ServerState {
     pub interactive_enabled: Arc<RwLock<bool>>,
     pub readonly_enabled: Arc<RwLock<bool>>,
     pub commentator_enabled: Arc<RwLock<bool>>,
+    // AMCP-style CG control port (see amcp.rs) — a bare TCP accept loop, not
+    // a WS server, so unlike the three above there's no client list to prune
+    // on disable; connections just get dropped as soon as they're accepted.
+    pub amcp_enabled: Arc<RwLock<bool>>,
     pub lan_ip: String,
     pub sync_port: u16,
     pub readonly_port: u16,
     pub commentator_port: u16,
+    pub amcp_port: u16,
     pub images_dir: PathBuf,
+    // One file per saved image sequence (see commands.rs's save_sequence) —
+    // a sibling of images_dir, not a subfolder of it, so it never shows up
+    // in the plain-image library listing (/api/images, list_images).
+    pub sequences_dir: PathBuf,
 }
 
 impl ServerState {
@@ -64,7 +73,9 @@ impl ServerState {
         sync_port: u16,
         readonly_port: u16,
         commentator_port: u16,
+        amcp_port: u16,
         images_dir: PathBuf,
+        sequences_dir: PathBuf,
     ) -> Self {
         Self {
             interactive_clients: Arc::new(Mutex::new(vec![])),
@@ -80,11 +91,33 @@ impl ServerState {
             interactive_enabled: Arc::new(RwLock::new(true)),
             readonly_enabled: Arc::new(RwLock::new(true)),
             commentator_enabled: Arc::new(RwLock::new(true)),
+            amcp_enabled: Arc::new(RwLock::new(true)),
             lan_ip,
             sync_port,
             readonly_port,
             commentator_port,
+            amcp_port,
             images_dir,
+            sequences_dir,
+        }
+    }
+}
+
+/// Fans a raw ACTION JSON string out to readonly + commentator clients and
+/// every interactive client (the host included), exactly like
+/// `handle_interactive_ws`'s own "ACTION" handling — used by the AMCP
+/// listener (amcp.rs), which isn't itself a WS client and so has no
+/// existing relay path of its own to piggyback on. `exclude` mirrors the
+/// "don't echo back to the sender" behavior the WS handler applies to its
+/// own sibling forward; AMCP has no sender to exclude, so it always passes
+/// `None`.
+pub async fn relay_action(state: &Arc<ServerState>, text: &str, exclude: Option<Uuid>) {
+    broadcast(&state.readonly_clients, text).await;
+    broadcast(&state.commentator_clients, text).await;
+    let clients = state.interactive_clients.lock().await;
+    for (id, sender) in clients.iter() {
+        if Some(*id) != exclude {
+            let _ = sender.send(Message::Text(text.to_owned()));
         }
     }
 }
@@ -175,7 +208,7 @@ pub fn make_interactive_router(state: Arc<ServerState>) -> Router {
     Router::new()
         .route("/", get(interactive_root_handler))
         .route("/api/images", get(api_list_images).post(api_upload_image))
-        .route("/ndi-preview/:id", get(ndi_preview_handler))
+        .route("/sequences/:file/:index", get(api_get_sequence_frame))
         .nest_service("/images", ServeDir::new(images_dir))
         .fallback(|uri: Uri| async move { serve_dist_file(uri.path()) })
         .layer(cors)
@@ -192,7 +225,7 @@ pub fn make_readonly_router(state: Arc<ServerState>) -> Router {
     Router::new()
         .route("/", get(readonly_root_handler))
         .route("/api/images", get(api_list_images).post(api_upload_image))
-        .route("/ndi-preview/:id", get(ndi_preview_handler))
+        .route("/sequences/:file/:index", get(api_get_sequence_frame))
         .nest_service("/images", ServeDir::new(images_dir))
         .fallback(|uri: Uri| async move { serve_dist_file(uri.path()) })
         .layer(cors)
@@ -209,7 +242,7 @@ pub fn make_commentator_router(state: Arc<ServerState>) -> Router {
     Router::new()
         .route("/", get(commentator_root_handler))
         .route("/api/images", get(api_list_images).post(api_upload_image))
-        .route("/ndi-preview/:id", get(ndi_preview_handler))
+        .route("/sequences/:file/:index", get(api_get_sequence_frame))
         .nest_service("/images", ServeDir::new(images_dir))
         .fallback(|uri: Uri| async move { serve_dist_file(uri.path()) })
         .layer(cors)
@@ -691,29 +724,51 @@ async fn api_upload_image(
     )
 }
 
-// ── NDI live preview (single JPEG per request) ───────────────────────────────
-// Returns the latest JPEG frame from a crate::ndi preview session. The
-// frontend polls this with a cache-busting query param and refreshes a plain
-// <img> tag — identical to how vMix's own /thumbnail endpoint is consumed.
-//
-// We deliberately do NOT stream multipart/x-mixed-replace here: WKWebView
-// (the engine Tauri uses on macOS) holds the connection open but never
-// renders the replacing frames — a long-standing WebKit limitation — so the
-// <img> just shows solid black forever even though the stream is live and
-// correct. Plain single-image polling works reliably in every WebView/browser.
-async fn ndi_preview_handler(Path(id): Path<String>) -> Response {
-    match crate::ndi::get_frame(&id) {
-        Some(jpeg) => (
-            [
-                (header::CONTENT_TYPE, "image/jpeg".to_string()),
-                (header::CACHE_CONTROL, "no-store".to_string()),
-                (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*".to_string()),
-            ],
-            jpeg,
-        )
-            .into_response(),
-        None => (StatusCode::NOT_FOUND, "no such NDI preview session or no frame yet").into_response(),
+// ── Image-sequence frame serving ─────────────────────────────────────────────
+// A saved image sequence lives as ONE zip file in sequences_dir (see
+// commands.rs's save_sequence) instead of one loose file per frame in the
+// shared images library. `frames: string[]` on the element still needs a
+// separate resolvable URL per frame (see canvas.ts's own doc comment on
+// TemplateElement — CgTemplateWidget.tsx/CgTemplateDesigner.tsx and
+// cgAnimationEngine.ts's buildSequencePlayback all just treat each entry as
+// an ordinary image URL, unaware there's a zip behind it at all), so this
+// extracts exactly one frame's bytes on demand rather than the frontend
+// ever seeing the archive itself.
+async fn api_get_sequence_frame(Path((file, index)): Path<(String, usize)>, State(state): State<Arc<ServerState>>) -> Response {
+    // `file` is always one of OUR OWN generated names (see save_sequence) —
+    // reject anything containing a path separator or ".." outright rather
+    // than trusting it, the same discipline ServeDir already applies for
+    // free under /images/.
+    if file.contains('/') || file.contains('\\') || file.contains("..") {
+        return (StatusCode::BAD_REQUEST, "invalid sequence file name").into_response();
     }
+    let path = state.sequences_dir.join(&file);
+    let Ok(zip_file) = std::fs::File::open(&path) else {
+        return (StatusCode::NOT_FOUND, "no such sequence").into_response();
+    };
+    let Ok(mut archive) = zip::ZipArchive::new(zip_file) else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "corrupt sequence file").into_response();
+    };
+    let Ok(mut entry) = archive.by_index(index) else {
+        return (StatusCode::NOT_FOUND, "no such frame index").into_response();
+    };
+    let mut bytes = Vec::with_capacity(entry.size() as usize);
+    use std::io::Read;
+    if entry.read_to_end(&mut bytes).is_err() {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "failed reading frame").into_response();
+    }
+    (
+        [
+            (header::CONTENT_TYPE, "image/png".to_string()),
+            // A given (file, index) pair's bytes never change once written —
+            // safe to cache aggressively, same reasoning as serve_dist_file's
+            // hashed asset filenames above.
+            (header::CACHE_CONTROL, "public, max-age=31536000, immutable".to_string()),
+            (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*".to_string()),
+        ],
+        bytes,
+    )
+        .into_response()
 }
 
 // ── Start both servers ────────────────────────────────────────────────────────

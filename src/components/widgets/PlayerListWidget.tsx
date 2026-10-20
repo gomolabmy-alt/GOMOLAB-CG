@@ -20,6 +20,7 @@ import { isDualPlayerList } from '../../lib/playerListSquad';
 import { effectiveJerseyNo } from '../../lib/jerseySets';
 import { simplifyPlayerName } from '../../lib/simpleName';
 import { ConfirmModal } from '../ConfirmModal';
+import { useReorderAnimation } from '../../lib/useReorderAnimation';
 
 interface Props {
   widgetId: string;
@@ -157,6 +158,14 @@ function PlayerListTeamPanel({ widgetId, cfg, keyPrefix, side, team, updateWidge
   // src/lib/simpleName.ts for why).
   const { simplifyMuhammadNames, simplifyFirstNameOnly, removeBinMarkers, truncateAtBinMarker } = useAppSettings();
   const disp = (name: string) => simplifyPlayerName(name, { simplifyMuhammad: simplifyMuhammadNames, firstNameOnly: simplifyFirstNameOnly, removeBinMarkers, truncateAtBinMarker });
+
+  // A substitution (or "Move to bench"/"Move to starters") moves a player's
+  // row between the Starters and Substitutes sections below — animate that
+  // move (slide from its old spot to its new one) instead of letting it
+  // just snap there. One shared ref over BOTH sections (not one each) since
+  // the row's old and new position are in different section containers —
+  // see useReorderAnimation's own doc comment on why that still works.
+  const bodyRef = useReorderAnimation<HTMLDivElement>();
 
   // Every per-side field (squad/session state + this side's own vMix
   // targets) is namespaced by keyPrefix ('' for a single-team widget, 'a_'/
@@ -1075,7 +1084,7 @@ function PlayerListTeamPanel({ widgetId, cfg, keyPrefix, side, team, updateWidge
     const canEdit = !!team;
 
     return (
-      <div key={player.id} className={rowClass}>
+      <div key={player.id} data-flip-key={player.id} className={rowClass}>
         {linkedPlayerHighlightId && (
           <button
             className={`wgt-pl-btn wgt-pl-btn--highlight wgt-pl-btn--highlight-left${highlightedPlayerId === player.id ? ' wgt-pl-btn--highlight--active' : ''}`}
@@ -1378,7 +1387,7 @@ function PlayerListTeamPanel({ widgetId, cfg, keyPrefix, side, team, updateWidge
       {!team ? (
         <div className="wgt-pl-empty">Link a team in config</div>
       ) : (
-        <div className="wgt-pl-body">
+        <div className="wgt-pl-body" ref={bodyRef}>
 
           {showStats && renderStatHeader()}
 

@@ -151,6 +151,20 @@ export function remapWidgetIdInConfig(config: Record<string, any>, oldId: string
     });
     next.hotkeyActions = hotkeyActions;
   }
+  // A CG template's elements (see types/canvas.ts's TemplateElement) can
+  // each bind to another widget's data by id — same rename-safety treatment
+  // as every other linked-widget reference above.
+  if (Array.isArray(next.elements)) {
+    const elements = next.elements.map((el: any) =>
+      el?.binding?.sourceWidgetId === oldId
+        ? { ...el, binding: { ...el.binding, sourceWidgetId: newId } }
+        : el
+    );
+    if (elements.some((el: any, i: number) => el !== next.elements[i])) {
+      next.elements = elements;
+      changed = true;
+    }
+  }
 
   return changed ? next : config;
 }

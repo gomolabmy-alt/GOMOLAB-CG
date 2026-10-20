@@ -1,5 +1,9 @@
 import { useEffect } from 'react';
 import { useCanvasStore } from '../stores/canvasStore';
+import { useAppSettings } from '../stores/appSettingsStore';
+import { useTransparentBackground } from '../lib/transparentPage';
+import { type CgOutputMode, cgOutputBackground, cgKeyFilter } from '../lib/cgOutputMode';
+import { primeAudio } from '../lib/sfxLibrary';
 import { WidgetRenderer } from './widgets/index';
 
 // Root component for the "own CG" output route — `?cgOutput=<widgetId>` on
@@ -17,22 +21,21 @@ import { WidgetRenderer } from './widgets/index';
 // (see PopoutPage.tsx for the equivalent for a whole popped-out page) — it
 // never assumes a Tauri context, since it's normally loaded by a completely
 // different application (the video switcher), not this app's own webview.
-export function CgOutputPage({ widgetId }: { widgetId: string }) {
-  const { pages } = useCanvasStore();
-  const widget = pages.flatMap((p) => p.widgets).find((w) => w.id === widgetId);
+// `mode` — see lib/cgOutputMode.ts — same Fill/Key/Monitor trio
+// CgChannelOutputPage.tsx offers, for this single-widget route.
+export function CgOutputPage({ widgetId, mode = 'monitor' }: { widgetId: string; mode?: CgOutputMode }) {
+  const { pages, libraryPages } = useCanvasStore();
+  // Templates live in the CG Template Library now, not necessarily Main Canvas.
+  const widget = [...pages, ...libraryPages].flatMap((p) => p.widgets).find((w) => w.id === widgetId);
 
-  useEffect(() => {
-    const html = document.documentElement;
-    const body = document.body;
-    const prevHtmlBg = html.style.background;
-    const prevBodyBg = body.style.background;
-    html.style.background = 'transparent';
-    body.style.background = 'transparent';
-    return () => {
-      html.style.background = prevHtmlBg;
-      body.style.background = prevBodyBg;
-    };
-  }, []);
+  const { cgMonitorBg, cgMonitorBgColor } = useAppSettings();
+  const background = cgOutputBackground(mode, cgMonitorBg, cgMonitorBgColor);
+  useTransparentBackground(background);
+  // This page never gets a real click/keypress (it's a capture source, not
+  // something anyone operates) — without this, a state's soundEffect would
+  // build fine but never actually be heard, since a fresh AudioContext
+  // starts suspended and nothing here would ever unlock it.
+  useEffect(() => { primeAudio(); }, []);
 
   // No widget (id typo'd, deleted, or state hasn't arrived yet over the
   // sync connection) — stay fully transparent rather than showing any kind
@@ -47,8 +50,10 @@ export function CgOutputPage({ widgetId }: { widgetId: string }) {
   const pinned = { ...widget, x: 0, y: 0 };
 
   return (
-    <div style={{ position: 'relative', width: widget.w, height: widget.h, background: 'transparent' }}>
-      <WidgetRenderer widget={pinned} outputOnly />
+    <div style={{ position: 'relative', width: widget.w, height: widget.h, background }}>
+      <div style={{ position: 'relative', width: '100%', height: '100%', filter: cgKeyFilter(mode) }}>
+        <WidgetRenderer widget={pinned} outputOnly />
+      </div>
     </div>
   );
 }

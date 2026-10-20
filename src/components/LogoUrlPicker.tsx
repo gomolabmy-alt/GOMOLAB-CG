@@ -1,6 +1,6 @@
-import { useState, useRef, useEffect, useMemo } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { Square, Trash2, Pin, Image as ImageIcon, X, ChevronDown, ChevronLeft, ChevronRight, LayoutGrid, RotateCcw, Upload } from 'lucide-react';
+import { Square, Trash2, Pin, Image as ImageIcon, X, ChevronDown, ChevronLeft, ChevronRight, LayoutGrid, List, RotateCcw, Upload } from 'lucide-react';
 import { useTeamDbStore } from '../stores/teamDbStore';
 import { resolveImageUrl, transparentLogoUrl } from '../lib/imageUrl';
 import { ConfirmModal } from './ConfirmModal';
@@ -49,6 +49,43 @@ function RenamableName({ name, onRename }: { name: string; onRename: (newName: s
   );
 }
 
+// One entry in the library popup — a glowing card in Grid view (same design
+// as CardSelect's own .tm-ms-sport-card elsewhere in this app), a compact
+// row in List view. Shared by both the scoped "Team Logos" list and the
+// full server image list below so both views/modes stay visually identical.
+function LibraryItem({ url, name, active, viewMode, tagged, onPick, onDelete, renamable, onRename }: {
+  url: string; name: string; active: boolean; viewMode: 'grid' | 'list';
+  tagged?: boolean;
+  onPick: () => void;
+  onDelete?: (e: React.MouseEvent) => void;
+  renamable?: boolean;
+  onRename?: (newName: string) => void;
+}) {
+  const nameNode = renamable && onRename
+    ? <RenamableName name={name} onRename={onRename} />
+    : <span className="logo-library-name">{name}</span>;
+
+  if (viewMode === 'list') {
+    return (
+      <div className={`logo-library-row${active ? ' logo-library-row--active' : ''}`} title={name} onClick={onPick}>
+        <img src={resolveImageUrl(url)} alt={name} className="logo-library-thumb" />
+        {nameNode}
+        {tagged && <span className="logo-library-row-tag" title="Tagged to this tournament"><Pin size={11} /></span>}
+        {onDelete && <button className="logo-library-del" title="Delete this image" onClick={onDelete}><X size={11} /></button>}
+      </div>
+    );
+  }
+
+  return (
+    <div className={`logo-library-item${active ? ' logo-library-item--active' : ''}`} title={name} onClick={onPick}>
+      {onDelete && <button className="logo-library-del" title="Delete this image" onClick={onDelete}><X size={11} /></button>}
+      {tagged && <span className="logo-library-tag" title="Tagged to this tournament"><Pin size={11} /></span>}
+      <img src={resolveImageUrl(url)} alt={name} className="logo-library-thumb" />
+      {nameNode}
+    </div>
+  );
+}
+
 interface Props {
   value: string;
   onChange: (url: string) => void;
@@ -74,6 +111,7 @@ export function LogoUrlPicker({ value, onChange, placeholder, compact, thumbCont
   const [showLibrary, setShowLibrary] = useState(false);
   const [browseAll, setBrowseAll] = useState(false);
   const [libraryScope, setLibraryScope] = useState<'mine' | 'all'>('mine');
+  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [libPos, setLibPos] = useState<{ left: number; bottom: number } | null>(null);
   const [images, setImages] = useState<ImageInfo[]>([]);
   const [loading, setLoading] = useState(false);
@@ -132,6 +170,45 @@ export function LogoUrlPicker({ value, onChange, placeholder, compact, thumbCont
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, [showLibrary, confirmDeleteImg, confirmClearLibrary]);
+
+  // Keeps the popup fully inside THIS window's own viewport — toggleLibrary
+  // below only knows the ANCHOR's position, not the popup's own eventual
+  // size (it doesn't exist yet at that point), so an anchor sitting near an
+  // edge (a narrow sidebar, a table row near the top of the window, a
+  // dialog docked to one side) could otherwise open a popup that overflows
+  // past that edge — clipped and partly unreachable, reading as it "leaking
+  // outside the app" rather than a normal in-app dropdown.
+  //
+  // Applied IMPERATIVELY straight onto the DOM node — never through
+  // setLibPos/React state. An earlier version measured with
+  // getBoundingClientRect() and fed the clamped result back into setState,
+  // which re-renders, which re-measures, which (if the measurement isn't
+  // bit-for-bit stable across passes — sub-pixel drift, a scrollbar's own
+  // width toggling in and out as the grid reflows, anything) calls setState
+  // again, forever: a real "Maximum update depth exceeded" crash (React
+  // error #185) on open, not just a hypothetical risk. Writing to
+  // `node.style` directly cannot feed back into React's render cycle at
+  // all, so no measurement instability of any kind can turn this into a
+  // render loop — worst case it just re-applies the same correction on an
+  // extra pass, which is harmless. React's own re-render still resets
+  // left/bottom back to libPos's raw (unclamped) values every time via the
+  // plain style object below (that's what keeps this effect's own
+  // dependencies meaningful — each run starts from the same authored
+  // position, not last run's already-corrected one), and this effect
+  // reapplies the clamp on top immediately after, before paint
+  // (useLayoutEffect, not useEffect) — so there's never a visible jump.
+  useLayoutEffect(() => {
+    if (!showLibrary || !libPos || !popupRef.current) return;
+    const margin = 8;
+    const node = popupRef.current;
+    const rect = node.getBoundingClientRect();
+    const maxLeft = window.innerWidth - rect.width - margin;
+    const maxBottom = window.innerHeight - rect.height - margin;
+    const left = Math.max(margin, Math.min(libPos.left, Math.max(margin, maxLeft)));
+    const bottom = Math.max(margin, Math.min(libPos.bottom, Math.max(margin, maxBottom)));
+    node.style.left = `${left}px`;
+    node.style.bottom = `${bottom}px`;
+  }, [showLibrary, libPos, images.length, loading, showScoped, visibleImages.length]);
 
   // Opens via a portal into document.body, positioned above the anchor with
   // fixed coordinates: widgets and table rows commonly have overflow:hidden
@@ -262,11 +339,17 @@ export function LogoUrlPicker({ value, onChange, placeholder, compact, thumbCont
       className="logo-library"
       onClick={e => e.stopPropagation()}
       style={{ position: 'fixed', left: libPos.left, bottom: libPos.bottom, zIndex: 10000,
-        minWidth: 220, background: 'var(--bg-1)', maxHeight: 280, overflowY: 'auto',
-        boxShadow: '0 -4px 16px rgba(0,0,0,.5)', borderRadius: 6 }}
+        minWidth: 220, maxHeight: 280, overflowY: 'auto',
+        boxShadow: '0 -4px 16px rgba(0,0,0,.5)' }}
     >
       <div className="logo-library-header">
         <span className="logo-library-title">{showScoped ? 'Team Logos' : 'Server Images'}</span>
+        <div className="logo-library-view-toggle">
+          <button type="button" className={`logo-library-view-btn${viewMode === 'grid' ? ' logo-library-view-btn--active' : ''}`}
+            title="Grid view" onClick={() => setViewMode('grid')}><LayoutGrid size={12} /></button>
+          <button type="button" className={`logo-library-view-btn${viewMode === 'list' ? ' logo-library-view-btn--active' : ''}`}
+            title="List view" onClick={() => setViewMode('list')}><List size={12} /></button>
+        </div>
         <div style={{ display: 'flex', gap: 4 }}>
           <button className="btn btn--ghost btn--small" title="Use a blank/transparent image — clears any logo instead of leaving one set"
             onClick={() => { onChange(transparentLogoUrl()); setShowLibrary(false); }} style={{ fontSize: 10, padding: '1px 6px' }}>
@@ -307,13 +390,10 @@ export function LogoUrlPicker({ value, onChange, placeholder, compact, thumbCont
         </div>
       </div>
       {showScoped ? (
-        <div className="logo-library-grid">
+        <div className={viewMode === 'grid' ? 'logo-library-grid' : 'logo-library-list'}>
           {teamLogos.map(t => (
-            <div key={t.url} className="logo-library-item" style={{ cursor: 'pointer' }} title={t.name}
-              onClick={() => { onChange(t.url); setShowLibrary(false); }}>
-              <img src={resolveImageUrl(t.url)} alt={t.name} className="logo-library-thumb" />
-              <span className="logo-library-name">{t.name}</span>
-            </div>
+            <LibraryItem key={t.url} url={t.url} name={t.name} active={t.url === value} viewMode={viewMode}
+              onPick={() => { onChange(t.url); setShowLibrary(false); }} />
           ))}
         </div>
       ) : loading ? (
@@ -325,28 +405,17 @@ export function LogoUrlPicker({ value, onChange, placeholder, compact, thumbCont
             : 'No images yet — upload one'}
         </div>
       ) : (
-        <div className="logo-library-grid">
+        <div className={viewMode === 'grid' ? 'logo-library-grid' : 'logo-library-list'}>
           {visibleImages.map(img => (
-            <div key={img.name} className="logo-library-item" style={{ cursor: 'pointer' }}
-              title={tournamentId && img.tournamentId === tournamentId ? `${img.name} — tagged to this tournament` : img.name}
-              onClick={() => {
+            <LibraryItem key={img.name} url={img.url} name={img.name} active={img.url === value} viewMode={viewMode}
+              tagged={!!tournamentId && img.tournamentId === tournamentId}
+              renamable={isTauriApp} onRename={newName => handleRenameImage(img, newName)}
+              onDelete={isTauriApp ? e => handleDeleteImage(e, img) : undefined}
+              onPick={() => {
                 onChange(img.url);
                 if (tournamentId && img.tournamentId !== tournamentId) tagImageForTournament(img.name);
                 setShowLibrary(false);
-              }}>
-              {isTauriApp && (
-                <button className="logo-library-del" title="Delete this image" onClick={e => handleDeleteImage(e, img)}><X size={11} /></button>
-              )}
-              {tournamentId && img.tournamentId === tournamentId && (
-                <span className="logo-library-tag" title="Tagged to this tournament"><Pin size={11} /></span>
-              )}
-              <img src={resolveImageUrl(img.url)} alt={img.name} className="logo-library-thumb" />
-              {isTauriApp ? (
-                <RenamableName name={img.name} onRename={newName => handleRenameImage(img, newName)} />
-              ) : (
-                <span className="logo-library-name">{img.name}</span>
-              )}
-            </div>
+              }} />
           ))}
         </div>
       )}

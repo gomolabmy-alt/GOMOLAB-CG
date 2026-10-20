@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useAuthStore } from '../stores/authStore';
 
 export function SignInGate() {
-  const { pendingState, error, beginSignIn, bypassPinHash, tryBypass, bypassError } = useAuthStore();
+  const { pendingState, error, beginSignIn, tryBypass, bypassError } = useAuthStore();
   const [showBypass, setShowBypass] = useState(false);
   const [pin, setPin] = useState('');
   const [checking, setChecking] = useState(false);
@@ -32,7 +32,7 @@ export function SignInGate() {
             </>
           ) : showBypass ? (
             <>
-              <p className="signin-gate-msg">Enter the offline PIN an admin gave you for this device.</p>
+              <p className="signin-gate-msg">Enter your offline PIN.</p>
               {bypassError && <p className="signin-gate-error">{bypassError}</p>}
               <input
                 className="signin-gate-pin-input"
@@ -59,11 +59,9 @@ export function SignInGate() {
                 Sign In
               </button>
               <p className="signin-gate-hint">Opens your GOMOLAB Event Management account in the browser.</p>
-              {bypassPinHash && (
-                <button className="signin-gate-bypass-link" onClick={() => setShowBypass(true)}>
-                  Continue Offline (PIN)
-                </button>
-              )}
+              <button className="signin-gate-bypass-link" onClick={() => setShowBypass(true)}>
+                Continue Offline (PIN)
+              </button>
             </>
           )}
         </div>

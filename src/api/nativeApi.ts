@@ -25,5 +25,4 @@ export const nativeApi = {
   listImages: () => invoke<{ name: string; url: string }[]>('list_images'),
   deleteImage: (name: string) => invoke<void>('delete_image', { name }),
   getImagesBaseUrl: () => invoke<string>('get_images_base_url'),
-  scanNDI: () => invoke<string[]>('scan_ndi'),
 };

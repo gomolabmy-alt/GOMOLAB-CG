@@ -39,7 +39,13 @@ export function PlacementLowerThirdWidget({ widgetId, config, outputOnly }: Prop
   const { matches: allMatches } = useMatchScheduleStore();
   const { results: allResults } = useMatchResultsStore();
   const { tournaments } = useTournamentStore();
-  const { client, vmixState, overlayIn, overlayOut, vmixSyncVersion } = useVmixStore();
+  const { vmixState, overlayIn, overlayOut, vmixSyncVersion } = useVmixStore();
+  // getClient() (not the raw `client` field) — see vmixStore.ts's own doc
+  // comment: `client` is only ever set on the HOST, so reading it directly
+  // silently drops every push when this widget is driven from a remote
+  // interactive client. getClient() proxies through to the host's real
+  // connection in that case.
+  const client = useVmixStore((s) => s.getClient());
 
   // Falls back to the canvas page's own bound tournament (see
   // CanvasTournamentPicker) when nothing's explicitly picked in settings —

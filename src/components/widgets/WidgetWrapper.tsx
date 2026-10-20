@@ -1,6 +1,7 @@
 import { useRef, useState, useEffect, useContext } from 'react';
-import { ArrowLeftRight } from 'lucide-react';
+import { ArrowLeftRight, Cast } from 'lucide-react';
 import { useCanvasStore } from '../../stores/canvasStore';
+import { useCgPlayoutStore } from '../../stores/cgPlayoutStore';
 import type { CanvasWidget } from '../../types/canvas';
 import { WIDGET_TYPE_LABELS } from '../../types/canvas';
 import { CanvasActionContext } from '../../lib/canvasContext';
@@ -10,6 +11,15 @@ import { WidgetIcon } from './WidgetIcon';
 interface Props {
   widget: CanvasWidget;
   children: React.ReactNode;
+  /** Set for every capture/output route (CgOutputPage, CgChannelOutputPage,
+   *  CG Monitor Sidebar) — suppresses `.cw-body`'s editor-canvas gradient
+   *  card background (below), which is meant only for the WYSIWYG editing
+   *  view. Most widgets have their own full-bleed opaque background that
+   *  happens to cover it, so this went unnoticed for a long time; a
+   *  cg-template whose elements don't cover the whole frame (or that are
+   *  still hidden pre-reveal) exposed it as a plain "blank canvas" box
+   *  instead of the transparent capture surface it's supposed to be. */
+  outputOnly?: boolean;
 }
 
 function lightenHex(hex: string, amount = 20): string {
@@ -20,7 +30,7 @@ function lightenHex(hex: string, amount = 20): string {
   return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
 }
 
-export function WidgetWrapper({ widget, children }: Props) {
+export function WidgetWrapper({ widget, children, outputOnly }: Props) {
   const store = useCanvasStore();
   const ctx = useContext(CanvasActionContext);
 
@@ -45,6 +55,22 @@ export function WidgetWrapper({ widget, children }: Props) {
     return () => document.removeEventListener('mousedown', handler);
   }, [showPageMenu]);
   const isSelected = selectedWidgetId === widget.id;
+
+  // ── Show via CG output ────────────────────────────────────────────────
+  // Generic, works for ANY widget type (not just the ones with their own
+  // vMix Show/Hide row) — a widget picks a Channel/Layer once in its own
+  // config panel (see WidgetConfigPanel.tsx's "CG Output" section), then
+  // this toggles it on/off there via the exact same loadLayer/stopLayer
+  // actions the CG Playout Panel itself uses.
+  const cgChannel = (widget.config.cgChannel as number | undefined) ?? 1;
+  const cgLayer = (widget.config.cgLayer as number | undefined) ?? 0;
+  const cgLayerEntry = useCgPlayoutStore((s) => (cgLayer > 0 ? s.layers[`${cgChannel}-${cgLayer}`] : undefined));
+  const isOnAir = cgLayerEntry?.widgetId === widget.id && cgLayerEntry.status === 'playing';
+  const toggleCgOutput = () => {
+    if (cgLayer <= 0) return;
+    if (isOnAir) useCgPlayoutStore.getState().stopLayer(cgChannel, cgLayer);
+    else useCgPlayoutStore.getState().loadLayer(cgChannel, cgLayer, widget.id, { playOnLoad: true });
+  };
 
   const widgetTheme = widget.config.widgetTheme as 'dark' | 'light' | undefined;
   const widgetAccent = widget.config.widgetAccent as string | undefined;
@@ -100,7 +126,21 @@ export function WidgetWrapper({ widget, children }: Props) {
         isSelected ? 'cw--selected' : '',
       ].filter(Boolean).join(' ')}
       data-theme={widgetTheme}
-      style={{ left: widget.x, top: widget.y, width: widget.w, height: widget.h, ...accentVars }}
+      style={{
+        left: widget.x, top: widget.y, width: widget.w, height: widget.h, ...accentVars,
+        // Output/capture routes never render .cw-drag or .cw-label (both
+        // canEdit-gated below) — .cw-body is the only child, so the
+        // flex-column layout that normally reserves space for those has
+        // nothing left to do here. Forcing plain block avoids a real
+        // flexbox edge case: a flex item whose own content is 100%
+        // absolutely-positioned (every TemplateElementView is) contributes
+        // zero intrinsic height, and some engines collapse a flex-basis:auto
+        // item toward that content height instead of respecting its
+        // explicit `height` — which showed up as a custom template's
+        // elements getting a real, correct GSAP animation applied (right
+        // visibility/opacity/transform) onto a box collapsed to ~0px tall.
+        ...(outputOnly ? { display: 'block' } : {}),
+      }}
       onClick={canEdit ? (e) => { e.stopPropagation(); selectWidget(widget.id); } : undefined}
     >
       {canEdit && (
@@ -143,6 +183,15 @@ export function WidgetWrapper({ widget, children }: Props) {
             )}
           </div>
           <button
+            className={`cw-cg-btn${isOnAir ? ' cw-cg-btn--on' : ''}`}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => { e.stopPropagation(); toggleCgOutput(); }}
+            disabled={cgLayer <= 0}
+            title={cgLayer <= 0 ? 'Set a CG Layer in this widget\'s settings first' : isOnAir ? `Stop (CG ${cgChannel}-${cgLayer})` : `Show via CG (channel ${cgChannel}, layer ${cgLayer})`}
+          >
+            <Cast size={12} strokeWidth={2} />
+          </button>
+          <button
             className="cw-del"
             onPointerDown={(e) => e.stopPropagation()}
             onClick={(e) => { e.stopPropagation(); deleteWidget(widget.id); }}
@@ -152,7 +201,7 @@ export function WidgetWrapper({ widget, children }: Props) {
         </div>
       )}
 
-      <div className={`cw-body ${canEdit ? 'cw-body--locked' : ''}`}>
+      <div className={`cw-body ${canEdit ? 'cw-body--locked' : ''}`} style={outputOnly ? { background: 'transparent', borderRadius: 0, display: 'block', flex: 'none', height: '100%', width: '100%' } : undefined}>
         {children}
       </div>
 

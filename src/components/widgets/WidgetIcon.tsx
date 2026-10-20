@@ -3,9 +3,9 @@ import {
   Zap, FileText, FolderOpen, Trophy, ClipboardList, PanelBottom,
   Star, AlertOctagon, CalendarDays, Shirt, ArrowLeftRight, CreditCard,
   Timer, SlidersHorizontal, Volume2, Layers, Tag, Radio,
-  Repeat2, Video, LayoutGrid, AlignLeft, Shield, Square,
+  Repeat2, LayoutGrid, AlignLeft, Shield, Square,
   Clock, List, Image, ListOrdered, CalendarClock, BarChart3, Network, TrendingUp,
-  Swords, IdCard, ListChecks, Medal, Award, Table2,
+  Swords, IdCard, ListChecks, Medal, Award, Table2, PenTool,
 } from 'lucide-react';
 import type { WidgetType } from '../../types/canvas';
 
@@ -14,6 +14,7 @@ const ICON_MAP: Record<WidgetType, LucideIcon> = {
   'title-field':         FileText,
   'file-path':           FolderOpen,
   'scoreboard':          Trophy,
+  'racket-scoreboard':   Swords,
   'score-log':           ClipboardList,
   'score-lower-third':   PanelBottom,
   'player-lower-third':  Star,
@@ -30,7 +31,6 @@ const ICON_MAP: Record<WidgetType, LucideIcon> = {
   'label':               Tag,
   'input-tally':         Radio,
   'transitions':         Repeat2,
-  'ndi-input':           Video,
   'panel':               LayoutGrid,
   'vmix-titles':         AlignLeft,
   'rugby-lineup':        Shield,
@@ -49,6 +49,7 @@ const ICON_MAP: Record<WidgetType, LucideIcon> = {
   'player-stats':        IdCard,
   'player-highlight':    Award,
   'group-standings':     Table2,
+  'cg-template':         PenTool,
 };
 
 interface Props {

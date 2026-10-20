@@ -8,6 +8,7 @@ import { useCanvasStore, formatTime } from '../../stores/canvasStore';
 import { CanvasActionContext } from '../../lib/canvasContext';
 import { useTournamentStore } from '../../stores/tournamentStore';
 import { SPORT_DEFAULTS } from '../../types/tournament';
+import { computeTimerAccumulatedMs } from '../../lib/timerCompute';
 
 
 interface Props {
@@ -122,27 +123,10 @@ export function TimerWidget({ widgetId, config, h }: Props) {
   const afterEtLabel = afterEtMode === 'goldenPoint' ? 'Golden Point' : 'Sudden Death';
   const afterEtDurationMs = dc.afterEtDurationMs ?? 0;
 
-  // Accumulated game time.
-  // During countup overrun, show elapsed-since-overrun-start (i.e. from 00:00),
-  // not the full accumulated period time.
-  const accumulatedMs = (() => {
-    const isCountdown = (dc.mode ?? 'countdown') === 'countdown';
-    const isContinue  = (dc.periodMode ?? 'reset') === 'continue';
-
-    if (isCountdown || isContinue) {
-      // Countup+continue overrun: currentMs = periodStart + durationMs + elapsed → strip the offset
-      if (!isCountdown && (dc.overrunning ?? false) && (dc.durationMs ?? 0) > 0) {
-        return Math.max(0, (dc.currentMs ?? 0) - (dc.periodStartMs ?? 0) - dc.durationMs);
-      }
-      return dc.currentMs ?? 0;
-    }
-    // Countup+reset overrun: same strip
-    if ((dc.overrunning ?? false) && (dc.durationMs ?? 0) > 0) {
-      return Math.max(0, (dc.currentMs ?? 0) - (dc.periodStartMs ?? 0) - dc.durationMs);
-    }
-    const period = Math.min(dc.currentPeriod ?? 1, dc.periods ?? 1);
-    return (period - 1) * (dc.durationMs ?? 0) + (dc.currentMs ?? 0);
-  })();
+  // Accumulated game time — see timerCompute.ts (shared with
+  // lib/templateBinding.ts's CG-template binding resolver, so a CG element
+  // bound to this widget shows the exact same value this render does).
+  const accumulatedMs = computeTimerAccumulatedMs(dc);
 
   const displayMs = accumulatedMs;
   const mainDisplayMs = displayMs; // FP timer rendered separately; period time shown as shrinking ref

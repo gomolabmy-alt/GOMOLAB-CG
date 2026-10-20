@@ -6,7 +6,8 @@ import {
   FlagTriangleRight, Dices, Hand, MousePointerClick, PartyPopper, EyeOff, Eye,
   Hourglass, RotateCcw, ChevronDown, Radio, Trophy, Search, Maximize2, Minimize2,
   Shirt, Lock, Link2, Cloud, Star, Save, Undo2, Award, ArrowRight, ArrowLeftRight,
-  ListChecks, Plus,
+  ListChecks, Plus, Goal, CircleDot, Flag, Snowflake, Feather, Table2, Disc2, Disc3,
+  Sparkles, Infinity as InfinityIcon, Info, Volleyball,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { createPortal } from 'react-dom';
@@ -17,11 +18,12 @@ import { useVmixStore } from '../stores/vmixStore';
 import { ConfirmButton } from './ConfirmButton';
 import { EventPicker, type RemoteEvent } from './EventPicker';
 import { useCanvasStore, formatTime } from '../stores/canvasStore';
-import type { Tournament, SportType, TournamentSettings, TournamentGroup, TournamentPot, GroupListVmixTarget } from '../types/tournament';
+import type { Tournament, SportType, TournamentSettings, TournamentGroup, TournamentPot, GroupListVmixTarget, PotListVmixTarget, TournamentLogoVmixTarget, CategoryLogoVmixTarget, RacketSportSettings } from '../types/tournament';
 import { SPORT_LABELS, SPORT_POSITIONS, SPORT_DEFAULTS, getRosterPositions } from '../types/tournament';
 import type { Player } from '../types/tournament';
 import { LogoUrlPicker } from './LogoUrlPicker';
-import { InputPickerDropdown, RUGBY_UNION_INCS, RUGBY_LEAGUE_INCS } from './WidgetConfigPanel';
+import { InputPickerDropdown, FieldPickerDropdown, RUGBY_UNION_INCS, RUGBY_LEAGUE_INCS, CardSelect, ToggleCard, CustomBox, CollapsibleSection } from './WidgetConfigPanel';
+import { QuickButtonsBar } from './QuickButtonsBar';
 import { BracketView } from './BracketView';
 import { ConfirmModal } from './ConfirmModal';
 import { ExternalRosterLinkBar, PullPlayersButton } from './ExternalRosterPicker';
@@ -43,6 +45,9 @@ import { pushTournamentNow, computePushDiff, pushResultsOnly, pullResultsOnly, l
 import { simplifyPlayerName } from '../lib/simpleName';
 import { computeMatchNumbers, useMatchNumbers } from '../utils/matchNumber';
 import { sortResults, RESULT_SORT_LABELS, type ResultSortMode } from '../utils/resultSort';
+import { useReorderAnimation } from '../lib/useReorderAnimation';
+import { ActionListEditor } from './ActionListEditor';
+import { runActions, type ActionItem } from '../lib/buttonActions';
 
 // ── Import / Export helpers ───────────────────────────────────────────────────
 
@@ -302,6 +307,24 @@ interface Props { onClose: () => void }
 
 const SPORT_TYPES = Object.keys(SPORT_LABELS) as SportType[];
 
+// Purely decorative — lucide-react has no literal icon for most of these
+// sports, so this just picks whatever existing icon reads closest (and
+// stays visually distinct from its neighbors) for the "Match Type" card
+// grid below. Never read for anything functional.
+export const SPORT_ICON: Record<SportType, typeof Goal> = {
+  football: Goal, futsal: Goal,
+  basketball: CircleDot,
+  rugby_union: Flag, rugby_league: Flag,
+  volleyball: Volleyball,
+  handball: Target,
+  ice_hockey: Snowflake,
+  badminton: Feather,
+  table_tennis: Table2,
+  tennis: Disc2,
+  sepaktakraw: Disc3,
+  custom: Sparkles,
+};
+
 // ── Add-tournament form ───────────────────────────────────────────────────────
 function AddTournamentForm({ onDone }: { onDone: (id: string) => void }) {
   const { addTournament } = useTournamentStore();
@@ -324,11 +347,26 @@ function AddTournamentForm({ onDone }: { onDone: (id: string) => void }) {
           <input className="tm-input" placeholder="e.g. Premier League 2026" value={name}
             onChange={e => setName(e.target.value)} autoFocus />
         </div>
-        <div className="tm-form-row">
+        <div className="tm-form-row tm-form-row--sport">
           <label className="tm-form-label">Sport</label>
-          <select className="tm-input" value={sport} onChange={e => setSport(e.target.value as SportType)}>
-            {SPORT_TYPES.map(s => <option key={s} value={s}>{SPORT_LABELS[s]}</option>)}
-          </select>
+          <div className="tm-ms-sport-grid">
+            {SPORT_TYPES.map(sp => {
+              const Icon = SPORT_ICON[sp];
+              const active = sport === sp;
+              return (
+                <button
+                  key={sp}
+                  type="button"
+                  className={`tm-ms-sport-card${active ? ' tm-ms-sport-card--active' : ''}`}
+                  onClick={() => setSport(sp)}
+                  title={SPORT_LABELS[sp]}
+                >
+                  <Icon size={20} strokeWidth={1.75} />
+                  <span className="tm-ms-sport-card-name">{SPORT_LABELS[sp]}</span>
+                </button>
+              );
+            })}
+          </div>
         </div>
         <div className="tm-form-actions">
           <button className="tm-btn tm-btn--primary" type="submit" disabled={!name.trim()}>
@@ -545,8 +583,14 @@ function JerseySetsPanel({ team }: { team: SavedTeam }) {
 
 // ── Settings bar ─────────────────────────────────────────────────────────────
 function SettingsBar({ tournament, onApply }: { tournament: Tournament; onApply: () => void }) {
-  const { updateTournamentSettings } = useTournamentStore();
+  const { updateTournamentSettings, updateTournament } = useTournamentStore();
   const s = tournament.settings ?? SPORT_DEFAULTS[tournament.sport];
+  // Collapsed by default — every field inside is still exactly the same
+  // one this panel always had (nothing removed, see the advanced block
+  // below), just tucked out of the way so the common case (pick a sport,
+  // pick a duration, Apply) doesn't have to scroll past two dozen fields
+  // most matches never touch.
+  const [advancedOpen, setAdvancedOpen] = useState(false);
 
   const msToMmSs = (ms: number) => {
     if (ms === 0) return '00:00';
@@ -559,48 +603,159 @@ function SettingsBar({ tournament, onApply }: { tournament: Tournament; onApply:
     return (m * 60 + sec) * 1000;
   };
 
+  // The 4 racket & net sports have no period-clock concept at all
+  // (RacketScoreboardWidget.tsx scores by point/game/set, not a running
+  // match clock) — Periods/Duration/Half-time/Timer mode below would just
+  // be confusing, unused clutter for them, so they're hidden in favor of
+  // the dedicated "Scoring" group further down instead.
+  const isRacketSport = tournament.sport === 'badminton' || tournament.sport === 'table_tennis' || tournament.sport === 'tennis' || tournament.sport === 'sepaktakraw';
+  const isTennis = tournament.sport === 'tennis';
+  const rs: RacketSportSettings = s.racketScoring ?? SPORT_DEFAULTS[tournament.sport].racketScoring
+    ?? { mode: 'rally', pointsToWin: 21, winBy2: true, gamesToWin: 2, tiebreakAtGames: 6, noAd: false, serviceMode: 'auto', serviceRule: 'rally-winner', serviceAlternateEvery: 2 };
+  const updateRacketScoring = (patch: Partial<RacketSportSettings>) => updateTournamentSettings(tournament.id, { racketScoring: { ...rs, ...patch } });
+
+  // ── Match Duration pills — racket sports pick straight off gamesToWin
+  // (already "games/sets needed to WIN" — see RacketSportSettings' own doc
+  // comment), team/period sports off `periods`. "Endless" has no real
+  // sentinel anywhere in the scoring engine (gamesToWin is a required
+  // number everywhere it's read) — modeled instead as an effectively
+  // unreachable 999, so every existing isRallyGameOver/advanceRallyGame/
+  // scoreTennisPoint call keeps working completely unchanged; in practice a
+  // match set to it is never going to actually reach 999 games won.
+  const ENDLESS_GAMES_TO_WIN = 999;
+  const durationOptions: { key: number; label: string }[] = isRacketSport
+    ? [
+        { key: 1, label: '1 Set' },
+        { key: 2, label: 'Best of 3' },
+        { key: 3, label: 'Best of 5' },
+        { key: ENDLESS_GAMES_TO_WIN, label: 'Endless' },
+      ]
+    : [1, 2, 3, 4].map(n => ({ key: n, label: `${n} Period${n > 1 ? 's' : ''}` }));
+  const currentDurationKey = isRacketSport ? rs.gamesToWin : s.periods;
+
+  // ── Details box — a live, read-only summary of whichever fields actually
+  // matter for this sport family, so switching Match Type/Duration above
+  // shows its effect immediately without needing Advanced Match Rules open.
+  const detailRows: { icon: typeof Flag; label: string; value: string }[] = isRacketSport
+    ? [
+        { icon: Flag, label: isTennis ? 'Games per set' : 'Points per set', value: String(isTennis ? rs.tiebreakAtGames : rs.pointsToWin) },
+        { icon: Star, label: 'Tie-break', value: rs.deuceTarget != null ? `First to ${rs.deuceTarget}` : rs.pointCap != null ? `Cap at ${rs.pointCap}` : rs.winBy2 ? 'Win by 2' : 'None' },
+        { icon: ArrowLeftRight, label: 'Serve', value: rs.serviceRule === 'alternate' ? `Rotates every ${rs.serviceAlternateEvery}` : 'Winner serves next' },
+      ]
+    : [
+        { icon: Timer, label: 'Period length', value: msToMmSs(s.periodDurationMs) },
+        { icon: Hourglass, label: 'Half-time', value: msToMmSs(s.halfTimeDurationMs) },
+        { icon: Users, label: 'Squad', value: `${s.maxOnField} + ${s.maxSubs ?? 0} subs` },
+      ];
+
   return (
+    <div className="tm-match-settings">
+      <div className="tm-ms-section">
+        <div className="tm-ms-section-label"><Trophy size={13} strokeWidth={2} /> Match Type</div>
+        <div className="tm-ms-sport-grid">
+          {SPORT_TYPES.map(sp => {
+            const Icon = SPORT_ICON[sp];
+            const active = tournament.sport === sp;
+            const spDefaults = SPORT_DEFAULTS[sp];
+            const headline = spDefaults.racketScoring
+              ? `${spDefaults.racketScoring.mode === 'tennis' ? spDefaults.racketScoring.tiebreakAtGames : spDefaults.racketScoring.pointsToWin} pts`
+              : `${spDefaults.periods} ${spDefaults.periods > 1 ? 'periods' : 'period'}`;
+            return (
+              <button
+                key={sp}
+                type="button"
+                className={`tm-ms-sport-card${active ? ' tm-ms-sport-card--active' : ''}`}
+                onClick={() => updateTournament(tournament.id, { sport: sp })}
+                title={SPORT_LABELS[sp]}
+              >
+                <Icon size={22} strokeWidth={1.75} />
+                <span className="tm-ms-sport-card-name">{SPORT_LABELS[sp]}</span>
+                <span className="tm-ms-sport-card-sub">{headline}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="tm-ms-details">
+        <div className="tm-ms-details-label"><Info size={13} strokeWidth={2} /> Details</div>
+        {detailRows.map((row, i) => (
+          <div key={i} className="tm-ms-details-row">
+            <row.icon size={13} strokeWidth={2} />
+            <span className="tm-ms-details-key">{row.label}:</span>
+            <span className="tm-ms-details-val">{row.value}</span>
+          </div>
+        ))}
+      </div>
+
+      <div className="tm-ms-section">
+        <div className="tm-ms-section-label"><Clock size={13} strokeWidth={2} /> Match Duration</div>
+        <div className="tm-ms-duration-grid">
+          {durationOptions.map((opt, i) => {
+            const activeOpt = currentDurationKey === opt.key;
+            return (
+              <button
+                key={opt.key}
+                type="button"
+                className={`tm-ms-duration-pill${activeOpt ? ' tm-ms-duration-pill--active' : ''}`}
+                onClick={() => isRacketSport ? updateRacketScoring({ gamesToWin: opt.key }) : updateTournamentSettings(tournament.id, { periods: opt.key })}
+              >
+                <span className="tm-ms-duration-badge">{opt.key === ENDLESS_GAMES_TO_WIN ? <InfinityIcon size={11} strokeWidth={2.5} /> : i + 1}</span>
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <button type="button" className="tm-ms-advanced-toggle" onClick={() => setAdvancedOpen(v => !v)}>
+        <Settings size={13} strokeWidth={2} /> Advanced Match Rules
+        <ChevronDown size={14} strokeWidth={2} className={`tm-ms-advanced-chevron${advancedOpen ? ' tm-ms-advanced-chevron--open' : ''}`} />
+      </button>
+
+      {advancedOpen && (
     <div className="tm-settings-bar">
-      <div className="tm-settings-group">
-        <label className="tm-settings-label">Periods</label>
-        <select
-          className="tm-settings-input tm-settings-input--sm"
-          value={s.periods}
-          onChange={e => updateTournamentSettings(tournament.id, { periods: Number(e.target.value) })}
-        >
-          {[1,2,3,4,5].map(n => <option key={n} value={n}>{n}</option>)}
-        </select>
-      </div>
+      {!isRacketSport && (
+        <div className="tm-settings-group">
+          <label className="tm-settings-label">Periods</label>
+          <CardSelect value={s.periods} onChange={v => updateTournamentSettings(tournament.id, { periods: v })} columns={5}
+            options={[1, 2, 3, 4, 5].map(n => ({ value: n, label: String(n) }))} />
+        </div>
+      )}
+
+      {!isRacketSport && (
+        <div className="tm-settings-group">
+          <label className="tm-settings-label">Duration</label>
+          <input
+            className="tm-settings-input"
+            defaultValue={msToMmSs(s.periodDurationMs)}
+            key={`pd-${s.periodDurationMs}`}
+            placeholder="45:00"
+            onBlur={e => {
+              const ms = mmSsToMs(e.target.value);
+              if (ms > 0) updateTournamentSettings(tournament.id, { periodDurationMs: ms });
+            }}
+            onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+          />
+        </div>
+      )}
+
+      {!isRacketSport && (
+        <div className="tm-settings-group">
+          <label className="tm-settings-label">Half-time</label>
+          <input
+            className="tm-settings-input"
+            defaultValue={msToMmSs(s.halfTimeDurationMs)}
+            key={`ht-${s.halfTimeDurationMs}`}
+            placeholder="15:00"
+            onBlur={e => updateTournamentSettings(tournament.id, { halfTimeDurationMs: mmSsToMs(e.target.value) })}
+            onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+          />
+        </div>
+      )}
 
       <div className="tm-settings-group">
-        <label className="tm-settings-label">Duration</label>
-        <input
-          className="tm-settings-input"
-          defaultValue={msToMmSs(s.periodDurationMs)}
-          key={`pd-${s.periodDurationMs}`}
-          placeholder="45:00"
-          onBlur={e => {
-            const ms = mmSsToMs(e.target.value);
-            if (ms > 0) updateTournamentSettings(tournament.id, { periodDurationMs: ms });
-          }}
-          onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
-        />
-      </div>
-
-      <div className="tm-settings-group">
-        <label className="tm-settings-label">Half-time</label>
-        <input
-          className="tm-settings-input"
-          defaultValue={msToMmSs(s.halfTimeDurationMs)}
-          key={`ht-${s.halfTimeDurationMs}`}
-          placeholder="15:00"
-          onBlur={e => updateTournamentSettings(tournament.id, { halfTimeDurationMs: mmSsToMs(e.target.value) })}
-          onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
-        />
-      </div>
-
-      <div className="tm-settings-group">
-        <label className="tm-settings-label">Starters</label>
+        <label className="tm-settings-label">{isRacketSport ? 'Roster Size' : 'Starters'}</label>
         <input
           className="tm-settings-input tm-settings-input--sm"
           type="number"
@@ -610,54 +765,118 @@ function SettingsBar({ tournament, onApply }: { tournament: Tournament; onApply:
         />
       </div>
 
-      <div className="tm-settings-group">
-        <label className="tm-settings-label">Subs</label>
-        <input
-          className="tm-settings-input tm-settings-input--sm"
-          type="number"
-          min={0} max={20}
-          value={s.maxSubs ?? 7}
-          onChange={e => updateTournamentSettings(tournament.id, { maxSubs: Number(e.target.value) })}
-        />
-      </div>
+      {!isRacketSport && (
+        <div className="tm-settings-group">
+          <label className="tm-settings-label">Subs</label>
+          <input
+            className="tm-settings-input tm-settings-input--sm"
+            type="number"
+            min={0} max={20}
+            value={s.maxSubs ?? 7}
+            onChange={e => updateTournamentSettings(tournament.id, { maxSubs: Number(e.target.value) })}
+          />
+        </div>
+      )}
 
       {(tournament.sport === 'rugby_union' || tournament.sport === 'rugby_league') && (
         <div className="tm-settings-group">
-          <label className="tm-settings-label" title="Quick-fills Starters/Subs above with each format's usual squad size — the numbers stay freely editable afterward">Format</label>
-          <div className="tm-timer-mode-toggle">
-            <button className="tm-timer-mode-btn" title="7 starters, 5 subs" onClick={() => updateTournamentSettings(tournament.id, { maxOnField: 7, maxSubs: 5 })}>7s</button>
-            <button className="tm-timer-mode-btn" title="10 starters, 5 subs" onClick={() => updateTournamentSettings(tournament.id, { maxOnField: 10, maxSubs: 5 })}>10s</button>
-            <button className="tm-timer-mode-btn" title="15 starters, 8 subs" onClick={() => updateTournamentSettings(tournament.id, { maxOnField: 15, maxSubs: 8 })}>15s</button>
+          <label className="tm-settings-label" title="Quick-fills Starters/Subs AND each format's own usual match timing (half length/half-time break) below — every number stays freely editable afterward, this is just a starting point.">Format</label>
+          <div className="tm-ms-duration-grid" style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
+            <button type="button" className="tm-ms-sport-card" title="7 starters, 5 subs, 7-minute halves, 1-minute half-time (World Rugby Sevens Series pool-play timing — finals often run 10-minute halves instead, adjust Duration below if so)"
+              onClick={() => updateTournamentSettings(tournament.id, { maxOnField: 7, maxSubs: 5, periods: 2, periodDurationMs: 420000, halfTimeDurationMs: 60000 })}><span className="tm-ms-sport-card-name">7s</span></button>
+            <button type="button" className="tm-ms-sport-card" title="10 starters, 5 subs, 10-minute halves, 2-minute half-time (Rugby Tens)"
+              onClick={() => updateTournamentSettings(tournament.id, { maxOnField: 10, maxSubs: 5, periods: 2, periodDurationMs: 600000, halfTimeDurationMs: 120000 })}><span className="tm-ms-sport-card-name">10s</span></button>
+            <button type="button" className="tm-ms-sport-card" title="15 starters, 8 subs, 40-minute halves, 10-minute half-time (standard Fifteens)"
+              onClick={() => updateTournamentSettings(tournament.id, { maxOnField: 15, maxSubs: 8, periods: 2, periodDurationMs: 2400000, halfTimeDurationMs: 600000 })}><span className="tm-ms-sport-card-name">15s</span></button>
           </div>
         </div>
       )}
 
-      <div className="tm-settings-group">
-        <label className="tm-settings-label">Timer</label>
-        <div className="tm-timer-mode-toggle">
-          <button
-            className={`tm-timer-mode-btn ${(s.timerMode ?? 'countup') === 'countup' ? 'tm-timer-mode-btn--active' : ''}`}
-            style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
-            onClick={() => updateTournamentSettings(tournament.id, { timerMode: 'countup' })}
-          ><ArrowUp size={14} strokeWidth={2} /> Up</button>
-          <button
-            className={`tm-timer-mode-btn ${(s.timerMode ?? 'countup') === 'countdown' ? 'tm-timer-mode-btn--active' : ''}`}
-            style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
-            onClick={() => updateTournamentSettings(tournament.id, { timerMode: 'countdown' })}
-          ><ArrowDown size={14} strokeWidth={2} /> Down</button>
+      {!isRacketSport && (
+        <div className="tm-settings-group">
+          <label className="tm-settings-label">Timer</label>
+          <CardSelect value={s.timerMode ?? 'countup'} onChange={v => updateTournamentSettings(tournament.id, { timerMode: v })} columns={2}
+            options={[{ value: 'countup', label: 'Up', icon: ArrowUp }, { value: 'countdown', label: 'Down', icon: ArrowDown }]} />
         </div>
-      </div>
+      )}
 
-      <div className="tm-settings-group">
-        <label className="tm-settings-label" title="Winning score auto-applied when a fixture is marked Bye/Walkover in the Schedule tab">W/O Score</label>
-        <input
-          className="tm-settings-input tm-settings-input--sm"
-          type="number"
-          min={0} max={999}
-          value={s.walkoverWinScore ?? 1}
-          onChange={e => updateTournamentSettings(tournament.id, { walkoverWinScore: Math.max(0, Number(e.target.value) || 0) })}
-        />
-      </div>
+      {isRacketSport && (
+        <>
+          <div className="tm-settings-group">
+            <label className="tm-settings-label" title="Points needed to win a game/set — freely customizable regardless of sport">{isTennis ? 'Games/Set' : 'Points/Game'}</label>
+            <input
+              className="tm-settings-input tm-settings-input--sm"
+              type="number" min={1}
+              value={isTennis ? rs.tiebreakAtGames : rs.pointsToWin}
+              onChange={e => updateRacketScoring(isTennis ? { tiebreakAtGames: Math.max(1, Number(e.target.value) || 6) } : { pointsToWin: Math.max(1, Number(e.target.value) || 21) })}
+            />
+          </div>
+          {!isTennis && (
+            <div className="tm-settings-group">
+              <label className="tm-settings-label" title="Race straight to Points/Game with no lead needed, but an exact deadlock at one point short raises the target to a fixed number instead (first to reach it wins outright) — sepaktakraw's own rule">Deadlock Rule</label>
+              <ToggleCard checked={rs.deuceTarget != null} onChange={v => updateRacketScoring(v
+                  ? { deuceTarget: rs.pointsToWin + 2, winBy2: false, pointCap: undefined }
+                  : { deuceTarget: undefined })} />
+            </div>
+          )}
+          {!isTennis && rs.deuceTarget != null && (
+            <div className="tm-settings-group">
+              <label className="tm-settings-label" title="First side to reach this after a deadlock wins outright">Deadlock Target</label>
+              <input
+                className="tm-settings-input tm-settings-input--sm"
+                type="number" min={rs.pointsToWin + 1}
+                value={rs.deuceTarget}
+                onChange={e => updateRacketScoring({ deuceTarget: Math.max(1, Number(e.target.value) || rs.pointsToWin + 2) })}
+              />
+            </div>
+          )}
+          {!isTennis && rs.deuceTarget == null && (
+            <div className="tm-settings-group">
+              <label className="tm-settings-label">Win by 2</label>
+              <ToggleCard checked={rs.winBy2} onChange={v => updateRacketScoring({ winBy2: v })} />
+            </div>
+          )}
+          {!isTennis && rs.deuceTarget == null && (
+            <div className="tm-settings-group">
+              <label className="tm-settings-label" title="Hard cap on a game's final score even without a 2-point lead yet — blank means no cap">Point Cap</label>
+              <input
+                className="tm-settings-input tm-settings-input--sm"
+                type="number" min={1} placeholder="—"
+                value={rs.pointCap ?? ''}
+                onChange={e => updateRacketScoring({ pointCap: e.target.value === '' ? undefined : Math.max(1, Number(e.target.value) || 1) })}
+              />
+            </div>
+          )}
+          <div className="tm-settings-group">
+            <label className="tm-settings-label">{isTennis ? 'Sets to Win Match' : 'Games to Win Match'}</label>
+            <input
+              className="tm-settings-input tm-settings-input--sm"
+              type="number" min={1}
+              value={rs.gamesToWin}
+              onChange={e => updateRacketScoring({ gamesToWin: Math.max(1, Number(e.target.value) || 2) })}
+            />
+          </div>
+          {isTennis && (
+            <div className="tm-settings-group">
+              <label className="tm-settings-label">No-Ad</label>
+              <ToggleCard checked={rs.noAd} onChange={v => updateRacketScoring({ noAd: v })} />
+            </div>
+          )}
+        </>
+      )}
+
+      {!isRacketSport && (
+        <div className="tm-settings-group">
+          <label className="tm-settings-label" title="Winning score auto-applied when a fixture is marked Bye/Walkover in the Schedule tab">W/O Score</label>
+          <input
+            className="tm-settings-input tm-settings-input--sm"
+            type="number"
+            min={0} max={999}
+            value={s.walkoverWinScore ?? 1}
+            onChange={e => updateTournamentSettings(tournament.id, { walkoverWinScore: Math.max(0, Number(e.target.value) || 0) })}
+          />
+        </div>
+      )}
 
       <div className="tm-settings-group">
         <label className="tm-settings-label" title="Standings points per outcome — walkovers count as a normal win/loss, byes don't count at all">Win/Draw/Loss Pts</label>
@@ -673,9 +892,11 @@ function SettingsBar({ tournament, onApply }: { tournament: Tournament; onApply:
             onChange={e => updateTournamentSettings(tournament.id, { pointsLoss: Math.max(0, Number(e.target.value) || 0) })} />
         </div>
       </div>
+    </div>
+      )}
 
-      <button className="tm-apply-btn" onClick={onApply} title="Push all settings to linked canvas widgets" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-        <Play size={14} strokeWidth={2} /> Apply to Canvas
+      <button className="tm-ms-apply-btn" onClick={onApply} title="Push all settings to linked canvas widgets">
+        <Play size={16} strokeWidth={2} fill="currentColor" /> Apply to Canvas
       </button>
     </div>
   );
@@ -887,15 +1108,11 @@ function PlayersPanel({ tournament, activeCategory }: { tournament: Tournament; 
                 saved match history (see src/lib/localPlayerStats.ts) */}
             <div className="tm-io-bar" style={{ marginTop: 4 }}>
               <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Tries/Conv/Pen/Drop/Cards stats from:</span>
-              <select
-                className="field-input"
-                style={{ fontSize: 11, padding: '2px 6px', width: 'auto' }}
+              <CardSelect className="tm-ms-sport-grid--narrow" columns={2}
                 value={team.statsSource === 'local' ? 'local' : 'api'}
-                onChange={e => updateTeam(team.id, { statsSource: e.target.value === 'local' ? 'local' : 'api' })}
-              >
-                <option value="api">External API</option>
-                <option value="local">Counted by this app</option>
-              </select>
+                onChange={v => updateTeam(team.id, { statsSource: v })}
+                options={[{ value: 'api', label: 'External API' }, { value: 'local', label: 'Counted by this app' }]}
+              />
             </div>
             {team.statsSource === 'local' && (
               <p style={{ fontSize: 10, color: 'var(--text-muted)', margin: '2px 2px 0' }}>
@@ -982,7 +1199,7 @@ export function normalizeGroups(groups: unknown): TournamentGroup[] {
 
 // Tournament.pots was a plain string[] before per-category scoping was
 // added — tolerate any pot that's still in that shape.
-function normalizePots(pots: unknown): TournamentPot[] {
+export function normalizePots(pots: unknown): TournamentPot[] {
   return ((pots as TournamentPot[] | undefined) ?? []).map(p =>
     typeof p === 'string' ? { name: p as string } : p
   );
@@ -994,7 +1211,7 @@ function normalizePots(pots: unknown): TournamentPot[] {
 // push doesn't guess — those teams are reported in `conflictTeamIds`. Teams
 // with no explicit position (or a conflicted one) are reported in
 // `unpositioned` instead of being silently placed somewhere.
-function resolveGroupSlots(members: SavedTeam[], slotCount?: number): { slots: (SavedTeam | null)[]; conflictTeamIds: Set<string>; unpositioned: SavedTeam[] } {
+export function resolveGroupSlots(members: SavedTeam[], slotCount?: number): { slots: (SavedTeam | null)[]; conflictTeamIds: Set<string>; unpositioned: SavedTeam[] } {
   const withPos = members.filter(t => t.groupPosition != null && t.groupPosition >= 1);
   const maxPos = withPos.reduce((m, t) => Math.max(m, t.groupPosition!), 0);
   const size = Math.max(slotCount ?? 0, maxPos);
@@ -1084,7 +1301,8 @@ function TeamsPanel({ tournament }: { tournament: Tournament }) {
   };
 
   const removeCategory = (name: string) => {
-    updateTournament(tournamentId, { categories: categories.filter(c => c !== name) });
+    const { [name]: _removed, ...restLogos } = tournament.categoryLogos ?? {};
+    updateTournament(tournamentId, { categories: categories.filter(c => c !== name), categoryLogos: restLogos });
     for (const t of teams) {
       if (t.category === name) updateTeam(t.id, { category: undefined });
     }
@@ -1097,10 +1315,12 @@ function TeamsPanel({ tournament }: { tournament: Tournament }) {
   const renameCategory = (oldName: string, newName: string) => {
     const name = newName.trim();
     if (!name || name === oldName || categories.includes(name)) return;
+    const { [oldName]: movedLogo, ...restLogos } = tournament.categoryLogos ?? {};
     updateTournament(tournamentId, {
       categories: categories.map(c => c === oldName ? name : c),
       groups: (tournament.groups ?? []).map(g => g.category === oldName ? { ...g, category: name } : g),
       pots: (tournament.pots ?? []).map(p => p.category === oldName ? { ...p, category: name } : p),
+      categoryLogos: movedLogo ? { ...restLogos, [name]: movedLogo } : restLogos,
     });
     for (const t of teams) {
       if (t.category === oldName) updateTeam(t.id, { category: name });
@@ -1153,6 +1373,13 @@ function TeamsPanel({ tournament }: { tournament: Tournament }) {
         <span className="tm-groups-label tm-groups-label--lg">Categories:</span>
         {categories.map(c => (
           <span key={c} className="tm-group-chip tm-group-chip--lg">
+            <LogoUrlPicker
+              compact
+              value={tournament.categoryLogos?.[c] ?? ''}
+              onChange={logo => updateTournament(tournamentId, { categoryLogos: { ...tournament.categoryLogos, [c]: logo } })}
+              thumbSize={{ w: 22, h: 22 }}
+              tournamentId={tournamentId}
+            />
             {categoryEditMode ? (
               <input
                 className="tm-group-chip-input tm-group-chip-input--lg"
@@ -1187,11 +1414,13 @@ function TeamsPanel({ tournament }: { tournament: Tournament }) {
       {categories.length > 0 && selectedIds.size > 0 && (
         <div className="tm-draw-vmix-cfg" style={{ marginTop: 10 }}>
           <span className="tm-groups-label">{selectedIds.size} selected —</span>
-          <select className="tm-input" value={duplicateTarget} onChange={e => setDuplicateTarget(e.target.value)} style={{ width: 160 }}>
-            <option value="">— pick category —</option>
-            {categories.map(c => <option key={c} value={c}>{c}</option>)}
-            <option value="__all__">All Categories</option>
-          </select>
+          <CustomBox>
+            <select className="tm-input" value={duplicateTarget} onChange={e => setDuplicateTarget(e.target.value)} style={{ width: 160 }}>
+              <option value="">— pick category —</option>
+              {categories.map(c => <option key={c} value={c}>{c}</option>)}
+              <option value="__all__">All Categories</option>
+            </select>
+          </CustomBox>
           <button className="tm-io-btn" onClick={bulkDuplicate} disabled={!duplicateTarget}>⧉ Duplicate Selected</button>
           <button className="tm-io-btn" onClick={moveSelected} disabled={!duplicateTarget || duplicateTarget === '__all__'} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><ArrowRight size={14} strokeWidth={2} /> Move Selected</button>
           <button className="tm-io-btn" onClick={() => setSelectedIds(new Set())}>Clear Selection</button>
@@ -1854,19 +2083,18 @@ function GenerateScheduleModal({ tournament, scopedTeams, onClose, onGenerate }:
         <div className="tm-gen-title" style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Wand2 size={16} strokeWidth={1.75} /> Generate Schedule</div>
 
         <label className="tm-gen-label">Format</label>
-        <select className="tm-input" value={format} onChange={e => setFormat(e.target.value as ScheduleFormat)}>
-          {(Object.keys(SCHEDULE_FORMAT_LABELS) as ScheduleFormat[]).map(f => (
-            <option key={f} value={f}>{SCHEDULE_FORMAT_LABELS[f]}</option>
-          ))}
-        </select>
+        <CardSelect value={format} onChange={v => setFormat(v)} columns={1}
+          options={(Object.keys(SCHEDULE_FORMAT_LABELS) as ScheduleFormat[]).map(f => ({ value: f, label: SCHEDULE_FORMAT_LABELS[f] }))} />
 
         {categories.length > 0 && (
           <>
             <label className="tm-gen-label">Category</label>
-            <select className="tm-input" value={category} onChange={e => setCategory(e.target.value)}>
-              <option value={ALL_CATEGORIES}>All Categories (generates one schedule per category)</option>
-              {categories.map(c => <option key={c} value={c}>{c}</option>)}
-            </select>
+            <CustomBox>
+              <select className="tm-input" value={category} onChange={e => setCategory(e.target.value)}>
+                <option value={ALL_CATEGORIES}>All Categories (generates one schedule per category)</option>
+                {categories.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </CustomBox>
           </>
         )}
 
@@ -1937,14 +2165,12 @@ function GenerateScheduleModal({ tournament, scopedTeams, onClose, onGenerate }:
                 }} />
             )}
             <label className="tm-gen-label">Tier naming</label>
-            <select className="tm-input" value={tieredMode} onChange={e => setTieredMode(e.target.value as 'named' | 'ranked')}>
-              <option value="named">Named tiers (Cup, Plate, Bowl, Shield…)</option>
-              <option value="ranked">Ranked placement (1st+2nd → Cup; every rank below runs its own placement bracket, labeled by position)</option>
-            </select>
-            <label className="tm-gen-checkbox">
-              <input type="checkbox" checked={useWildcards} onChange={e => setUseWildcards(e.target.checked)} />
-              Fill uneven bracket shortfalls with cross-pool "Best Nth-place" wildcards instead of byes
-            </label>
+            <CardSelect value={tieredMode} onChange={v => setTieredMode(v)} columns={1}
+              options={[
+                { value: 'named', label: 'Named tiers', sub: 'Cup, Plate, Bowl, Shield…' },
+                { value: 'ranked', label: 'Ranked placement', sub: '1st+2nd → Cup; every rank below runs its own placement bracket, labeled by position' },
+              ]} />
+            <ToggleCard checked={useWildcards} onChange={v => setUseWildcards(v)} desc={"Fill uneven bracket shortfalls with cross-pool \"Best Nth-place\" wildcards instead of byes"} />
           </>
         )}
 
@@ -1963,16 +2189,10 @@ function GenerateScheduleModal({ tournament, scopedTeams, onClose, onGenerate }:
         <input className="tm-input" type="number" min={0} value={daysBetween}
           onChange={e => setDaysBetween(Math.max(0, parseInt(e.target.value, 10) || 0))} />
 
-        <label className="tm-gen-checkbox">
-          <input type="checkbox" checked={randomize} onChange={e => setRandomize(e.target.checked)} />
-          Randomize team order / seeding
-        </label>
+        <ToggleCard checked={randomize} onChange={v => setRandomize(v)} desc="Randomize team order / seeding" />
 
         {(format === 'knockout' || format === 'groups-knockout' || format === 'groups-tiered') && (
-          <label className="tm-gen-checkbox">
-            <input type="checkbox" checked={thirdPlacePlayoff} onChange={e => setThirdPlacePlayoff(e.target.checked)} />
-            Play 3rd/4th place — Semifinal losers play for 3rd
-          </label>
+          <ToggleCard checked={thirdPlacePlayoff} onChange={v => setThirdPlacePlayoff(v)} desc="Play 3rd/4th place — Semifinal losers play for 3rd" />
         )}
 
         {preview.warnings.length > 0 && (
@@ -2799,15 +3019,17 @@ function SchedulePanel({ tournament, activeCategory, editMode }: {
             </span>
           ))
         )}
-        <select
-          className="tm-input" style={{ width: 'auto' }} value=""
-          onChange={e => { if (e.target.value) addSortKey(e.target.value as ScheduleSortKey); }}
-        >
-          <option value="">+ Add sort key…</option>
-          {(Object.keys(SCHEDULE_SORT_KEY_LABELS) as ScheduleSortKey[]).filter(k => !sortKeys.includes(k)).map(k => (
-            <option key={k} value={k}>{SCHEDULE_SORT_KEY_LABELS[k]}</option>
-          ))}
-        </select>
+        <CustomBox>
+          <select
+            className="tm-input" style={{ width: 'auto' }} value=""
+            onChange={e => { if (e.target.value) addSortKey(e.target.value as ScheduleSortKey); }}
+          >
+            <option value="">+ Add sort key…</option>
+            {(Object.keys(SCHEDULE_SORT_KEY_LABELS) as ScheduleSortKey[]).filter(k => !sortKeys.includes(k)).map(k => (
+              <option key={k} value={k}>{SCHEDULE_SORT_KEY_LABELS[k]}</option>
+            ))}
+          </select>
+        </CustomBox>
         {sortKeys.length > 0 && (
           <button className="tm-io-btn" onClick={() => setSortKeys([])} title="Clear all sort keys — back to manual drag order">Reset to manual</button>
         )}
@@ -2894,27 +3116,33 @@ function SchedulePanel({ tournament, activeCategory, editMode }: {
       {editMode && selectedIds.size > 0 && (
         <div className="tm-draw-vmix-cfg" style={{ marginBottom: 12 }}>
           <span className="tm-groups-label">{selectedIds.size} selected —</span>
-          <select className="tm-input" value={bulkVenue} onChange={e => setBulkVenue(e.target.value)} style={{ width: 140 }}>
-            <option value="">— pick venue —</option>
-            {venues.map(v => <option key={v} value={v}>{v}</option>)}
-            <option value="__clear__">— No Venue —</option>
-          </select>
+          <CustomBox>
+            <select className="tm-input" value={bulkVenue} onChange={e => setBulkVenue(e.target.value)} style={{ width: 140 }}>
+              <option value="">— pick venue —</option>
+              {venues.map(v => <option key={v} value={v}>{v}</option>)}
+              <option value="__clear__">— No Venue —</option>
+            </select>
+          </CustomBox>
           <button className="tm-io-btn" onClick={applyBulkVenue} disabled={!bulkVenue}>Apply Venue</button>
           {(tournament.categories ?? []).length > 0 && (
             <>
-              <select className="tm-input" value={bulkCategory} onChange={e => setBulkCategory(e.target.value)} style={{ width: 140 }}>
-                <option value="">— pick category —</option>
-                {(tournament.categories ?? []).map(c => <option key={c} value={c}>{c}</option>)}
-                <option value="__clear__">— No Category —</option>
-              </select>
+              <CustomBox>
+                <select className="tm-input" value={bulkCategory} onChange={e => setBulkCategory(e.target.value)} style={{ width: 140 }}>
+                  <option value="">— pick category —</option>
+                  {(tournament.categories ?? []).map(c => <option key={c} value={c}>{c}</option>)}
+                  <option value="__clear__">— No Category —</option>
+                </select>
+              </CustomBox>
               <button className="tm-io-btn" onClick={applyBulkCategory} disabled={!bulkCategory}>Apply Category</button>
             </>
           )}
-          <select className="tm-input" value={bulkGroup} onChange={e => setBulkGroup(e.target.value)} style={{ width: 140 }}>
-            <option value="">— pick group —</option>
-            {normalizeGroups(tournament.groups).map(g => <option key={g.name} value={g.name}>{g.name}</option>)}
-            <option value="__clear__">— No Group —</option>
-          </select>
+          <CustomBox>
+            <select className="tm-input" value={bulkGroup} onChange={e => setBulkGroup(e.target.value)} style={{ width: 140 }}>
+              <option value="">— pick group —</option>
+              {normalizeGroups(tournament.groups).map(g => <option key={g.name} value={g.name}>{g.name}</option>)}
+              <option value="__clear__">— No Group —</option>
+            </select>
+          </CustomBox>
           <button className="tm-io-btn" onClick={applyBulkGroup} disabled={!bulkGroup}>Apply Group</button>
           <ConfirmButton
             className="tm-io-btn tm-io-btn--danger"
@@ -3487,17 +3715,19 @@ function RundownPanel() {
             s.linkedScheduleMatchId ? (
               <button className="tm-io-btn" onClick={() => updateSegment(s.id, { linkedScheduleMatchId: undefined })}>Unlink</button>
             ) : (
-              <select
-                className="tm-input" style={{ width: 150 }} value=""
-                title="Link this segment to a real fixture — its status/teams/score will then follow that fixture automatically"
-                onChange={e => {
-                  const m = matches.find(x => x.id === e.target.value);
-                  if (m) updateSegment(s.id, { linkedScheduleMatchId: m.id, title: `${m.teamAName} vs ${m.teamBName}` });
-                }}
-              >
-                <option value="">Link to fixture…</option>
-                {matches.map(m => <option key={m.id} value={m.id}>{m.date}{m.time ? ` ${m.time}` : ''} — {m.teamAName} vs {m.teamBName}</option>)}
-              </select>
+              <CustomBox>
+                <select
+                  className="tm-input" style={{ width: 150 }} value=""
+                  title="Link this segment to a real fixture — its status/teams/score will then follow that fixture automatically"
+                  onChange={e => {
+                    const m = matches.find(x => x.id === e.target.value);
+                    if (m) updateSegment(s.id, { linkedScheduleMatchId: m.id, title: `${m.teamAName} vs ${m.teamBName}` });
+                  }}
+                >
+                  <option value="">Link to fixture…</option>
+                  {matches.map(m => <option key={m.id} value={m.id}>{m.date}{m.time ? ` ${m.time}` : ''} — {m.teamAName} vs {m.teamBName}</option>)}
+                </select>
+              </CustomBox>
             )
           )}
 
@@ -3533,16 +3763,18 @@ function RundownPanel() {
             <button className="tm-io-btn" onClick={selectAll} disabled={segments.length === 0 || allSelected} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><CheckSquare size={14} strokeWidth={2} /> Select All</button>
             <button className="tm-io-btn" onClick={deselectAll} disabled={selectedIds.size === 0} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><Square size={14} strokeWidth={2} /> Deselect All</button>
           </div>
-          <select
-            className="tm-sidebar-new-btn"
-            value=""
-            title="Add a rundown item — pick a common one or add a custom segment"
-            onChange={e => { if (e.target.value) handleAdd(e.target.value === '__custom__' ? 'New segment' : e.target.value); }}
-          >
-            <option value="" disabled>＋ Add Segment</option>
-            <option value="__custom__">Custom…</option>
-            {RUNDOWN_SEGMENT_PRESETS.map(p => <option key={p} value={p}>{p}</option>)}
-          </select>
+          <CustomBox>
+            <select
+              className="tm-sidebar-new-btn"
+              value=""
+              title="Add a rundown item — pick a common one or add a custom segment"
+              onChange={e => { if (e.target.value) handleAdd(e.target.value === '__custom__' ? 'New segment' : e.target.value); }}
+            >
+              <option value="" disabled>＋ Add Segment</option>
+              <option value="__custom__">Custom…</option>
+              {RUNDOWN_SEGMENT_PRESETS.map(p => <option key={p} value={p}>{p}</option>)}
+            </select>
+          </CustomBox>
         </div>
       )}
 
@@ -4000,11 +4232,13 @@ function ResultsPanel({ tournament }: { tournament: Tournament }) {
   return (
     <div className="tm-win-content" style={{ padding: 16, overflowY: 'auto' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
-        <select className="tm-io-btn" value={sortMode} title="Sort order" onChange={e => setSortMode(e.target.value as ResultSortMode)}>
-          {(Object.keys(RESULT_SORT_LABELS) as ResultSortMode[]).map(m => (
-            <option key={m} value={m}>Sort: {RESULT_SORT_LABELS[m]}</option>
-          ))}
-        </select>
+        <CustomBox>
+          <select className="tm-io-btn" value={sortMode} title="Sort order" onChange={e => setSortMode(e.target.value as ResultSortMode)}>
+            {(Object.keys(RESULT_SORT_LABELS) as ResultSortMode[]).map(m => (
+              <option key={m} value={m}>Sort: {RESULT_SORT_LABELS[m]}</option>
+            ))}
+          </select>
+        </CustomBox>
         {resultsSyncState !== 'idle' && (
           <span style={{ fontSize: 11, color: resultsSyncState === 'error' ? 'var(--red)' : 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
             {resultsSyncState === 'busy' ? '…' : resultsSyncState === 'error' ? <><AlertTriangle size={12} strokeWidth={2} /> {resultsSyncMsg}</> : <><Check size={12} strokeWidth={2} /> {resultsSyncMsg}</>}
@@ -4210,6 +4444,10 @@ export function isPoolStageResult(r: SavedMatchResult): boolean {
 }
 
 export function StandingsTable({ title, rows, onTeamClick }: { title: string; rows: StandingRow[]; onTeamClick?: (name: string) => void }) {
+  // Teams re-sort by points/diff/PF as results come in — animate that
+  // reorder (slide from the row's old rank to its new one) instead of
+  // letting rows just snap to their new spot. See useReorderAnimation.
+  const bodyRef = useReorderAnimation<HTMLDivElement>();
   return (
     <div className="tm-standings-table">
       <div className="tm-standings-title">{title}</div>
@@ -4219,22 +4457,24 @@ export function StandingsTable({ title, rows, onTeamClick }: { title: string; ro
         <span>P</span><span>W</span><span>D</span><span>L</span>
         <span>PF</span><span>PA</span><span>+/-</span><span>Pts</span>
       </div>
-      {rows.map((r, i) => (
-        <div key={r.teamId} className={`tm-standings-row${i < 2 ? ' tm-standings-row--top' : ''}`}>
-          <span className="tm-standings-pos">{i + 1}</span>
-          <span
-            className={`tm-standings-team${onTeamClick ? ' tm-standings-team--clickable' : ''}`}
-            onClick={onTeamClick ? () => onTeamClick(r.name) : undefined}
-            title={onTeamClick ? `View ${r.name}'s tournament stats & history` : undefined}
-          >
-            <div style={{ width: 22, height: 22, flexShrink: 0 }}><ScheduleBadge logo={r.logo} color={r.color} /></div>
-            {r.shortName || r.name}
-          </span>
-          <span>{r.played}</span><span>{r.won}</span><span>{r.drawn}</span><span>{r.lost}</span>
-          <span>{r.pf}</span><span>{r.pa}</span><span>{r.pf - r.pa > 0 ? '+' : ''}{r.pf - r.pa}</span>
-          <span className="tm-standings-pts">{r.pts}</span>
-        </div>
-      ))}
+      <div ref={bodyRef}>
+        {rows.map((r, i) => (
+          <div key={r.teamId} data-flip-key={r.teamId} className={`tm-standings-row${i < 2 ? ' tm-standings-row--top' : ''}`}>
+            <span className="tm-standings-pos">{i + 1}</span>
+            <span
+              className={`tm-standings-team${onTeamClick ? ' tm-standings-team--clickable' : ''}`}
+              onClick={onTeamClick ? () => onTeamClick(r.name) : undefined}
+              title={onTeamClick ? `View ${r.name}'s tournament stats & history` : undefined}
+            >
+              <div style={{ width: 22, height: 22, flexShrink: 0 }}><ScheduleBadge logo={r.logo} color={r.color} /></div>
+              {r.shortName || r.name}
+            </span>
+            <span>{r.played}</span><span>{r.won}</span><span>{r.drawn}</span><span>{r.lost}</span>
+            <span>{r.pf}</span><span>{r.pa}</span><span>{r.pf - r.pa > 0 ? '+' : ''}{r.pf - r.pa}</span>
+            <span className="tm-standings-pts">{r.pts}</span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -4788,8 +5028,20 @@ interface ArmedSlot { group: string; position: number; }
 function DrawPanel({ tournament, activeCategory }: { tournament: Tournament; activeCategory: string }) {
   const { teams: allTeams, updateTeam } = useTeamDbStore();
   const { updateTournament } = useTournamentStore();
-  const { client, vmixState } = useVmixStore();
+  const { vmixState, globalVariables } = useVmixStore();
+  // getClient() (not the raw `client` field) — on a remote interactive
+  // (9887) client `client` itself is always null (only the HOST's own
+  // connect() ever sets it); getClient() is what actually proxies through
+  // to the host's real vMix connection via RemoteVmixProxy in that case
+  // (see vmixStore.ts). Every push function below bails out on `!client`,
+  // so reading the raw field here silently dropped every push the moment
+  // this panel was driven from a remote client instead of the host window.
+  const client = useVmixStore((s) => s.getClient());
+  const { pages } = useCanvasStore();
   const allVmixInputs = vmixState?.inputs ?? [];
+  const drawTimerWidgets = pages.flatMap(p => p.widgets.filter(w => w.type === 'timer'));
+  const drawScoreboardWidgets = pages.flatMap(p => p.widgets.filter(w => w.type === 'scoreboard'));
+  const drawCgTemplateWidgets = pages.flatMap(p => p.widgets.filter(w => w.type === 'cg-template'));
   const { liveSyncDraw, setLiveSyncDraw } = useAppSettings();
   // Only a non-host interactive (9887) client can push to the host — 9888
   // readonly and 9889 commentator clients never edit.
@@ -4808,12 +5060,32 @@ function DrawPanel({ tournament, activeCategory }: { tournament: Tournament; act
   const allGroups = normalizeGroups(tournament.groups);
   const allPots = normalizePots(tournament.pots);
   const inScope = (category?: string) => !activeCategory || !category || category === activeCategory;
+  // Duplicate-name checks in addGroup/renameGroup/addPot/renamePot below are
+  // scoped to the SAME category as the group/pot being added/renamed, not
+  // tournament-wide — otherwise "Men Open" claiming "Group A"/"Pot 1" first
+  // silently blocks every other category from ever using those same (very
+  // common) names, with no error shown, just a no-op button press. An
+  // untagged group/pot (single-category tournaments, where category is
+  // never set) still collides with everything, preserving prior behavior there.
+  const sameCategoryScope = (itemCategory: string | undefined, targetCategory: string | undefined) =>
+    !itemCategory || !targetCategory || itemCategory === targetCategory;
   const teams = useMemo(
     () => allTeams.filter(t => t.tournamentId === tournament.id && inScope(t.category)),
     [allTeams, tournament.id, activeCategory]
   );
   const pots = allPots.filter(p => inScope(p.category));
   const groups = allGroups.filter(g => inScope(g.category));
+  // Tournament-WIDE, never filtered by whichever category tab happens to
+  // be selected — unlike the plain `teams` above (scoped to
+  // `activeCategory`, for the Draw tab's own on-screen display only).
+  // Group List/Pot List vMix targets and Live Sync's own fingerprint both
+  // need this: they're tournament-level, persisted config, not something
+  // that should go blank or stop detecting changes just because a
+  // DIFFERENT category tab happens to be open right now.
+  const allTournamentTeams = useMemo(
+    () => allTeams.filter(t => t.tournamentId === tournament.id),
+    [allTeams, tournament.id]
+  );
   const drawCfg = tournament.drawVmix ?? {};
   const [lastDrawn, setLastDrawn] = useState<LastDrawn | null>(null);
   // Editable, order-free draw: either a team or a group can be picked first
@@ -4880,10 +5152,10 @@ function DrawPanel({ tournament, activeCategory }: { tournament: Tournament; act
 
   const addGroup = () => {
     const name = newGroupName.trim();
-    if (!name || allGroups.some(g => g.name === name)) return;
+    const category = newGroupCategory || activeCategory || undefined;
+    if (!name || allGroups.some(g => g.name === name && sameCategoryScope(g.category, category))) return;
     const prefix = newGroupPrefix.trim() || name.charAt(0).toUpperCase();
     const capacity = newGroupCapacity.trim() ? Number(newGroupCapacity) : undefined;
-    const category = newGroupCategory || activeCategory || undefined;
     updateTournament(tournament.id, { groups: [...allGroups, { name, prefix, capacity, category }] });
     setNewGroupName('');
     setNewGroupPrefix('');
@@ -4907,7 +5179,8 @@ function DrawPanel({ tournament, activeCategory }: { tournament: Tournament; act
   // group by name, so a plain field edit would silently break those links.
   const renameGroup = (oldName: string, newName: string) => {
     const name = newName.trim();
-    if (!name || name === oldName || allGroups.some(g => g.name === name)) return;
+    const currentCategory = allGroups.find(g => g.name === oldName)?.category;
+    if (!name || name === oldName || allGroups.some(g => g.name === name && sameCategoryScope(g.category, currentCategory))) return;
     updateTournament(tournament.id, {
       groups: allGroups.map(g => g.name === oldName ? { ...g, name } : g),
       groupListVmix: groupListTargets.map(t => t.group === oldName ? { ...t, group: name } : t),
@@ -4919,8 +5192,9 @@ function DrawPanel({ tournament, activeCategory }: { tournament: Tournament; act
 
   const addPot = () => {
     const name = newPotName.trim();
-    if (!name || allPots.some(p => p.name === name)) return;
-    updateTournament(tournament.id, { pots: [...allPots, { name, category: activeCategory || undefined }] });
+    const category = activeCategory || undefined;
+    if (!name || allPots.some(p => p.name === name && sameCategoryScope(p.category, category))) return;
+    updateTournament(tournament.id, { pots: [...allPots, { name, category }] });
     setNewPotName('');
   };
 
@@ -4934,8 +5208,12 @@ function DrawPanel({ tournament, activeCategory }: { tournament: Tournament; act
   // Renames a pot and cascades the new name to every team's `pot` field.
   const renamePot = (oldName: string, newName: string) => {
     const name = newName.trim();
-    if (!name || name === oldName || allPots.some(p => p.name === name)) return;
-    updateTournament(tournament.id, { pots: allPots.map(p => p.name === oldName ? { ...p, name } : p) });
+    const currentCategory = allPots.find(p => p.name === oldName)?.category;
+    if (!name || name === oldName || allPots.some(p => p.name === name && sameCategoryScope(p.category, currentCategory))) return;
+    updateTournament(tournament.id, {
+      pots: allPots.map(p => p.name === oldName ? { ...p, name } : p),
+      potListVmix: potListTargets.map(t => t.pot === oldName ? { ...t, pot: name } : t),
+    });
     for (const t of allTeams) {
       if (t.tournamentId === tournament.id && t.pot === oldName) updateTeam(t.id, { pot: name });
     }
@@ -4955,6 +5233,19 @@ function DrawPanel({ tournament, activeCategory }: { tournament: Tournament; act
     if (drawCfg.fieldTeamLogo) client.setImageField(drawCfg.inputKey, drawCfg.fieldTeamLogo, team.logo || transparentLogoUrl());
   };
 
+  // Multi-state vMix push — same idea as a Multi-State button's own States
+  // (see WidgetConfigPanel.tsx's 'button' case), just driven by the team's
+  // own draw STATUS instead of a click cycling through them: 'active' while
+  // armed (about to be paired), 'inactive' sitting un-armed in its pot,
+  // 'assigned' once actually placed into a group — e.g. OverlayIn on
+  // active, OverlayOut on assigned, so a per-team on-air card can
+  // appear/disappear automatically as the draw proceeds, not just have its
+  // text fields silently overwritten underneath whatever's already showing.
+  const pushDrawState = (state: 'active' | 'inactive' | 'assigned') => {
+    const list = state === 'active' ? drawCfg.activeActions : state === 'assigned' ? drawCfg.assignedActions : drawCfg.inactiveActions;
+    if (list?.length) runActions(list);
+  };
+
   // Group-list pushes: whole-group team lists to numbered vMix fields, one
   // target per on-air "Group A" style title.
   const groupListTargets = tournament.groupListVmix ?? [];
@@ -4970,20 +5261,39 @@ function DrawPanel({ tournament, activeCategory }: { tournament: Tournament; act
 
   const pushGroupListToVmix = (target: GroupListVmixTarget) => {
     if (!client || !target.inputKey) return;
-    const g = groups.find(gr => gr.name === target.group);
-    const members = teams.filter(t => t.group === target.group);
+    // allGroups/allTournamentTeams (tournament-WIDE, never filtered by
+    // whichever category tab happens to be selected) — not the plain
+    // `groups`/`teams` this component also has, which are scoped to
+    // `activeCategory` for the Draw tab's own on-screen display. A target
+    // configured for a DIFFERENT category than whatever's currently
+    // selected used to simply find no matching group/teams here and push
+    // nothing (or blank out slots) the moment an operator switched tabs —
+    // this target is tournament-level, persisted config, not something
+    // that should break depending on which tab happens to be open.
+    const g = allGroups.find(gr => gr.name === target.group);
+    const members = allTournamentTeams.filter(t => t.group === target.group);
     const { slots } = resolveGroupSlots(members, g?.capacity);
+    // Same "defaults to the name's first letter when unset" fallback
+    // TournamentGroup.prefix's own doc comment describes — this is the
+    // exact slot label (e.g. "A1") an empty slot's field falls back to
+    // when target.showSlotLabelWhenEmpty is on, instead of an empty
+    // string; filled, the SAME field just carries the real team name.
+    const slotLabelPrefix = g?.prefix || g?.name?.charAt(0)?.toUpperCase() || '';
     for (let i = 0; i < slots.length; i++) {
       const t = slots[i];
-      if (target.fieldPrefix) client.setTextField(target.inputKey, `${target.fieldPrefix}${i + 1}.Text`, t ? t.name : '');
-      if (target.fieldShortPrefix) client.setTextField(target.inputKey, `${target.fieldShortPrefix}${i + 1}.Text`, t ? (t.shortName ?? '') : '');
+      const slotLabel = target.showSlotLabelWhenEmpty ? `${slotLabelPrefix}${i + 1}` : '';
+      if (target.fieldPrefix) client.setTextField(target.inputKey, `${target.fieldPrefix}${i + 1}.Text`, t ? t.name : slotLabel);
+      if (target.fieldShortPrefix) client.setTextField(target.inputKey, `${target.fieldShortPrefix}${i + 1}.Text`, t ? (t.shortName ?? '') : slotLabel);
       if (target.fieldLogoPrefix) client.setImageField(target.inputKey, `${target.fieldLogoPrefix}${i + 1}.Source`, (t?.logo) || transparentLogoUrl());
     }
   };
 
   // Auto-push whenever the relevant group's membership actually changes
   // (not on every unrelated render) for any target with autoSync on.
-  const groupMembershipKey = teams.map(t => `${t.id}:${t.group ?? ''}`).sort().join(',');
+  // allTournamentTeams (not category-scoped `teams`) so a change to a
+  // DIFFERENT category's group still triggers this while some other
+  // category tab happens to be the one currently open.
+  const groupMembershipKey = allTournamentTeams.map(t => `${t.id}:${t.group ?? ''}`).sort().join(',');
   useEffect(() => {
     for (const target of groupListTargets) {
       if (target.autoSync && target.group && target.inputKey) pushGroupListToVmix(target);
@@ -4991,15 +5301,156 @@ function DrawPanel({ tournament, activeCategory }: { tournament: Tournament; act
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groupMembershipKey, JSON.stringify(groupListTargets), client]);
 
+  // Pot-list pushes: same prefix/autoSync shape as Group List above, for
+  // whichever teams are still sitting in a pot awaiting the draw. Unlike a
+  // group, a pot has no explicit per-team slot (SavedTeam has no
+  // `potPosition` the way `groupPosition` exists for groups — see
+  // PotListVmixTarget's own doc comment) — teams are numbered in plain
+  // array order instead of resolveGroupSlots' own fixed, gap-preserving
+  // slots, renumbering live as the draw pulls teams out.
+  const potListTargets = tournament.potListVmix ?? [];
+  const setPotListTargets = (next: PotListVmixTarget[]) => updateTournament(tournament.id, { potListVmix: next });
+  const updatePotListTarget = (id: string, patch: Partial<PotListVmixTarget>) =>
+    setPotListTargets(potListTargets.map(t => t.id === id ? { ...t, ...patch } : t));
+
+  // The pot's own FIXED roster, in stable (array) order — every team ever
+  // assigned this pot, regardless of whether it's since been drawn into a
+  // group (SavedTeam.pot is never cleared by the draw — see
+  // PotListVmixTarget.fieldPrefix's own doc comment on why this is the
+  // right anchor for a STABLE slot number, unlike the shrinking/renumbering
+  // list an earlier version of this push used).
+  // allTournamentTeams, not category-scoped `teams` — same reasoning as
+  // pushGroupListToVmix's own doc comment: this target is tournament-level
+  // config, not something that should go blank depending on which
+  // category tab the operator happens to have open right now.
+  const potRoster = (pot: string) => allTournamentTeams.filter(t => t.pot === pot);
+
+  const pushPotListToVmix = (target: PotListVmixTarget) => {
+    if (!client || !target.inputKey) return;
+    const roster = potRoster(target.pot);
+    const shouldClear = target.clearFieldsWhenDrawn ?? true;
+    for (let i = 0; i < roster.length; i++) {
+      const t = roster[i];
+      const drawn = !!t.group;
+      // Only actually blank a drawn slot's own fields when shouldClear is
+      // on — off leaves whatever was last pushed there untouched, for an
+      // operator driving that slot's whole look through inactiveActions
+      // instead (a recolor, a different layer entirely, etc.) rather than
+      // this automatic clear fighting with it.
+      if (drawn && !shouldClear) continue;
+
+      if (target.fieldPrefix) client.setTextField(target.inputKey, `${target.fieldPrefix}${i + 1}.Text`, drawn ? '' : t.name);
+      if (target.fieldShortPrefix) client.setTextField(target.inputKey, `${target.fieldShortPrefix}${i + 1}.Text`, drawn ? '' : (t.shortName ?? ''));
+      if (target.fieldLogoPrefix) {
+        if (drawn) {
+          client.setImageField(target.inputKey, `${target.fieldLogoPrefix}${i + 1}.Source`, transparentLogoUrl());
+        } else if (t.logo) {
+          client.setImageField(target.inputKey, `${target.fieldLogoPrefix}${i + 1}.Source`, t.logo);
+        }
+        // else: this team is still in the pot but simply has no logo of
+        // its own uploaded yet — leave whatever's already in this field
+        // alone instead of forcing it to the transparent placeholder. The
+        // earlier version did `t.logo || transparentLogoUrl()` here
+        // unconditionally, which cleared an ACTIVE team's own logo field
+        // to blank the moment it had no logo set — a team simply never
+        // having uploaded one isn't the same as "this slot was vacated",
+        // which is the only case that should actually clear anything.
+      }
+    }
+  };
+
+  // Replaces every literal `{n}` token (case-insensitive) in an action's
+  // own `fn` and every string param VALUE with `slot`'s own 1-based
+  // number, and forces `Input` to `inputKey` regardless of whatever the
+  // ActionListEditor's own (unused here — see PotListVmixTarget's own doc
+  // comment) input picker shows for that row. E.g. `fn: "SetColor"`,
+  // `params: { Input: '', SelectedName: "Color{n}" }` at slot 3 becomes
+  // `fn: "SetColor"`, `params: { Input: <inputKey>, SelectedName: "Color3" }`;
+  // `fn: "OverlayInput{n}In"` becomes `fn: "OverlayInput3In"`.
+  const applySlotTemplate = (actions: ActionItem[], slot: number, inputKey: string): ActionItem[] => {
+    const n = String(slot);
+    const sub = (s: string) => s.replace(/\{n\}/gi, n);
+    return actions.map(a => ({
+      fn: sub(a.fn),
+      // `...` first, `Input` set LAST — a fresh action from ActionListEditor's
+      // own "+ Add Action" starts as `params: {}`, and with the Input picker
+      // row hidden whenever lockedInputKey is set (see ActionListEditor.tsx's
+      // own doc comment), nothing ever WRITES an "Input" key into `a.params`
+      // at all. Mapping only existing entries (the previous version of this
+      // function) meant an action with no stored Input key fired with NONE
+      // at all — vMix's own SetColor/SetText/SetImage all REQUIRE one to know
+      // which input to target, so the call silently did nothing. Spreading
+      // the substituted params THEN overwriting Input unconditionally is
+      // what actually guarantees it's always present, matching what the UI
+      // already promises ("it's already fixed, nothing to pick").
+      params: { ...Object.fromEntries(Object.entries(a.params).map(([k, v]) => [k, k === 'Input' ? inputKey : sub(v)])), Input: inputKey },
+    }));
+  };
+
+  // Fires activeActions/inactiveActions once per slot in the pot's own
+  // fixed roster — same trigger (autoSync + the manual Push button) as the
+  // plain text/logo fields above, so a Multi-State-driven on-air card and
+  // the numbered fields never drift out of sync with each other.
+  const pushPotSlotStates = (target: PotListVmixTarget) => {
+    if (!client || !target.inputKey) return;
+    const roster = potRoster(target.pot);
+    roster.forEach((t, i) => {
+      const list = t.group ? target.inactiveActions : target.activeActions;
+      if (!list?.length) return;
+      // A SetImage/SetColor/SetText action whose own Value was never
+      // actually configured (most commonly: an image action added but no
+      // image picked yet) would otherwise fire with an EMPTY Value — for
+      // SetImage specifically that CLEARS the field, silently undoing
+      // whatever pushPotListToVmix's own field push just correctly set a
+      // moment earlier (this always runs right after it — see the "Push
+      // List" button and the autoSync effect below). An unconfigured
+      // action should do nothing, not actively blank the field.
+      const configured = list.filter(a => (a.fn !== 'SetImage' && a.fn !== 'SetColor' && a.fn !== 'SetText') || !!a.params.Value);
+      if (configured.length) runActions(applySlotTemplate(configured, i + 1, target.inputKey!));
+    });
+  };
+
+  // Auto-push whenever the relevant pot's membership actually changes (a
+  // team being drawn out of it, most notably) for any target with autoSync
+  // on — same "fingerprint, don't re-push on every unrelated render"
+  // convention groupMembershipKey above already uses. allTournamentTeams,
+  // not category-scoped `teams`, for the same reason groupMembershipKey
+  // already switched to it.
+  const potMembershipKey = allTournamentTeams.map(t => `${t.id}:${t.pot ?? ''}:${t.group ?? ''}`).sort().join(',');
+  useEffect(() => {
+    for (const target of potListTargets) {
+      if (target.autoSync && target.pot && target.inputKey) {
+        pushPotListToVmix(target);
+        pushPotSlotStates(target);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [potMembershipKey, JSON.stringify(potListTargets), client]);
+
+  // Tournament/category logo pushes: a static image (unlike the draw/group-
+  // list pushes above, nothing to auto-sync against) — manual "Push" button
+  // per target, same as every other one-off field push in this tab.
+  const logoTargets = tournament.logoVmix ?? [];
+  const setLogoTargets = (next: TournamentLogoVmixTarget[]) => updateTournament(tournament.id, { logoVmix: next });
+  const updateLogoTarget = (id: string, patch: Partial<TournamentLogoVmixTarget>) =>
+    setLogoTargets(logoTargets.map(t => t.id === id ? { ...t, ...patch } : t));
+  const pushLogoToVmix = (target: TournamentLogoVmixTarget) => {
+    if (!client || !target.inputKey || !target.fieldName) return;
+    client.setImageField(target.inputKey, target.fieldName, tournament.logo || transparentLogoUrl());
+  };
+
+  const categoryLogoTargets = tournament.categoryLogoVmix ?? [];
+  const setCategoryLogoTargets = (next: CategoryLogoVmixTarget[]) => updateTournament(tournament.id, { categoryLogoVmix: next });
+  const updateCategoryLogoTarget = (id: string, patch: Partial<CategoryLogoVmixTarget>) =>
+    setCategoryLogoTargets(categoryLogoTargets.map(t => t.id === id ? { ...t, ...patch } : t));
+  const pushCategoryLogoToVmix = (target: CategoryLogoVmixTarget) => {
+    if (!client || !target.category || !target.inputKey || !target.fieldName) return;
+    client.setImageField(target.inputKey, target.fieldName, tournament.categoryLogos?.[target.category] || tournament.logo || transparentLogoUrl());
+  };
+
   // Live Sync (remote 9887 only): auto-push to the host a moment after any
   // draw-relevant change, so the host (and everyone watching its broadcast)
   // sees the draw happen live instead of waiting for a manual "Save to Host".
-  // Fingerprinted across ALL of this tournament's teams (not just the
-  // current category tab) so a switch of tabs doesn't miss a pending change.
-  const allTournamentTeams = useMemo(
-    () => allTeams.filter(t => t.tournamentId === tournament.id),
-    [allTeams, tournament.id]
-  );
   const drawSyncFingerprint = allTournamentTeams
     .map(t => `${t.id}:${t.pot ?? ''}:${t.group ?? ''}:${t.groupPosition ?? ''}`)
     .sort().join(',') + '|' + JSON.stringify(allGroups) + '|' + JSON.stringify(allPots);
@@ -5033,6 +5484,7 @@ function DrawPanel({ tournament, activeCategory }: { tournament: Tournament; act
     updateTeam(team.id, { group, groupPosition: position });
     setLastDrawn({ team, pot, group });
     pushDrawToVmix(team, pot, group);
+    pushDrawState('assigned');
     setArmedTeam(null);
     setArmedSlot(null);
   };
@@ -5049,9 +5501,10 @@ function DrawPanel({ tournament, activeCategory }: { tournament: Tournament; act
       finalizeAssignment(team, pot, armedSlot.group, armedSlot.position);
       return;
     }
-    if (armedTeam?.team.id === team.id) { setArmedTeam(null); return; }
+    if (armedTeam?.team.id === team.id) { setArmedTeam(null); pushDrawState('inactive'); return; }
     setArmedTeam({ team, pot });
     pushDrawToVmix(team, pot);
+    pushDrawState('active');
   };
 
   // Clicking an empty slot card inside a group — works whether or not a
@@ -5071,7 +5524,7 @@ function DrawPanel({ tournament, activeCategory }: { tournament: Tournament; act
     if (undrawn.length === 0 || groups.length === 0) return;
     const team = undrawn[Math.floor(Math.random() * undrawn.length)];
     if (armedSlot) finalizeAssignment(team, currentPot, armedSlot.group, armedSlot.position);
-    else { setArmedTeam({ team, pot: currentPot }); pushDrawToVmix(team, currentPot); }
+    else { setArmedTeam({ team, pot: currentPot }); pushDrawToVmix(team, currentPot); pushDrawState('active'); }
   };
 
   const resetDraw = () => {
@@ -5081,6 +5534,7 @@ function DrawPanel({ tournament, activeCategory }: { tournament: Tournament; act
     setLastDrawn(null);
     setArmedTeam(null);
     setArmedSlot(null);
+    pushDrawState('inactive');
   };
 
   return (
@@ -5200,16 +5654,18 @@ function DrawPanel({ tournament, activeCategory }: { tournament: Tournament; act
           style={{ width: 50 }}
         />
         {categories.length > 0 && (
-          <select
-            className="tm-input"
-            value={newGroupCategory}
-            onChange={e => setNewGroupCategory(e.target.value)}
-            title="Which category this new group belongs to (blank = current tab)"
-            style={{ width: 110 }}
-          >
-            <option value="">{activeCategory ? `— ${activeCategory} (tab) —` : '— no category —'}</option>
-            {categories.filter(c => c !== activeCategory).map(c => <option key={c} value={c}>{c}</option>)}
-          </select>
+          <CustomBox>
+            <select
+              className="tm-input"
+              value={newGroupCategory}
+              onChange={e => setNewGroupCategory(e.target.value)}
+              title="Which category this new group belongs to (blank = current tab)"
+              style={{ width: 110 }}
+            >
+              <option value="">{activeCategory ? `— ${activeCategory} (tab) —` : '— no category —'}</option>
+              {categories.filter(c => c !== activeCategory).map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </CustomBox>
         )}
         <button className="tm-io-btn" onClick={addGroup} disabled={!newGroupName.trim()}>+ Add Group</button>
       </div>
@@ -5248,17 +5704,21 @@ function DrawPanel({ tournament, activeCategory }: { tournament: Tournament; act
           {assignSelectedIds.size > 0 && (
             <div className="tm-draw-vmix-cfg">
               <span className="tm-groups-label">{assignSelectedIds.size} selected —</span>
-              <select className="tm-input" value={bulkPot} onChange={e => setBulkPot(e.target.value)} style={{ width: 140 }}>
-                <option value="">— pick pot —</option>
-                {pots.map(p => <option key={p.name} value={p.name}>{p.name}</option>)}
-                <option value="__clear__">— No Pot —</option>
-              </select>
+              <CustomBox>
+                <select className="tm-input" value={bulkPot} onChange={e => setBulkPot(e.target.value)} style={{ width: 140 }}>
+                  <option value="">— pick pot —</option>
+                  {pots.map(p => <option key={p.name} value={p.name}>{p.name}</option>)}
+                  <option value="__clear__">— No Pot —</option>
+                </select>
+              </CustomBox>
               <button className="tm-io-btn" onClick={applyBulkPot} disabled={!bulkPot}>Apply Pot</button>
-              <select className="tm-input" value={bulkGroup} onChange={e => setBulkGroup(e.target.value)} style={{ width: 140 }}>
-                <option value="">— pick group —</option>
-                {groups.map(g => <option key={g.name} value={g.name}>{g.name}</option>)}
-                <option value="__clear__">— No Group —</option>
-              </select>
+              <CustomBox>
+                <select className="tm-input" value={bulkGroup} onChange={e => setBulkGroup(e.target.value)} style={{ width: 140 }}>
+                  <option value="">— pick group —</option>
+                  {groups.map(g => <option key={g.name} value={g.name}>{g.name}</option>)}
+                  <option value="__clear__">— No Group —</option>
+                </select>
+              </CustomBox>
               <button className="tm-io-btn" onClick={applyBulkGroup} disabled={!bulkGroup}>Apply Group</button>
               <button className="tm-io-btn" onClick={() => setAssignSelectedIds(new Set())}>Clear Selection</button>
             </div>
@@ -5406,18 +5866,8 @@ function DrawPanel({ tournament, activeCategory }: { tournament: Tournament; act
       <div className="tm-draw-section-title" style={{ display: 'flex', alignItems: 'center', gap: 4 }}><Clapperboard size={14} strokeWidth={2} /> Live Draw</div>
       <div className="tm-draw-vmix-cfg">
         <span className="tm-groups-label" title="'Manual' lets you click a team chip in the current pot to draw it yourself, instead of the system picking blindly">Team Draw:</span>
-        <div className="tm-timer-mode-toggle">
-          <button
-            className={`tm-timer-mode-btn ${drawTeamMode === 'random' ? 'tm-timer-mode-btn--active' : ''}`}
-            style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
-            onClick={() => updateTournament(tournament.id, { drawTeamMode: 'random' })}
-          ><Dices size={14} strokeWidth={2} /> Random</button>
-          <button
-            className={`tm-timer-mode-btn ${drawTeamMode === 'manual' ? 'tm-timer-mode-btn--active' : ''}`}
-            style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
-            onClick={() => updateTournament(tournament.id, { drawTeamMode: 'manual' })}
-          ><Hand size={14} strokeWidth={2} /> Manual (click team)</button>
-        </div>
+        <CardSelect value={drawTeamMode} onChange={v => updateTournament(tournament.id, { drawTeamMode: v })} columns={2}
+          options={[{ value: 'random', label: 'Random', icon: Dices }, { value: 'manual', label: 'Manual (click team)', icon: Hand }]} />
       </div>
 
       <div className="tm-draw-hero">
@@ -5607,19 +6057,38 @@ function DrawPanel({ tournament, activeCategory }: { tournament: Tournament; act
             </div>
 
             <div className="tm-draw-vmix-cfg" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
+              <span className="tm-groups-label" title="Fires in ADDITION to the plain field push above, as a team's own draw status changes — e.g. OverlayIn its on-air card while Active, OverlayOut once Assigned, so the card itself appears/disappears automatically instead of just having its text silently overwritten.">
+                Multi-State (per-team on-air card):
+              </span>
+              {([
+                { key: 'activeActions' as const, label: 'Active — armed, about to be drawn' },
+                { key: 'inactiveActions' as const, label: 'Inactive — sitting in pot, not armed' },
+                { key: 'assignedActions' as const, label: 'Assigned — placed into a group' },
+              ]).map(({ key, label }) => (
+                <CollapsibleSection key={key} label={label}>
+                  <ActionListEditor actions={drawCfg[key] ?? []} onChange={next => setDrawCfg({ [key]: next })} sectionKey={`draw-${key}`}
+                    pages={pages} timerWidgets={drawTimerWidgets} scoreboardWidgets={drawScoreboardWidgets}
+                    globalVariables={globalVariables} allInputs={allVmixInputs} cgTemplateWidgets={drawCgTemplateWidgets} />
+                </CollapsibleSection>
+              ))}
+            </div>
+
+            <div className="tm-draw-vmix-cfg" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
               <span className="tm-groups-label">Group List (whole group, numbered fields):</span>
               {groupListTargets.map(target => (
                 <div key={target.id} className="vil-cfg-block">
                   <div className="vil-cfg-header">
-                    <select
-                      className="tm-input"
-                      value={target.group}
-                      onChange={e => updateGroupListTarget(target.id, { group: e.target.value })}
-                      style={{ flex: 1 }}
-                    >
-                      <option value="">— select group —</option>
-                      {groups.map(g => <option key={g.name} value={g.name}>{g.name}</option>)}
-                    </select>
+                    <CustomBox>
+                      <select
+                        className="tm-input"
+                        value={target.group}
+                        onChange={e => updateGroupListTarget(target.id, { group: e.target.value })}
+                        style={{ flex: 1 }}
+                      >
+                        <option value="">— select group —</option>
+                        {groups.map(g => <option key={g.name} value={g.name}>{g.name}</option>)}
+                      </select>
+                    </CustomBox>
                     <button className="btn btn--ghost btn--small" onClick={() => setGroupListTargets(groupListTargets.filter(t => t.id !== target.id))}>×</button>
                   </div>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
@@ -5631,22 +6100,38 @@ function DrawPanel({ tournament, activeCategory }: { tournament: Tournament; act
                         onSelect={key => updateGroupListTarget(target.id, { inputKey: key })}
                       />
                     </div>
-                    <input className="tm-input" placeholder="Pick e.g. Team1.Text → auto-prefix"
-                      value={target.fieldPrefix ? `${target.fieldPrefix}1.Text` : ''}
-                      onChange={e => updateGroupListTarget(target.id, { fieldPrefix: derivePrefix(e.target.value) })}
-                      style={{ width: 190 }} />
-                    <input className="tm-input" placeholder="Pick e.g. Short1.Text → auto-prefix"
-                      value={target.fieldShortPrefix ? `${target.fieldShortPrefix}1.Text` : ''}
-                      onChange={e => updateGroupListTarget(target.id, { fieldShortPrefix: derivePrefix(e.target.value) })}
-                      style={{ width: 190 }} />
-                    <input className="tm-input" placeholder="Pick e.g. Logo1.Source → auto-prefix"
-                      value={target.fieldLogoPrefix ? `${target.fieldLogoPrefix}1.Source` : ''}
-                      onChange={e => updateGroupListTarget(target.id, { fieldLogoPrefix: derivePrefix(e.target.value) })}
-                      style={{ width: 190 }} />
-                    <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--text-secondary)' }}>
-                      <input type="checkbox" checked={target.autoSync ?? false} onChange={e => updateGroupListTarget(target.id, { autoSync: e.target.checked })} />
-                      Auto-sync
-                    </label>
+                    <div style={{ width: 190 }}>
+                      <FieldPickerDropdown
+                        inputKey={target.inputKey ?? ''}
+                        value={target.fieldPrefix ? `${target.fieldPrefix}1.Text` : ''}
+                        onChange={v => updateGroupListTarget(target.id, { fieldPrefix: derivePrefix(v) })}
+                        placeholder="Pick e.g. Team1.Text → auto-prefix"
+                        fieldFilter={n => !n.toLowerCase().endsWith('.source')}
+                        allInputs={allVmixInputs}
+                      />
+                    </div>
+                    <div style={{ width: 190 }}>
+                      <FieldPickerDropdown
+                        inputKey={target.inputKey ?? ''}
+                        value={target.fieldShortPrefix ? `${target.fieldShortPrefix}1.Text` : ''}
+                        onChange={v => updateGroupListTarget(target.id, { fieldShortPrefix: derivePrefix(v) })}
+                        placeholder="Pick e.g. Short1.Text → auto-prefix"
+                        fieldFilter={n => !n.toLowerCase().endsWith('.source')}
+                        allInputs={allVmixInputs}
+                      />
+                    </div>
+                    <div style={{ width: 190 }}>
+                      <FieldPickerDropdown
+                        inputKey={target.inputKey ?? ''}
+                        value={target.fieldLogoPrefix ? `${target.fieldLogoPrefix}1.Source` : ''}
+                        onChange={v => updateGroupListTarget(target.id, { fieldLogoPrefix: derivePrefix(v) })}
+                        placeholder="Pick e.g. Logo1.Source → auto-prefix"
+                        fieldFilter={n => n.toLowerCase().endsWith('.source')}
+                        allInputs={allVmixInputs}
+                      />
+                    </div>
+                    <ToggleCard checked={target.showSlotLabelWhenEmpty ?? false} onChange={v => updateGroupListTarget(target.id, { showSlotLabelWhenEmpty: v })} desc="Show A1/A2… when empty" title="An empty slot's Team/Short field writes that slot's own label (the group's prefix + position, e.g. 'A1') instead of blank — the SAME field then switches straight to the real team name the moment the draw actually fills it." />
+                    <ToggleCard checked={target.autoSync ?? false} onChange={v => updateGroupListTarget(target.id, { autoSync: v })} desc="Auto-sync" />
                     <button className="tm-io-btn" onClick={() => pushGroupListToVmix(target)} disabled={!target.group || !target.inputKey} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><Radio size={14} strokeWidth={2} /> Push List</button>
                   </div>
                 </div>
@@ -5656,6 +6141,171 @@ function DrawPanel({ tournament, activeCategory }: { tournament: Tournament; act
                 style={{ alignSelf: 'flex-start' }}
                 onClick={() => setGroupListTargets([...groupListTargets, { id: crypto.randomUUID(), group: groups[0]?.name ?? '', autoSync: false }])}
               >+ Add Group List Target</button>
+            </div>
+
+            <div className="tm-draw-vmix-cfg" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
+              <span className="tm-groups-label" title="Pushes whichever teams are still sitting in this pot, awaiting the draw, to numbered vMix fields — same prefix/auto-sync shape as Group List above, so a 'who's left in the pot' on-air graphic can auto-update live as teams get drawn out.">Pot List (teams still in pot, numbered fields):</span>
+              {potListTargets.map(target => (
+                <div key={target.id} className="vil-cfg-block">
+                  <div className="vil-cfg-header">
+                    <CustomBox>
+                      <select
+                        className="tm-input"
+                        value={target.pot}
+                        onChange={e => updatePotListTarget(target.id, { pot: e.target.value })}
+                        style={{ flex: 1 }}
+                      >
+                        <option value="">— select pot —</option>
+                        {pots.map(p => <option key={p.name} value={p.name}>{p.name}</option>)}
+                      </select>
+                    </CustomBox>
+                    <button className="btn btn--ghost btn--small" onClick={() => setPotListTargets(potListTargets.filter(t => t.id !== target.id))}>×</button>
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+                    <div style={{ width: 220 }}>
+                      <InputPickerDropdown
+                        currentKey={target.inputKey ?? ''}
+                        currentTitle={allVmixInputs.find(i => i.key === target.inputKey)?.title}
+                        allInputs={allVmixInputs}
+                        onSelect={key => updatePotListTarget(target.id, { inputKey: key })}
+                      />
+                    </div>
+                    <div style={{ width: 190 }}>
+                      <FieldPickerDropdown
+                        inputKey={target.inputKey ?? ''}
+                        value={target.fieldPrefix ? `${target.fieldPrefix}1.Text` : ''}
+                        onChange={v => updatePotListTarget(target.id, { fieldPrefix: derivePrefix(v) })}
+                        placeholder="Pick e.g. Team1.Text → auto-prefix"
+                        fieldFilter={n => !n.toLowerCase().endsWith('.source')}
+                        allInputs={allVmixInputs}
+                      />
+                    </div>
+                    <div style={{ width: 190 }}>
+                      <FieldPickerDropdown
+                        inputKey={target.inputKey ?? ''}
+                        value={target.fieldShortPrefix ? `${target.fieldShortPrefix}1.Text` : ''}
+                        onChange={v => updatePotListTarget(target.id, { fieldShortPrefix: derivePrefix(v) })}
+                        placeholder="Pick e.g. Short1.Text → auto-prefix"
+                        fieldFilter={n => !n.toLowerCase().endsWith('.source')}
+                        allInputs={allVmixInputs}
+                      />
+                    </div>
+                    <div style={{ width: 190 }}>
+                      <FieldPickerDropdown
+                        inputKey={target.inputKey ?? ''}
+                        value={target.fieldLogoPrefix ? `${target.fieldLogoPrefix}1.Source` : ''}
+                        onChange={v => updatePotListTarget(target.id, { fieldLogoPrefix: derivePrefix(v) })}
+                        placeholder="Pick e.g. Logo1.Source → auto-prefix"
+                        fieldFilter={n => n.toLowerCase().endsWith('.source')}
+                        allInputs={allVmixInputs}
+                      />
+                    </div>
+                    <ToggleCard checked={target.clearFieldsWhenDrawn ?? true} onChange={v => updatePotListTarget(target.id, { clearFieldsWhenDrawn: v })} desc="Clear when drawn" title="On: a drawn-out slot's own Team/Short/Logo fields go blank automatically. Off: they're left exactly as they were — drive that slot's whole look through Inactive actions below instead (a recolor, a different layer, anything), without this automatic clear fighting with it." />
+                    <ToggleCard checked={target.autoSync ?? false} onChange={v => updatePotListTarget(target.id, { autoSync: v })} desc="Auto-sync" />
+                    <button className="tm-io-btn" onClick={() => { pushPotListToVmix(target); pushPotSlotStates(target); }} disabled={!target.pot || !target.inputKey} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><Radio size={14} strokeWidth={2} /> Push List</button>
+                  </div>
+                  {/* Multi-State — same ActionListEditor/ActionItem shape as
+                     the Draw tab's own Multi-State block above, fired once
+                     PER SLOT in this pot's own fixed roster instead of for
+                     a single "currently armed" team. No Input to pick here
+                     — every action's own Input param is overridden to this
+                     target's own inputKey at fire time (see
+                     applySlotTemplate); type a literal {n} anywhere in an
+                     action's function name or a param value (e.g.
+                     "Color{n}" or "OverlayInput{n}In") to bake in that
+                     slot's own number. */}
+                  <div style={{ marginTop: 4 }}>
+                    {([
+                      { key: 'activeActions' as const, label: 'Active — still in pot' },
+                      { key: 'inactiveActions' as const, label: 'Inactive — drawn out' },
+                    ]).map(({ key, label }) => (
+                      <CollapsibleSection key={key} label={label}>
+                        <ActionListEditor actions={target[key] ?? []} onChange={next => updatePotListTarget(target.id, { [key]: next })} sectionKey={`potlist-${target.id}-${key}`}
+                          pages={pages} timerWidgets={drawTimerWidgets} scoreboardWidgets={drawScoreboardWidgets}
+                          globalVariables={globalVariables} allInputs={allVmixInputs} cgTemplateWidgets={drawCgTemplateWidgets}
+                          lockedInputKey={target.inputKey}
+                          lockedFieldOptions={[
+                            ...(target.fieldPrefix ? [{ label: 'Team Name', template: `${target.fieldPrefix}{n}.Text` }] : []),
+                            ...(target.fieldShortPrefix ? [{ label: 'Short Name', template: `${target.fieldShortPrefix}{n}.Text` }] : []),
+                            ...(target.fieldLogoPrefix ? [{ label: 'Logo', template: `${target.fieldLogoPrefix}{n}.Source` }] : []),
+                          ]} />
+                      </CollapsibleSection>
+                    ))}
+                  </div>
+                </div>
+              ))}
+              <button
+                className="btn btn--ghost btn--small"
+                style={{ alignSelf: 'flex-start' }}
+                onClick={() => setPotListTargets([...potListTargets, { id: crypto.randomUUID(), pot: pots[0]?.name ?? '', autoSync: false }])}
+              >+ Add Pot List Target</button>
+            </div>
+
+            <div className="tm-draw-vmix-cfg" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
+              <span className="tm-groups-label" title="Pushes this tournament's own logo (set on the Tournaments tab) to a vMix image field.">Tournament Logo:</span>
+              {logoTargets.map(target => (
+                <div key={target.id} className="vil-cfg-block">
+                  <div className="vil-cfg-header" style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+                    <div style={{ width: 220 }}>
+                      <InputPickerDropdown
+                        currentKey={target.inputKey ?? ''}
+                        currentTitle={allVmixInputs.find(i => i.key === target.inputKey)?.title}
+                        allInputs={allVmixInputs}
+                        onSelect={key => updateLogoTarget(target.id, { inputKey: key })}
+                      />
+                    </div>
+                    <input className="tm-input" placeholder="Field name, e.g. Logo.Source" value={target.fieldName ?? ''}
+                      onChange={e => updateLogoTarget(target.id, { fieldName: e.target.value })} style={{ width: 190 }} />
+                    <button className="tm-io-btn" onClick={() => pushLogoToVmix(target)} disabled={!target.inputKey || !target.fieldName} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><Radio size={14} strokeWidth={2} /> Push</button>
+                    <button className="btn btn--ghost btn--small" onClick={() => setLogoTargets(logoTargets.filter(t => t.id !== target.id))}>×</button>
+                  </div>
+                </div>
+              ))}
+              <button
+                className="btn btn--ghost btn--small"
+                style={{ alignSelf: 'flex-start' }}
+                onClick={() => setLogoTargets([...logoTargets, { id: crypto.randomUUID() }])}
+              >+ Add Tournament Logo Target</button>
+            </div>
+
+            <div className="tm-draw-vmix-cfg" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
+              <span className="tm-groups-label" title="Pushes one category's own logo (set on the Teams tab) to a vMix image field. Falls back to the tournament's own logo when that category has none of its own.">Category Logo:</span>
+              {categoryLogoTargets.map(target => (
+                <div key={target.id} className="vil-cfg-block">
+                  <div className="vil-cfg-header">
+                    <CustomBox>
+                      <select
+                        className="tm-input"
+                        value={target.category}
+                        onChange={e => updateCategoryLogoTarget(target.id, { category: e.target.value })}
+                        style={{ flex: 1 }}
+                      >
+                        <option value="">— select category —</option>
+                        {categories.map(c => <option key={c} value={c}>{c}</option>)}
+                      </select>
+                    </CustomBox>
+                    <button className="btn btn--ghost btn--small" onClick={() => setCategoryLogoTargets(categoryLogoTargets.filter(t => t.id !== target.id))}>×</button>
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+                    <div style={{ width: 220 }}>
+                      <InputPickerDropdown
+                        currentKey={target.inputKey ?? ''}
+                        currentTitle={allVmixInputs.find(i => i.key === target.inputKey)?.title}
+                        allInputs={allVmixInputs}
+                        onSelect={key => updateCategoryLogoTarget(target.id, { inputKey: key })}
+                      />
+                    </div>
+                    <input className="tm-input" placeholder="Field name, e.g. Logo.Source" value={target.fieldName ?? ''}
+                      onChange={e => updateCategoryLogoTarget(target.id, { fieldName: e.target.value })} style={{ width: 190 }} />
+                    <button className="tm-io-btn" onClick={() => pushCategoryLogoToVmix(target)} disabled={!target.category || !target.inputKey || !target.fieldName} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><Radio size={14} strokeWidth={2} /> Push</button>
+                  </div>
+                </div>
+              ))}
+              <button
+                className="btn btn--ghost btn--small"
+                style={{ alignSelf: 'flex-start' }}
+                onClick={() => setCategoryLogoTargets([...categoryLogoTargets, { id: crypto.randomUUID(), category: categories[0] ?? '' }])}
+              >+ Add Category Logo Target</button>
             </div>
           </>
         )}
@@ -5667,7 +6317,7 @@ function DrawPanel({ tournament, activeCategory }: { tournament: Tournament; act
 }
 
 // ── Small persistent tournament picker shown atop tournament-scoped tabs ──────
-function TournamentScopeHeader({ tournaments, selectedId, onSelect, categories, activeCategory, onSelectCategory, children }: {
+export function TournamentScopeHeader({ tournaments, selectedId, onSelect, categories, activeCategory, onSelectCategory, children }: {
   tournaments: Tournament[]; selectedId: string; onSelect: (id: string) => void;
   categories: string[]; activeCategory: string; onSelectCategory: (c: string) => void;
   children?: React.ReactNode;
@@ -5675,11 +6325,13 @@ function TournamentScopeHeader({ tournaments, selectedId, onSelect, categories, 
   return (
     <div className="tm-scope-header">
       <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', gap: 4 }}><Trophy size={14} strokeWidth={2} /> Tournament:</span>
-      <select className="tm-input" style={{ fontSize: 15, padding: '6px 10px', height: 34, maxWidth: 360, flex: 'none' }}
-        value={selectedId} onChange={e => onSelect(e.target.value)}>
-        {tournaments.length === 0 && <option value="">— none —</option>}
-        {tournaments.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-      </select>
+      <CustomBox>
+        <select className="tm-input" style={{ fontSize: 15, padding: '6px 10px', height: 34, maxWidth: 360, flex: 'none' }}
+          value={selectedId} onChange={e => onSelect(e.target.value)}>
+          {tournaments.length === 0 && <option value="">— none —</option>}
+          {tournaments.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+        </select>
+      </CustomBox>
       {categories.length > 0 && (
         <>
           <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-muted)' }}>Category:</span>
@@ -5882,7 +6534,7 @@ const isHostClient = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in w
 export function TournamentManager({ onClose }: Props) {
   const { tournaments, updateTournament, deleteTournament, setActiveTournament, defaultTournamentId, setDefaultTournament } = useTournamentStore();
   const { pages, updateWidgetConfig } = useCanvasStore();
-  const { remoteEditMode, setRemoteEditMode } = useAppSettings();
+  const { remoteEditMode, setRemoteEditMode, quickButtonsBarVisible, setQuickButtonsBarVisible } = useAppSettings();
 
   const handleSaveToHost = () => {
     pushTournamentDataToHost();
@@ -6178,7 +6830,18 @@ export function TournamentManager({ onClose }: Props) {
   // as effects here, so they keep working even while this window is
   // closed — not just regardless of which tab is open within it.
 
-  return (
+  // Portal straight to document.body — this window is opened from
+  // Sidebar.tsx, and .app-sidebar has `overflow: hidden` (so its own
+  // content scrolls independently). WKWebView (Tauri's engine on macOS)
+  // clips a `position: fixed` DESCENDANT to the nearest `overflow: hidden`
+  // ancestor's own box even with no transform/filter involved — a real
+  // divergence from the plain CSS spec, where `position: fixed` should
+  // stay relative to the viewport regardless of overflow on ancestors.
+  // Without this portal, "Maximize" only ever filled the sidebar's own
+  // 250px-wide column, never the actual app. Every other floating/draggable
+  // overlay in this file already uses the same createPortal(..., document.body)
+  // escape hatch (see the drag-preview/context-menu portals elsewhere here).
+  return createPortal(
     <>
       {/* Subtle backdrop — no longer closes on click (that bypassed
           confirmation); the × button is the only way to close now. */}
@@ -6325,7 +6988,45 @@ export function TournamentManager({ onClose }: Props) {
                   {scheduleEditMode ? <><Check size={14} strokeWidth={2} /> Done Editing</> : <><Pencil size={14} strokeWidth={2} /> Edit</>}
                 </button>
               )}
+              {tab === 'draw' && selected && (
+                // Cloud Sync's own toggle/Push Now button live on the
+                // 'tournaments' tab's own toolbar (see the tm-tourn-toolbar
+                // block further down) — invisible from here, so saving a
+                // just-drawn group/pot assignment to the cloud otherwise
+                // means leaving this tab first. Pushes the same way: the
+                // full current tournament (groups/pots definitions plus
+                // every team's own group/pot/groupPosition, already part of
+                // the normal push payload — see lib/cloudSync.ts's
+                // buildPushPayload), not anything draw-specific server-side.
+                <button
+                  className="tm-io-btn"
+                  style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                  disabled={pushNowState === 'checking' || pushNowState === 'pushing'}
+                  title={!selected.cloudSyncEnabled
+                    ? 'Cloud Sync is OFF for this tournament — turn it on from the Tournaments tab first'
+                    : pushNowState === 'error' ? pushNowError : "Push this tournament's draw (groups, pots, team assignments) and everything else to the cloud right now"}
+                  onClick={() => handlePushNow(selected.id)}
+                >{
+                  pushNowState === 'checking' ? <><Search size={14} strokeWidth={2} /> Checking…</>
+                  : pushNowState === 'pushing' ? <><Hourglass size={14} strokeWidth={2} /> Pushing…</>
+                  : pushNowState === 'done' ? <><Check size={14} strokeWidth={2} /> Saved to Cloud</>
+                  : pushNowState === 'error' ? <><AlertTriangle size={14} strokeWidth={2} /> Push Failed</>
+                  : <><Cloud size={14} strokeWidth={2} /> Save Draw to Cloud</>
+                }</button>
+              )}
             </TournamentScopeHeader>
+
+            {/* ── Quick Buttons bar (optional, below the scope bar) ───── */}
+            {quickButtonsBarVisible ? (
+              <QuickButtonsBar />
+            ) : !syncClient.isReadOnly && !syncClient.isCommentator && (
+              <button
+                className="qb-bar-add"
+                title="Show a Quick Buttons bar below the Tournament/Category bar"
+                onClick={() => setQuickButtonsBarVisible(true)}
+              ><Plus size={13} strokeWidth={2} /> Quick Buttons Bar</button>
+            )}
+
             {!selected ? (
               <div className="tm-win-placeholder">
                 <span>Create a tournament first in the Tournaments tab.</span>
@@ -6394,6 +7095,13 @@ export function TournamentManager({ onClose }: Props) {
                 {/* Tournament toolbar */}
                 <div className="tm-tourn-toolbar">
                   <div className="tm-tourn-toolbar-left">
+                    <LogoUrlPicker
+                      compact
+                      value={selected.logo ?? ''}
+                      onChange={logo => updateTournament(selected.id, { logo })}
+                      thumbSize={{ w: 32, h: 32 }}
+                      tournamentId={selected.id}
+                    />
                     {editTournName ? (
                       <input
                         className="tm-tourn-name-edit"
@@ -6413,13 +7121,15 @@ export function TournamentManager({ onClose }: Props) {
                         title="Click to rename"
                       >{selected.name}</span>
                     )}
-                    <select
-                      className="tm-sport-select"
-                      value={selected.sport}
-                      onChange={e => updateTournament(selected.id, { sport: e.target.value as SportType })}
-                    >
-                      {SPORT_TYPES.map(s => <option key={s} value={s}>{SPORT_LABELS[s]}</option>)}
-                    </select>
+                    <CustomBox>
+                      <select
+                        className="tm-sport-select"
+                        value={selected.sport}
+                        onChange={e => updateTournament(selected.id, { sport: e.target.value as SportType })}
+                      >
+                        {SPORT_TYPES.map(s => <option key={s} value={s}>{SPORT_LABELS[s]}</option>)}
+                      </select>
+                    </CustomBox>
                   </div>
                   <button
                     className={`tm-btn${selected.cloudSyncEnabled ? ' tm-btn--cloud-active' : ''}`}
@@ -6572,6 +7282,7 @@ export function TournamentManager({ onClose }: Props) {
           onCancel={() => setConfirmCloseWindow(false)}
         />
       )}
-    </>
+    </>,
+    document.body
   );
 }

@@ -90,7 +90,7 @@ function describeEvent(ev: any): string {
 //   - tbar, volume, overlay, input-tally, transitions — their live state is
 //     entirely vMix-state, not config, so out of scope for an app-display
 //     (not vMix-state) feature.
-//   - substitution, ndi-input, panel, vmix-titles, title-field — their
+//   - substitution, panel, vmix-titles, title-field — their
 //     interesting "currently shown" values live in local React useState,
 //     never written to widget.config, so nothing outside React can see
 //     them without those widgets being refactored to persist that state.

@@ -1,3 +1,5 @@
+import type { ActionItem } from '../lib/buttonActions';
+
 export type SportType =
   | 'football'
   | 'basketball'
@@ -7,6 +9,10 @@ export type SportType =
   | 'handball'
   | 'ice_hockey'
   | 'futsal'
+  | 'badminton'
+  | 'table_tennis'
+  | 'tennis'
+  | 'sepaktakraw'
   | 'custom';
 
 export interface Player {
@@ -68,6 +74,13 @@ export interface Tournament {
   sport: SportType;
   settings: TournamentSettings;
   createdAt: number;
+  /** This tournament's own badge/crest — shown in the title bar's
+   *  Tournament picker, the Match Settings panel, and anywhere else a
+   *  tournament needs a visual identity distinct from any one team's own
+   *  logo (same LogoUrlPicker/server image library every team logo already
+   *  uses). Absent = no tournament logo shown (falls back to the generic
+   *  Trophy icon wherever one would otherwise render). */
+  logo?: string;
   /** Preliminary-draw / pool groups (e.g. "Pool A", "Pool B") — freely added
    *  and removed, teams are assigned to one via SavedTeam.group (which stores
    *  the group's `name`). Standings are computed per group when this is
@@ -82,6 +95,26 @@ export interface Tournament {
    *  than one category duplicates its team entry per category since rosters
    *  differ (see teamDbStore.duplicateTeam). */
   categories?: string[];
+  /** Per-category badge/crest (e.g. a Men's/Women's division each getting
+   *  its own mark distinct from the tournament's own overall `logo` above)
+   *  — keyed by category name, same `Record<categoryName, value>`
+   *  convention `venuePrefixes` below already uses. A category with no
+   *  entry here simply has no logo of its own (falls back to the
+   *  tournament's own `logo`, same precedence CG template bindings
+   *  already apply for "nothing more specific is set"). */
+  categoryLogos?: Record<string, string>;
+  /** Pushes this tournament's own `logo` to one or more vMix image fields —
+   *  same manual "Push" button + input/field picker as groupListVmix below,
+   *  just for a single static image rather than a numbered list. */
+  logoVmix?: TournamentLogoVmixTarget[];
+  /** Pushes a specific category's own `categoryLogos[category]` to a vMix
+   *  image field — one target per category since each needs its own
+   *  input/field (unlike `logoVmix`, which always pushes the same tournament
+   *  logo). Falls back to the tournament's own `logo` when that category has
+   *  no logo of its own, same precedence `categoryLogos`' own doc comment
+   *  and the CG template binding (lib/templateBinding.ts's
+   *  resolveTournamentFieldValue) already apply. */
+  categoryLogoVmix?: CategoryLogoVmixTarget[];
   /** Freely-defined venues (e.g. "Court 1", "Main Hall") — each fixture in
    *  the Schedule tab picks one via ScheduledMatch.venue. Lets a multi-venue
    *  tournament's schedule be filtered down to a single venue per physical
@@ -112,6 +145,20 @@ export interface Tournament {
     fieldTeamLogo?: string;
     fieldGroup?: string;
     fieldPot?: string;
+    /** Fired (in addition to the plain field push above) whenever a team
+     *  becomes the ARMED one — selected, about to be paired with a
+     *  group/slot — e.g. an OverlayIn, or a SetColor highlighting its own
+     *  on-air card. Same ActionListEditor/ActionItem list every Button
+     *  press/release action already uses. */
+    activeActions?: ActionItem[];
+    /** Fired whenever a team goes back to just sitting in its pot —
+     *  un-armed (deselected without being placed) or simply never picked
+     *  yet. The natural "reset" state between Active and Assigned. */
+    inactiveActions?: ActionItem[];
+    /** Fired once a team is actually placed into a group/slot — e.g. an
+     *  OverlayOut (it's done, no longer "in the pot") or a different
+     *  SetColor marking it as settled rather than still live. */
+    assignedActions?: ActionItem[];
   };
   /** Pushes a whole group's team list to numbered vMix text fields, one
    *  target per on-air "Group A" style title — same numbered-prefix setup as
@@ -119,6 +166,17 @@ export interface Tournament {
    *  and the digit + ".Text" suffix is stripped to a reusable prefix, so
    *  team N lands in `{prefix}N.Text`). */
   groupListVmix?: GroupListVmixTarget[];
+  /** Pushes a pot's current team list (teams tagged with that pot via
+   *  SavedTeam.pot, filtered to ones still awaiting the draw — i.e.
+   *  `!t.group`) to numbered vMix text fields — same prefix/autoSync shape
+   *  as `groupListVmix` above, so an on-air "who's still in the pot" list
+   *  can be either manually pushed or kept auto-filled with each team's
+   *  own name live as the draw pulls teams out of it. Unlike a group, a pot
+   *  has no explicit per-team slot/position (SavedTeam has no
+   *  `potPosition` the way `groupPosition` exists for groups) — teams are
+   *  numbered in plain array order, renumbering live as the draw removes
+   *  them, not fixed slots with gaps. */
+  potListVmix?: PotListVmixTarget[];
   /** Multi-venue cloud sync opt-in — local-only, deliberately never
    *  overwritten by an incoming cloud pull (see src/lib/cloudSync.ts), so
    *  each device decides independently whether its edits to this tournament
@@ -181,6 +239,89 @@ export interface GroupListVmixTarget {
   fieldLogoPrefix?: string;
   /** Push automatically whenever this group's membership changes. */
   autoSync?: boolean;
+  /** When on, an empty slot's `fieldPrefix`/`fieldShortPrefix` field writes
+   *  that slot's own label (the group's `prefix` + 1-based position, e.g.
+   *  "A1", "A2" — see TournamentGroup.prefix) instead of an empty string,
+   *  so an on-air graphic reads "A1" before the draw and the real team
+   *  name once the draw actually fills that slot — the SAME field replaces
+   *  its own text, not a second one appearing alongside it. Off (default)
+   *  keeps the original behavior: an empty string for an unfilled slot. */
+  showSlotLabelWhenEmpty?: boolean;
+}
+
+export interface PotListVmixTarget {
+  id: string;
+  /** Which pot's team list this target pushes. Matches a Tournament.pots[]
+   *  entry's own `name` / SavedTeam.pot value exactly. */
+  pot: string;
+  inputKey?: string;
+  /** e.g. "Team" → writes Team1.Text, Team2.Text, … — one FIXED slot per
+   *  team ever assigned to this pot (SavedTeam.pot is never cleared when a
+   *  team is drawn into a group, so "every team with this `pot` value,
+   *  in stable order" is a constant-size roster for the whole tournament,
+   *  unlike `group`, which has no such anchor). A team keeps the SAME slot
+   *  number the whole time, before and after being drawn — this is what
+   *  makes `activeActions`/`inactiveActions` below meaningful (a given
+   *  slot's own "Active"/"Inactive" state), rather than slots shrinking
+   *  and renumbering as teams leave the pot, which would leave nothing
+   *  stable to attach a per-slot state to. The field itself goes BLANK
+   *  once that team is drawn (see `t.group` set — unless
+   *  `clearFieldsWhenDrawn` below is off), same "no stale info in a
+   *  vacated slot" convention logo fields across this app already use. */
+  fieldPrefix?: string;
+  /** e.g. "Short" → writes Short1.Text, Short2.Text, … (optional). Same
+   *  fixed-slot/blank-when-drawn convention as `fieldPrefix` above. */
+  fieldShortPrefix?: string;
+  /** e.g. "Logo" → writes Logo1.Source, Logo2.Source, … (optional, image
+   *  field). Same fixed-slot convention — goes to the transparent
+   *  placeholder once drawn, same as every other logo field in this app. */
+  fieldLogoPrefix?: string;
+  /** Whether `fieldPrefix`/`fieldShortPrefix`/`fieldLogoPrefix` above go
+   *  BLANK (text) / transparent (logo) once a slot's own team is drawn.
+   *  Absent/true = clear them (the original behavior). False = leave
+   *  whatever was last pushed there untouched once drawn — for an
+   *  operator who'd rather drive that slot's own look ENTIRELY through
+   *  `inactiveActions` below (e.g. an action list that recolors the text
+   *  instead of blanking it, or targets a completely different layer)
+   *  instead of this automatic clear fighting with it. */
+  clearFieldsWhenDrawn?: boolean;
+  /** Push automatically whenever this pot's membership changes — e.g. a
+   *  team being drawn out of it. Also fires `activeActions`/
+   *  `inactiveActions` below for every slot, same trigger. */
+  autoSync?: boolean;
+  /** Fired once per slot (1..N, the fixed roster — see `fieldPrefix`'s own
+   *  doc comment) whenever that slot's own team is still sitting in this
+   *  pot (not yet drawn) — same ActionItem list/ActionListEditor shape the
+   *  Draw tab's own Multi-State (Tournament.drawVmix.activeActions) already
+   *  uses, just fired per numbered slot instead of for a single "currently
+   *  armed" team. Each action's own `Input` param is overridden to this
+   *  target's own `inputKey` at fire time (no separate input to pick — see
+   *  CollapsibleSection's own UI), and any literal `{n}` token anywhere in
+   *  an action's `fn` or any param VALUE is replaced with that slot's own
+   *  1-based number first — e.g. an action configured as `fn: "SetColor"`,
+   *  `params: { SelectedName: "Color{n}" }` becomes `SetColor` on
+   *  `Color3` for slot 3; `fn: "OverlayInput{n}In"` becomes
+   *  `OverlayInput3In`. See TournamentManager.tsx's own applySlotTemplate. */
+  activeActions?: ActionItem[];
+  /** Same shape as `activeActions`, fired instead once that slot's own
+   *  team has been drawn out of this pot (its `group` is set). */
+  inactiveActions?: ActionItem[];
+}
+
+export interface TournamentLogoVmixTarget {
+  id: string;
+  inputKey?: string;
+  /** e.g. "Logo.Source" — the vMix SetImage field name this target writes. */
+  fieldName?: string;
+}
+
+export interface CategoryLogoVmixTarget {
+  id: string;
+  /** Matches a Tournament.categories[] entry exactly. */
+  category: string;
+  inputKey?: string;
+  /** e.g. "Logo.Source" — the vMix SetImage field name this target writes. */
+  fieldName?: string;
 }
 
 export const SPORT_LABELS: Record<SportType, string> = {
@@ -192,6 +333,10 @@ export const SPORT_LABELS: Record<SportType, string> = {
   handball:    'Handball',
   ice_hockey:  'Ice Hockey',
   futsal:      'Futsal',
+  badminton:    'Badminton',
+  table_tennis: 'Table Tennis',
+  tennis:       'Tennis',
+  sepaktakraw:  'Sepaktakraw',
   custom:      'Custom',
 };
 
@@ -204,6 +349,14 @@ export const SPORT_POSITIONS: Record<SportType, string[]> = {
   handball:    ['GK','Left Wing','Right Wing','Left Back','Right Back','Pivot','Centre Back'],
   ice_hockey:  ['G','LD','RD','LW','RW','C'],
   futsal:      ['Goalkeeper','Fixo','Ala','Pivô'],
+  // Singles/doubles racket sports have no specialist "positions" the way an
+  // invasion sport does — a roster slot is just "Player" regardless of
+  // singles or doubles. Sepaktakraw is the one exception: a regu (team of
+  // 3 on court) has real, named roles.
+  badminton:    ['Player'],
+  table_tennis: ['Player'],
+  tennis:       ['Player'],
+  sepaktakraw:  ['Tekong','Apit Kiri','Apit Kanan'],
   custom:      [],
 };
 
@@ -237,8 +390,71 @@ export const SPORT_MAX_ON_FIELD: Record<SportType, number> = {
   handball:    7,
   ice_hockey:  6,
   futsal:      5,
+  badminton:    2, // doubles — 1 for singles, picked per-match, not per-roster
+  table_tennis: 2,
+  tennis:       2,
+  sepaktakraw:  3, // a regu (on-court team) is 3: Tekong + 2 Apit
   custom:      11,
 };
+
+/** Set/game scoring rules for the racket & net sports (badminton, table
+ *  tennis, tennis, sepaktakraw) — see lib/racketScoring.ts for the actual
+ *  pure scoring engines this configures, and RacketScoreboardWidget.tsx for
+ *  the live match-control widget that plays through them. Optional on
+ *  TournamentSettings (every pre-existing sport leaves it undefined) and
+ *  freely editable regardless of `sport` — SPORT_DEFAULTS below only
+ *  pre-fills each new sport's own conventional numbers as a starting point,
+ *  per the user's own ask that every number here be customizable rather
+ *  than sport-locked. */
+export interface RacketSportSettings {
+  /** 'rally' = badminton/table tennis/sepaktakraw's shared "race to N
+   *  points" shape (lib/racketScoring.ts's RallyScoringSettings, which
+   *  pointsToWin/winBy2/pointCap/gamesToWin below map directly onto).
+   *  'tennis' = games/sets/deuce/tiebreak (TennisScoringSettings — reuses
+   *  gamesToWin below as tennis's own "sets needed to win the match", same
+   *  MEANING just a different unit, and adds tiebreakAtGames/noAd). */
+  mode: 'rally' | 'tennis';
+  pointsToWin: number;
+  winBy2: boolean;
+  pointCap?: number;
+  /** Rally sports only — sepaktakraw's own decider rule, an alternative to
+   *  winBy2/pointCap above rather than combined with them: race straight to
+   *  pointsToWin (no lead needed for a normal finish), but a genuine
+   *  deadlock at pointsToWin-1 apiece raises the target to this number
+   *  instead (first to REACH it wins, still no lead requirement). See
+   *  lib/racketScoring.ts's isRallyGameOver for the full rule. Unset for
+   *  every other sport, which keeps the classic winBy2/pointCap shape. */
+  deuceTarget?: number;
+  /** Rally sports: games/sets needed to win the MATCH. Tennis: sets needed
+   *  to win the match (2 for best-of-3, 3 for best-of-5). */
+  gamesToWin: number;
+  /** Tennis only. */
+  tiebreakAtGames: number;
+  noAd: boolean;
+  /** 'auto' (default) — the engine updates who's serving on its own, every
+   *  point, per serviceRule below. 'manual' — it never touches server on
+   *  its own at all; the operator sets it by clicking the server indicator
+   *  directly on the widget (see RacketScoreboardWidget.tsx). Applies to
+   *  BOTH engines — tennis's own serve order is fixed by the actual rules
+   *  (strict alternation by game), so 'auto' there just means "don't fight
+   *  a manual correction", not a configurable rule the way rally sports'
+   *  serviceRule is. */
+  serviceMode: 'auto' | 'manual';
+  /** Rally sports only (badminton/table tennis/sepaktakraw) — which real
+   *  rule 'auto' mode follows. 'rally-winner': whoever wins the point
+   *  serves next — the real badminton/sepaktakraw rule (the server keeps
+   *  serving until they lose a rally/commit a fault, at which point serve
+   *  passes to the other side). 'alternate': serve rotates by a fixed
+   *  point count regardless of who wins, per serviceAlternateEvery below —
+   *  table tennis's actual rule. */
+  serviceRule: 'rally-winner' | 'alternate';
+  /** Only consulted when serviceRule is 'alternate' — how many points each
+   *  side serves before it rotates: 1 = every point, 2 = the real table
+   *  tennis rule (narrows to 1 automatically once both sides reach
+   *  pointsToWin-1, i.e. deuce territory, matching ITTF's own deuce
+   *  serving rule regardless of what's picked here). */
+  serviceAlternateEvery: 1 | 2;
+}
 
 export interface TournamentSettings {
   periods: number;
@@ -249,7 +465,10 @@ export interface TournamentSettings {
   timerMode: 'countup' | 'countdown';
   /** Winning score auto-applied when a fixture is marked Bye/Walkover in the
    *  Schedule tab (loser always gets 0) — per-tournament since the
-   *  convention varies by sport/competition (e.g. rugby often uses 21 or 28). */
+   *  convention varies by sport/competition (e.g. rugby often uses 21 or 28;
+   *  a racket sport's own walkover is instead expressed as its own
+   *  `racketScoring.gamesToWin`, e.g. a 2-0 badminton walkover, so this
+   *  field is simply unused whenever `racketScoring` is set). */
   walkoverWinScore: number;
   /** Standings points per outcome — varies by sport/competition convention
    *  (e.g. rugby union commonly 4/2/0, football 3/1/0). Bonus points aren't
@@ -257,6 +476,9 @@ export interface TournamentSettings {
   pointsWin: number;
   pointsDraw: number;
   pointsLoss: number;
+  /** Set/game scoring rules — only meaningful (and only ever set) for the
+   *  racket & net sports; see RacketSportSettings' own doc comment. */
+  racketScoring?: RacketSportSettings;
 }
 
 export const SPORT_DEFAULTS: Record<SportType, TournamentSettings> = {
@@ -268,5 +490,25 @@ export const SPORT_DEFAULTS: Record<SportType, TournamentSettings> = {
   handball:    { periods: 2, periodDurationMs: 1800000, halfTimeDurationMs:  600000, maxOnField:  7, maxSubs:  7, timerMode: 'countup',   walkoverWinScore: 10, pointsWin: 2, pointsDraw: 1, pointsLoss: 0 },
   ice_hockey:  { periods: 3, periodDurationMs: 1200000, halfTimeDurationMs:  900000, maxOnField:  6, maxSubs: 14, timerMode: 'countdown', walkoverWinScore: 5,  pointsWin: 2, pointsDraw: 1, pointsLoss: 0 },
   futsal:      { periods: 2, periodDurationMs: 1200000, halfTimeDurationMs:  600000, maxOnField:  5, maxSubs:  5, timerMode: 'countup',   walkoverWinScore: 5,  pointsWin: 3, pointsDraw: 1, pointsLoss: 0 },
+  // periods/periodDurationMs/halfTimeDurationMs/timerMode are all inert for
+  // these 4 (RacketScoreboardWidget.tsx has no period-clock concept of its
+  // own) but still required — TournamentSettings has no optional fields
+  // besides racketScoring itself; harmless placeholders. walkoverWinScore
+  // likewise unused (see its own doc comment above) — kept equal to
+  // gamesToWin/setsToWin just so it reads sensibly if ever surfaced.
+  badminton:    { periods: 1, periodDurationMs: 0, halfTimeDurationMs: 0, maxOnField: 2, maxSubs: 0, timerMode: 'countup', walkoverWinScore: 2, pointsWin: 1, pointsDraw: 0, pointsLoss: 0,
+    racketScoring: { mode: 'rally', pointsToWin: 21, winBy2: true, pointCap: 30, gamesToWin: 2, tiebreakAtGames: 6, noAd: false, serviceMode: 'auto', serviceRule: 'rally-winner', serviceAlternateEvery: 2 } },
+  table_tennis: { periods: 1, periodDurationMs: 0, halfTimeDurationMs: 0, maxOnField: 2, maxSubs: 0, timerMode: 'countup', walkoverWinScore: 3, pointsWin: 1, pointsDraw: 0, pointsLoss: 0,
+    racketScoring: { mode: 'rally', pointsToWin: 11, winBy2: true, gamesToWin: 3, tiebreakAtGames: 6, noAd: false, serviceMode: 'auto', serviceRule: 'alternate', serviceAlternateEvery: 2 } },
+  tennis:       { periods: 1, periodDurationMs: 0, halfTimeDurationMs: 0, maxOnField: 2, maxSubs: 0, timerMode: 'countup', walkoverWinScore: 2, pointsWin: 1, pointsDraw: 0, pointsLoss: 0,
+    racketScoring: { mode: 'tennis', pointsToWin: 4, winBy2: true, gamesToWin: 2, tiebreakAtGames: 6, noAd: false, serviceMode: 'auto', serviceRule: 'rally-winner', serviceAlternateEvery: 2 } },
+  // Official ISTAF rules (per the user's own citation): each set races
+  // straight to 15 (no lead needed for a normal finish) — UNLESS the score
+  // deadlocks at 14-14, which raises the target to 17 instead (still no
+  // lead needed beyond reaching it — see deuceTarget/isRallyGameOver's own
+  // doc comments). Serve alternates one-at-a-time regardless of who wins
+  // the rally ("satu servis sahaja berselang-seli"), not winner-serves.
+  sepaktakraw:  { periods: 1, periodDurationMs: 0, halfTimeDurationMs: 0, maxOnField: 3, maxSubs: 2, timerMode: 'countup', walkoverWinScore: 2, pointsWin: 1, pointsDraw: 0, pointsLoss: 0,
+    racketScoring: { mode: 'rally', pointsToWin: 15, winBy2: false, deuceTarget: 17, gamesToWin: 2, tiebreakAtGames: 6, noAd: false, serviceMode: 'auto', serviceRule: 'alternate', serviceAlternateEvery: 1 } },
   custom:      { periods: 2, periodDurationMs: 2700000, halfTimeDurationMs:  900000, maxOnField: 11, maxSubs:  7, timerMode: 'countup',   walkoverWinScore: 1,  pointsWin: 3, pointsDraw: 1, pointsLoss: 0 },
 };

@@ -425,6 +425,22 @@ function clearPushedDeletions(payload: { deletedMatchIds: string[]; deletedResul
   }
 }
 
+// A push whose tournament(s) had no eventId of their own gets one
+// auto-created server-side (see app/api/desktop/scoring/push/route.ts) —
+// without writing it back locally here, this tournament would look
+// unlinked forever on THIS device (no "linked event" badge, no way to
+// find/share the page it already has) and every later push would ask the
+// server to resolve a link all over again. Mirrors exactly what
+// TournamentManager.tsx's own confirmEventLink does for a manual link,
+// minus eventShareKey (auto-create never generates a cross-vendor key).
+function applyAutoLinkedEvents(autoLinkedEvents: { tournamentId: string; eventId: string; eventName: string }[] | undefined) {
+  if (!autoLinkedEvents?.length) return;
+  const { updateTournament } = useTournamentStore.getState();
+  for (const link of autoLinkedEvents) {
+    updateTournament(link.tournamentId, { eventId: link.eventId, eventName: link.eventName, cloudSyncEnabled: true });
+  }
+}
+
 // Automatic background push — diffs against what's already confirmed on the
 // cloud (see lastPushedTournament/Match/Result) so a debounced push
 // triggered by editing ONE fixture doesn't re-upload every other unchanged
@@ -464,6 +480,8 @@ async function pushAll() {
       clearPushedDeletions(payload);
       recordPushed(payload);
       useCloudSyncStatus.getState().setLastError(null);
+      const body = await res.json().catch(() => null);
+      applyAutoLinkedEvents(body?.autoLinkedEvents);
     } else {
       // The server's own error text (e.g. "Invalid JSON body") is far more
       // useful than the bare status code alone — pushTournamentNow already
@@ -524,6 +542,8 @@ export async function pushTournamentNow(tournamentId: string): Promise<{ ok: boo
     clearPushedDeletions(payload);
     recordPushed(payload);
     useCloudSyncStatus.getState().setLastError(null);
+    const body = await res.json().catch(() => null);
+    applyAutoLinkedEvents(body?.autoLinkedEvents);
     return { ok: true };
   } catch {
     const error = 'Network error — check your connection';

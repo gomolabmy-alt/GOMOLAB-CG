@@ -5,7 +5,7 @@ function handleUrls(urls: string[] | null) {
   for (const raw of urls) {
     try {
       const url = new URL(raw);
-      if (url.protocol !== 'gomolab:') continue;
+      if (url.protocol !== 'gomolabcg:') continue;
       const token = url.searchParams.get('token');
       const state = url.searchParams.get('state');
       if (token && state) useAuthStore.getState().completeSignIn(token, state);
@@ -15,7 +15,7 @@ function handleUrls(urls: string[] | null) {
   }
 }
 
-// Catches the gomolab://auth?token=...&state=... callback handed back by the
+// Catches the gomolabcg://auth?token=...&state=... callback handed back by the
 // eventmanagementsystem site after a successful web login. getCurrent()
 // covers a cold start (app wasn't running yet); onOpenUrl() covers the warm
 // case (already running — macOS native reopen event, or Windows/Linux via

@@ -22,12 +22,36 @@ futures-util = "0.3"
 uuid = { version = "1", features = ["v4"] }
 once_cell = "1"
 rfd = "0.15"
+# Bundles an image sequence's many frames into one file on disk (see
+# commands.rs's save_sequence / server.rs's api_get_sequence_frame) instead
+# of each frame becoming its own separate file in the shared images
+# library. Stored (not Deflate) compression — frames are already PNG-
+# compressed, so re-compressing would just burn CPU for no size benefit.
+# default-features off: every one of the crate's default features is an
+# extra compression/encryption codec (bzip2/lzma/zstd/aes/…) this app never
+# uses — Stored read/write is core functionality, not gated behind any of
+# them — so this avoids pulling in a dozen codec crates for nothing.
+zip = { version = "4", default-features = false }
 libc = "0.2"
+# Status bar (see src/sysstats.rs) — this app's own CPU/memory usage plus
+# whole-machine network throughput. default-features off: the crate's
+# default features pull in per-OS "component" (temperature sensor) and
+# "user" (logged-in-users) probing this app never surfaces, each its own
+# extra platform API surface for no benefit here.
+sysinfo = { version = "0.32", default-features = false, features = ["system", "network"] }
 include_dir = "0.7"
 mime_guess = "2"
-libloading = "0.9"
-jpeg-encoder = "0.7"
 base64 = "0.22"
+# Downscales an oversized uploaded image (team/tournament logo, etc.) on
+# save (see commands.rs's save_image) — vMix's own SetImage fetches the
+# file over HTTP and decodes it itself every time a field is pushed, so an
+# unoptimized multi-megapixel source (a straight phone photo, most
+# commonly) is what makes a logo push visibly slower than a text push, not
+# anything in this app's own send path. default-features off: the crate's
+# default features pull in a long list of format codecs (webp, tiff, gif,
+# bmp, tga, dds, hdr, exr, qoi, avif, ff) this app only ever needs png/jpeg
+# for — decode/encode those two explicitly instead of the whole catalog.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 tauri-plugin-deep-link = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
@@ -36,6 +60,18 @@ tauri-plugin-global-shortcut = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 machine-uid = "0.5"
+
+# macOS "App Nap" prevention (see src/app_nap.rs) — a per-PROCESS CPU/timer
+# throttle macOS applies whenever this app isn't the frontmost/key app,
+# separate from (and not covered by) commands.rs's existing set_sleep_block/
+# caffeinate, which only keeps the whole MACHINE from sleeping. objc2/
+# objc2-foundation are already resolved transitively (tauri/wry/tao all pull
+# them in for their own macOS windowing) — pinning them as direct deps here
+# just lets this crate's own code call NSProcessInfo directly too, at
+# whatever version already satisfies the rest of the dependency tree.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSProcessInfo", "NSString", "NSError"] }
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

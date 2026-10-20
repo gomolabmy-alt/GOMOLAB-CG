@@ -217,10 +217,48 @@ export class VmixApiClient {
   // dead TCP port is retried forever instead of permanently downgrading to
   // HTTP-only polling. Reset to base whenever TCP successfully connects.
   private _tcpBackoffMs = 3000;
+
+  /** Whether sends are currently going out over the fast TCP path (port
+   *  8099) or falling back to one HTTP round-trip per command — see
+   *  VmixStatsPanel.tsx's own connection-method badge, which reads this
+   *  directly so an operator can tell at a glance why button presses might
+   *  feel slow (every multi-action button press pays the HTTP round-trip
+   *  cost once per action when this is false) instead of having to dig
+   *  through the connection log for a tcp-connect/poll-fallback entry. */
+  get isTcpActive(): boolean { return this._tcpActive; }
   private static readonly TCP_BACKOFF_MAX = 20000;
   private _httpPollActive = false; // prevents duplicate concurrent HTTP poll loops
   private _lastStateAt = 0;        // ms timestamp of last received vMix state
   private _staleWatchdog: ReturnType<typeof setInterval> | null = null;
+  // Throttles the ad-hoc "XML\r\n" refresh fired after every single TCP
+  // command (see _requestTcpRefresh) so a burst of commands — e.g. a Quick
+  // Button whose action list fires several functions back-to-back, or rapid
+  // button-mashing — can't queue up dozens of redundant full-state requests
+  // on top of the already-running 200ms keepalive timer. vMix has to build
+  // and serialize its entire XML state for EACH of these; a flood of them
+  // delays the replies enough that _lastStateAt goes stale for 12s+, and the
+  // watchdog above then "disconnects" a TCP socket that was never actually
+  // dead, just backlogged — this was the real cause of the reported
+  // constant stale-connection reconnect churn, worst during Quick Button
+  // bursts. One real refresh every 150ms is still fast enough to feel
+  // instant to an operator, and the keepalive timer keeps covering state
+  // freshness in between regardless.
+  private _lastTcpRefreshAt = 0;
+  // The operator-configurable HTTP poll rate (App Settings' "vMix Live
+  // State Polling") — read FRESH by _startHttpPoll's own loop on every
+  // iteration (not captured once into a closure), so setPollIntervalMs
+  // below takes effect on the very next scheduled poll, no reconnect
+  // needed. Defaults to startPolling's own default until a real
+  // connection sets it from the app's persisted setting.
+  private _intervalMs = 500;
+  /** Changes the HTTP poll rate on an already-running connection — see
+   *  this field's own comment above. Called by whichever store/UI owns the
+   *  actual client instance (this class never imports a settings store
+   *  itself, to stay a plain API client) whenever the operator adjusts the
+   *  setting mid-session. */
+  setPollIntervalMs(ms: number) {
+    this._intervalMs = Math.max(100, Math.round(ms));
+  }
 
   // Logger callback wired by the store for the connection log panel
   private _log: ((event: string, detail?: string) => void) | null = null;
@@ -443,7 +481,58 @@ export class VmixApiClient {
     return parts.length ? `${functionName}  ${parts.join('  ')}` : functionName;
   }
 
+  // Throttled wrapper around the ad-hoc post-command "XML\r\n" refresh — see
+  // _lastTcpRefreshAt's own doc comment for why this exists. The 200ms
+  // keepalive timer in _startTCP bypasses this (it updates _lastTcpRefreshAt
+  // itself and always fires on schedule), so state freshness never drops
+  // below that baseline even when every ad-hoc refresh in a burst gets
+  // skipped here.
+  private _requestTcpRefresh() {
+    const now = Date.now();
+    if (now - this._lastTcpRefreshAt < 150) return;
+    this._lastTcpRefreshAt = now;
+    import('@tauri-apps/api/core').then(({ invoke }) =>
+      invoke('vmix_tcp_refresh', { host: this.host, tcpPort: VmixApiClient.TCP_PORT }).catch(() => {})
+    );
+  }
+
   async fn(functionName: string, params: Record<string, string> = {}): Promise<void> {
+    // vMix's own wire parameter for "which Mix" is the literal lowercase
+    // "mix" (not "Mix"), carrying a 0-based value — UI "Mix 1" (main) is
+    // wire value 0, "Mix 2" is wire value 1, … "Mix 16" is wire value 15 —
+    // NOT the 1-based number ActionListEditor.tsx's own picker shows/
+    // stores in `params.Mix` for readability (same convention vMix's own
+    // UI and this app's picker both display). Confirmed against bitfocus/
+    // companion-module-studiocoast-vmix's actual sendBasicCommand/parseMix
+    // source (the reference implementation this feature was built to
+    // match) — sending the capitalized key, or the raw 1-based value
+    // under either casing, is silently ignored by vMix, which is why Mix
+    // selection previously had no effect on vMix at all. Converted here,
+    // the one function every send path (TCP and HTTP, tracked and
+    // untracked) funnels through, so neither path can drift out of sync
+    // and nothing upstream (the catalog, the editor, already-saved
+    // actions) needs to change.
+    if (params.Mix !== undefined) {
+      const { Mix, ...rest } = params;
+      const n = parseInt(Mix, 10);
+      // NaN only if something non-numeric slipped in — omit rather than
+      // send a value certain to be wrong (this app has no live-routing
+      // state to resolve a "currently selected Mix" the way Companion's
+      // own instance.routingData does, so that concept isn't offered here).
+      params = isNaN(n) ? rest : { ...rest, mix: String(n - 1) };
+    }
+    // Cut and the other transition effects (Fade, Merge, Zoom, Wipe, Slide,
+    // Fly, CrossZoom, FlyRotate, Cube, CubeZoom, VerticalWipe, VerticalSlide)
+    // all genuinely honor `mix` directly in vMix's own API — confirmed
+    // against vMix's official docs (Mix.html: "The following shortcuts can
+    // be used with an optional Mix parameter ... Fade, Zoom, Wipe etc", and
+    // ShortcutFunctionReference.html's intro: "Transitions such as Fade,
+    // Zoom, Cut etc can be used as Functions in shortcuts or the API").
+    // Nothing to swap or special-case here — the conversion above already
+    // forwards `mix` to whatever function was asked for. Only CutDirect
+    // (immediate cut, no transition) and Transition1-4 (the four UI
+    // transition buttons, which take no parameters at all) are genuinely
+    // Mix-1-only, per vMix's own reference table.
     const q = new URLSearchParams({ Function: functionName, ...params });
     const url = `${this.apiUrl}?${q}`;
     const label = this._fmtCmd(functionName, params);
@@ -471,7 +560,7 @@ export class VmixApiClient {
           await invoke('vmix_tcp_function', { host: this.host, tcpPort: VmixApiClient.TCP_PORT, cmd });
           this._markOk(key);
           this._log?.('sent', label);
-          invoke('vmix_tcp_refresh', { host: this.host, tcpPort: VmixApiClient.TCP_PORT }).catch(() => {});
+          this._requestTcpRefresh();
           return;
         } catch {
           this._log?.('send-error', `TCP failed, retrying via HTTP: ${label}`);
@@ -488,9 +577,7 @@ export class VmixApiClient {
         throw err;
       }
       if (_isTauri && this._tcpActive) {
-        import('@tauri-apps/api/core').then(({ invoke }) =>
-          invoke('vmix_tcp_refresh', { host: this.host, tcpPort: VmixApiClient.TCP_PORT }).catch(() => {})
-        );
+        this._requestTcpRefresh();
       } else if (this.onStateUpdate) {
         this.fetchState().then(s => this.onStateUpdate?.(s)).catch(() => {});
       }
@@ -505,7 +592,7 @@ export class VmixApiClient {
         const { invoke } = await import('@tauri-apps/api/core');
         await invoke('vmix_tcp_function', { host: this.host, tcpPort: VmixApiClient.TCP_PORT, cmd });
         this._log?.('sent', label);
-        invoke('vmix_tcp_refresh', { host: this.host, tcpPort: VmixApiClient.TCP_PORT }).catch(() => {});
+        this._requestTcpRefresh();
         return;
       } catch {
         this._log?.('send-error', `TCP failed, retrying via HTTP: ${label}`);
@@ -520,9 +607,7 @@ export class VmixApiClient {
       throw err;
     }
     if (_isTauri && this._tcpActive) {
-      import('@tauri-apps/api/core').then(({ invoke }) =>
-        invoke('vmix_tcp_refresh', { host: this.host, tcpPort: VmixApiClient.TCP_PORT }).catch(() => {})
-      );
+      this._requestTcpRefresh();
     } else if (this.onStateUpdate) {
       this.fetchState().then(s => this.onStateUpdate?.(s)).catch(() => {});
     }
@@ -705,8 +790,12 @@ export class VmixApiClient {
   startPolling(
     onState: (state: VmixState) => void,
     onError: (error: string) => void,
-    _intervalMs = 800,
+    intervalMs = 500,
   ) {
+    // Seeds _intervalMs for this connection — see its own doc comment
+    // (setPollIntervalMs) for how a later live change reaches an
+    // already-running poll loop.
+    this._intervalMs = Math.max(100, Math.round(intervalMs));
     // Wrap onState so every incoming vMix state is also checked for field mismatches.
     // _lastStateAt is updated here to drive the stale watchdog below.
     this._lastStateAt = Date.now();
@@ -742,7 +831,7 @@ export class VmixApiClient {
       } else if (!this._httpPollActive) {
         // HTTP poll has silently stopped
         this._log?.('poll-restart', 'HTTP poll stalled — restarting');
-        this._startHttpPoll(500);
+        this._startHttpPoll();
       }
     }, 6000);
 
@@ -750,20 +839,23 @@ export class VmixApiClient {
       // Desktop: run both TCP and HTTP polling simultaneously.
       // TCP polls XML every 200ms over the open socket — the primary
       // near-real-time path (cheap, no new connection per request).
-      // HTTP polling runs in parallel (throttled to 2000ms while TCP is active)
-      // as a guaranteed backup — if TCP becomes zombie, HTTP keeps lastUpdated
-      // fresh and ensures sends fall back to HTTP automatically.
-      this._startHttpPoll(500);
+      // HTTP polling runs in parallel (throttled while TCP is active — see
+      // _startHttpPoll's own comment) as a guaranteed backup — if TCP
+      // becomes zombie, HTTP keeps lastUpdated fresh and ensures sends
+      // fall back to HTTP automatically.
+      this._startHttpPoll();
       this._startTCP();
     } else {
-      // Browser: no TCP available, use HTTP polling.
-      this._startHttpPoll(250);
+      // Browser: no TCP available, use HTTP polling as the only live-state
+      // path there is — this is exactly the poll the "vMix Live State
+      // Polling" app setting governs.
+      this._startHttpPoll();
     }
   }
 
   private _isReconnecting = false;
 
-  private _startHttpPoll(intervalMs: number) {
+  private _startHttpPoll() {
     // Guard: only one HTTP poll loop at a time.
     if (this._httpPollActive) return;
     this._httpPollActive = true;
@@ -780,9 +872,15 @@ export class VmixApiClient {
         this.onError?.(msg);
       }
       if (this._pollRunning) {
-        // While TCP is providing real-time pushes, throttle HTTP to 2000ms.
-        // When TCP is down, use the faster interval (500ms) so state stays current.
-        const next = this._tcpActive ? 2000 : intervalMs;
+        // Read _intervalMs FRESH on every iteration (not a captured
+        // parameter) so setPollIntervalMs takes effect on the very next
+        // poll, no restart needed. While TCP is providing real-time
+        // pushes, floor the HTTP backup at 1000ms regardless of how fast
+        // the setting itself is — TCP is already doing the real-time job,
+        // hammering HTTP too on top of that wastes a request for no
+        // freshness benefit. When TCP is down, use the configured rate
+        // exactly so state stays as current as the operator actually wants.
+        const next = this._tcpActive ? Math.max(this._intervalMs, 1000) : this._intervalMs;
         this.pollTimer = setTimeout(poll, next);
       } else {
         this._httpPollActive = false;
@@ -829,6 +927,13 @@ export class VmixApiClient {
       if (this._tcpKeepaliveTimer) clearInterval(this._tcpKeepaliveTimer);
       this._tcpKeepaliveTimer = setInterval(() => {
         if (this._tcpActive && _isTauri) {
+          // Always fires on its fixed 200ms schedule regardless of
+          // _requestTcpRefresh's throttle window — this is the baseline
+          // freshness guarantee. Stamping _lastTcpRefreshAt here (not just
+          // inside _requestTcpRefresh) is what lets that throttle correctly
+          // skip a redundant ad-hoc refresh when one just went out via this
+          // timer a moment ago.
+          this._lastTcpRefreshAt = Date.now();
           import('@tauri-apps/api/core').then(({ invoke }) =>
             invoke('vmix_tcp_refresh', { host: this.host, tcpPort: VmixApiClient.TCP_PORT }).catch(() => {})
           );

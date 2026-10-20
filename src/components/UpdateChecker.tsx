@@ -125,7 +125,7 @@ export function UpdateChecker() {
             )}
             {phase === 'ready' && (
               <p style={{ fontSize: 13, color: 'var(--text-secondary)', margin: 0, lineHeight: 1.4 }}>
-                Downloaded and installed — restart GOMOLAB vMix Control to finish updating.
+                Downloaded and installed — restart GOMOLAB CG and vMix Control to finish updating.
               </p>
             )}
             {phase === 'error' && (
