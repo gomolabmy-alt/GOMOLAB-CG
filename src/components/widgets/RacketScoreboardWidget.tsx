@@ -176,24 +176,6 @@ interface RacketVmixTarget {
    *  vMix title itself happens to default a Text field to. Optional —
    *  unset leaves undecided sets at the title's own default color. */
   setScoreDefaultColor?: string;
-  /** Colors whichever field is actually showing the live score — by
-   *  default, the CURRENT set's own Per-Set Score field (setScoreTemplateA/
-   *  B above, expanded for whichever set is live right now), falling back
-   *  to fieldScoreA/B when no per-set template is set. pointWinColorFieldA/
-   *  B below override this with an explicit field instead. Fires — and
-   *  STAYS on — from the instant that side's live score reaches the real
-   *  winning number (pointsToWin, or the sepaktakraw deuceTarget cap once a
-   *  deadlock raises it), a simpler/stickier check than the on-screen
-   *  Game/Set/Match Point badge's own pointSigA/B (that one can flicker off
-   *  right at a deadlock, since the target itself moves — see
-   *  pointThresholdA/B's own doc comment) — and runs AFTER the per-set
-   *  score push so it wins over that block's own Set Default Color on the
-   *  live slot. pointDefaultColor is what it reverts to the rest of the
-   *  time (this game ends, or the OTHER side is the one closing in). */
-  pointWinColorFieldA?: string;
-  pointWinColorFieldB?: string;
-  pointWinColor?: string;
-  pointDefaultColor?: string;
   // 'text' (default) pushes the serving team's NAME to fieldServerName,
   // same as before this existed. 'image' pushes a SERVER ICON (serverIconA/B
   // below — an operator-picked image, e.g. a shuttle/ball icon or arrow,
@@ -976,26 +958,6 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
   const pointSigB = pointSignificanceFor('B');
   const pointSigSide: RacketSide | null = pointSigA ? 'A' : pointSigB ? 'B' : null;
   const pointSigLevel = pointSigA ?? pointSigB;
-  // Simpler, STICKY threshold check used only by the vMix Point Win Color
-  // push below (NOT the on-screen badge above, which stays precise about
-  // the exact instant the next point actually ends the game) — a side's
-  // raw live score has reached the real winning number (15 normally, or
-  // the sepaktakraw deuceTarget cap of 17 once a 14-14 deadlock raises it)
-  // regardless of whether THIS exact point would end the game (win-by-2
-  // still pending, etc.). Once true it STAYS true as the score keeps
-  // climbing (15 -> 16 -> 17, never drops) — unlike pointSigA/B, which can
-  // flicker off e.g. right after a 14-14 deadlock raises the target to 17
-  // (15/16 stop being "game point" even though the score visually passed
-  // them). Tennis is untouched — it has no single "reached the number"
-  // target the way rally sports do, so this just mirrors pointSigA/B there.
-  // Guarded against THIS game already being decided (match/tie included) —
-  // once it is, fireSetResultActions' own Win/Lose Color already took over
-  // that slot; this must stop claiming it, or a loser who'd also climbed
-  // past the threshold during a deuce battle (e.g. lost 17-16) would get
-  // overwritten back to the WIN color on every later push.
-  const rallyGameDecided = !!matchWinnerSide || !!teamTieWinner || !!rallyGameOverWinner;
-  const pointThresholdA = scoringMode === 'tennis' ? !!pointSigA : !rallyGameDecided && rallyState.pointsA >= rallySettings.pointsToWin;
-  const pointThresholdB = scoringMode === 'tennis' ? !!pointSigB : !rallyGameDecided && rallyState.pointsB >= rallySettings.pointsToWin;
   const pointBadgeLabel = (level: 'game' | 'set' | 'match'): string => {
     if (level === 'match') return 'Match Point';
     if (level === 'set') return 'Set Point';
@@ -1045,8 +1007,6 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
           setScoreColorFieldA: config.setScoreColorFieldA, setScoreColorFieldB: config.setScoreColorFieldB,
           setScoreWinColor: config.setScoreWinColor, setScoreLoseColor: config.setScoreLoseColor,
           setScoreDefaultColor: config.setScoreDefaultColor,
-          pointWinColorFieldA: config.pointWinColorFieldA, pointWinColorFieldB: config.pointWinColorFieldB,
-          pointWinColor: config.pointWinColor, pointDefaultColor: config.pointDefaultColor,
           serverMode: 'text', fieldServerName: config.fieldServerName,
         }]
       : [];
@@ -1155,6 +1115,20 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
       const templateB = t.setScoreTemplateA || t.setScoreTemplateB
         ? (t.setScoreTemplateB ?? '')
         : (t.setScorePrefix ? `${t.setScorePrefix}{n}B.Text` : '');
+      // Rally sports (not tennis — tennis closes a set out INSTANTLY, no
+      // confirm step) have a lag: the just-ended game only moves OUT of the
+      // "current" slot once the operator clicks Start Next Game
+      // (advanceRallyGame — see its own doc comment). Until then, this
+      // slot's index still equals completedGames.length, so it would look
+      // "not yet decided" by that check alone even though the game
+      // genuinely IS over and fireSetResultActions already colored it the
+      // instant it ended — overwriting that back to Default Color (Set
+      // Default Color below) on every later push (every point log entry,
+      // server change, etc.)
+      // was why one side's Set Won/Lost color looked like it "never
+      // changed": whichever side's color this stomped back to Default
+      // right after fireSetResultActions had just set it correctly.
+      const currentSlotAlreadyDecided = scoringMode === 'rally' && !!rallyGameOverWinner;
       if (templateA || templateB) {
         const maxSets = Math.max(allSets.length, (config.gamesToWin ?? 2) * 2 - 1);
         // Same Color Field override fireSetResultActions uses — blank means
@@ -1173,7 +1147,8 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
           // instant they concluded. Resets a freshly loaded/reset match's
           // boxes back to neutral instead of leaving a PREVIOUS match's
           // win/lose colors behind on them.
-          if (t.setScoreDefaultColor && i >= completedGames.length) {
+          const isCurrentSlot = i === completedGames.length;
+          if (t.setScoreDefaultColor && i >= completedGames.length && !(isCurrentSlot && currentSlotAlreadyDecided)) {
             if (colorFieldA) client.setTextColor(t.inputKey, expandSetTemplate(colorFieldA, i + 1), toTextColorHex(t.setScoreDefaultColor));
             if (colorFieldB) client.setTextColor(t.inputKey, expandSetTemplate(colorFieldB, i + 1), toTextColorHex(t.setScoreDefaultColor));
           }
@@ -1202,38 +1177,6 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
             if (!isNaN(n) && n > maxSets) client.setTextField(t.inputKey, field.name, '');
           }
         }
-      }
-      // Game/Set/Match Point color — the instant that side's live score
-      // reaches the real winning number (pointsToWin, e.g. 15 — or the
-      // sepaktakraw deuceTarget cap, e.g. 17, once a deadlock raises it),
-      // and STAYS that color as the score keeps climbing from there
-      // (scores only go up), unlike the on-screen badge's own pointSigA/B
-      // (which flickers off right at a 14-14 deadlock, since 15 stops
-      // being "the next point wins" the instant the target gets raised to
-      // 17 — see pointThresholdA/B's own doc comment). Runs
-      // AFTER the per-set block above (not alongside it) so it wins over
-      // that block's own Default Color on the CURRENT slot — a win-point
-      // highlight should show even with a Set Default Color also set.
-      // Target priority: an explicit override field -> the CURRENT set's
-      // own Per-Set Score field (same {n} template convention, expanded for
-      // whichever set is live right now — the common case, since most
-      // setups show the live score through the per-set box rather than a
-      // separate flat field) -> the flat Score A/B field as a last resort
-      // for a target that never set up per-set templates at all. Falls back
-      // to the SAME default swatch values the pickers themselves show
-      // (#f1c40f/#ffffff) when only ONE of Win/Default was ever actually
-      // touched — the swatch default is cosmetic only, never saved to
-      // config until clicked, so leaving the OTHER one alone used to mean
-      // it just never got colored at all once this side stopped being at
-      // point-to-win.
-      if (t.pointWinColor || t.pointDefaultColor) {
-        const currentSetNumber = completedGames.length + 1;
-        const liveFieldA = t.pointWinColorFieldA || (templateA && expandSetTemplate(templateA, currentSetNumber)) || t.fieldScoreA;
-        const liveFieldB = t.pointWinColorFieldB || (templateB && expandSetTemplate(templateB, currentSetNumber)) || t.fieldScoreB;
-        const winColor = t.pointWinColor || '#f1c40f';
-        const defaultColor = t.pointDefaultColor || '#ffffff';
-        if (liveFieldA) client.setTextColor(t.inputKey, liveFieldA, toTextColorHex(pointThresholdA ? winColor : defaultColor));
-        if (liveFieldB) client.setTextColor(t.inputKey, liveFieldB, toTextColorHex(pointThresholdB ? winColor : defaultColor));
       }
       // Starting lineup — one Name/Jersey/Position triple per starter slot
       // (1-based), same template + stale-clear approach as the per-set
@@ -1283,7 +1226,7 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
     config.teamAName, config.teamBName, config.teamAShortName, config.teamBShortName, config.teamALogo, config.teamBLogo, rallyState.pointsA, rallyState.pointsB, rallyState.games,
     tennisState.pointsA, tennisState.pointsB, tennisState.tiebreakA, tennisState.tiebreakB, tennisState.inTiebreak,
     tennisState.gamesA, tennisState.gamesB, tennisState.sets, gamesWonA, gamesWonB, server, matchWinnerSide, teamTieWinner,
-    config.startersA, config.startersB, config.playerCount, pointSigA, pointSigB, pointThresholdA, pointThresholdB,
+    config.startersA, config.startersB, config.playerCount, pointSigA, pointSigB,
     config.venue, config.scheduledDate, config.scheduledTime, config.category, config.group, config.sport,
     config.dateFormatPattern, config.timeFormatPattern,
   ]);
@@ -2860,13 +2803,15 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
               </p>
               <label className="wgt-ctimer-settings-row">
                 Team A Color Field Override (optional)
-                <FieldPickerDropdown inputKey={config.vmixInputKey} value={config.setScoreColorFieldA ?? ''} allInputs={allVmixInputs}
-                  onChange={v => updateWidgetConfig(widgetId, { setScoreColorFieldA: v })} placeholder="Same as Team A's Per-Set field if blank" />
+                <FieldPickerDropdown inputKey={config.vmixInputKey}
+                  value={config.setScoreColorFieldA ? expandSetTemplate(config.setScoreColorFieldA, 1) : ''} allInputs={allVmixInputs}
+                  onChange={v => updateWidgetConfig(widgetId, { setScoreColorFieldA: deriveSetTemplate(v) })} placeholder="Same as Team A's Per-Set field if blank" />
               </label>
               <label className="wgt-ctimer-settings-row">
                 Team B Color Field Override (optional)
-                <FieldPickerDropdown inputKey={config.vmixInputKey} value={config.setScoreColorFieldB ?? ''} allInputs={allVmixInputs}
-                  onChange={v => updateWidgetConfig(widgetId, { setScoreColorFieldB: v })} placeholder="Same as Team B's Per-Set field if blank" />
+                <FieldPickerDropdown inputKey={config.vmixInputKey}
+                  value={config.setScoreColorFieldB ? expandSetTemplate(config.setScoreColorFieldB, 1) : ''} allInputs={allVmixInputs}
+                  onChange={v => updateWidgetConfig(widgetId, { setScoreColorFieldB: deriveSetTemplate(v) })} placeholder="Same as Team B's Per-Set field if blank" />
               </label>
               <p className="app-settings-hint" style={{ margin: '2px 0 8px' }}>
                 Leave both blank — the score number's own Text field gets its font color changed directly, no extra setup needed in vMix. Only pick one if you want a DIFFERENT field recolored instead of the score text itself.
@@ -2900,38 +2845,6 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
               </label>
               <p className="app-settings-hint" style={{ margin: '2px 0 8px' }}>
                 Applied to the set currently being played and any set not reached yet — so every box has a consistent, app-controlled color even before it's won or lost, instead of whatever color the vMix title itself defaults to.
-              </p>
-              <label className="wgt-ctimer-settings-row">
-                Team A Live Score Color Field Override (optional)
-                <FieldPickerDropdown inputKey={config.vmixInputKey} value={config.pointWinColorFieldA ?? ''} allInputs={allVmixInputs}
-                  onChange={v => updateWidgetConfig(widgetId, { pointWinColorFieldA: v })} placeholder="Auto: current set's Per-Set field, or Score A Field" />
-              </label>
-              <label className="wgt-ctimer-settings-row">
-                Team B Live Score Color Field Override (optional)
-                <FieldPickerDropdown inputKey={config.vmixInputKey} value={config.pointWinColorFieldB ?? ''} allInputs={allVmixInputs}
-                  onChange={v => updateWidgetConfig(widgetId, { pointWinColorFieldB: v })} placeholder="Auto: current set's Per-Set field, or Score B Field" />
-              </label>
-              <p className="app-settings-hint" style={{ margin: '2px 0 8px' }}>
-                Leave both blank — this colors whichever field is actually showing the live score: the CURRENT set's own Per-Set Score field (team-a-score-s2.Text while Set 2 is being played, etc.) if you've set one, otherwise the flat Score A/B Field.
-              </p>
-              <label className="wgt-ctimer-settings-row">
-                Game/Set/Match Point Color
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <input type="color" value={config.pointWinColor ?? '#f1c40f'} onChange={e => updateWidgetConfig(widgetId, { pointWinColor: e.target.value })} />
-                  <input className="wgt-ctimer-settings-input" style={{ width: 80, fontFamily: 'var(--font-mono)', fontSize: 11 }} value={config.pointWinColor ?? '#f1c40f'}
-                    onChange={e => updateWidgetConfig(widgetId, { pointWinColor: e.target.value })} placeholder="#f1c40f" />
-                </div>
-              </label>
-              <label className="wgt-ctimer-settings-row">
-                Live Score Default Color
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <input type="color" value={config.pointDefaultColor ?? '#ffffff'} onChange={e => updateWidgetConfig(widgetId, { pointDefaultColor: e.target.value })} />
-                  <input className="wgt-ctimer-settings-input" style={{ width: 80, fontFamily: 'var(--font-mono)', fontSize: 11 }} value={config.pointDefaultColor ?? '#ffffff'}
-                    onChange={e => updateWidgetConfig(widgetId, { pointDefaultColor: e.target.value })} placeholder="#ffffff" />
-                </div>
-              </label>
-              <p className="app-settings-hint" style={{ margin: '2px 0 8px' }}>
-                Colors the live score the instant that side's score reaches the winning number (15, or 17 once a deadlock raises it for sepaktakraw) and stays that color as the score keeps climbing — back to Default once this game ends or the other side is the one closing in.
               </p>
             </>
           )}

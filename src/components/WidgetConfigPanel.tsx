@@ -1950,7 +1950,6 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
           setScoreTemplateMode?: 'picker' | 'manual';
           setScoreColorFieldA?: string; setScoreColorFieldB?: string;
           setScoreWinColor?: string; setScoreLoseColor?: string; setScoreDefaultColor?: string;
-          pointWinColorFieldA?: string; pointWinColorFieldB?: string; pointWinColor?: string; pointDefaultColor?: string;
           serverMode?: 'text' | 'image' | 'trigger';
           fieldServerName?: string; fieldServerImage?: string;
           serverIconA?: string; serverIconB?: string;
@@ -1985,8 +1984,6 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
                 setScoreColorFieldA: cfg.setScoreColorFieldA, setScoreColorFieldB: cfg.setScoreColorFieldB,
                 setScoreWinColor: cfg.setScoreWinColor, setScoreLoseColor: cfg.setScoreLoseColor,
                 setScoreDefaultColor: cfg.setScoreDefaultColor,
-                pointWinColorFieldA: cfg.pointWinColorFieldA, pointWinColorFieldB: cfg.pointWinColorFieldB,
-                pointWinColor: cfg.pointWinColor, pointDefaultColor: cfg.pointDefaultColor,
                 serverMode: 'text', fieldServerName: cfg.fieldServerName,
               }]
             : [];
@@ -2125,8 +2122,22 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
                           <p className="app-settings-hint" style={{ margin: '4px 0 0' }}>
                             Pushes a score pair per set — the field's own set number keeps incrementing (Set1, Set2, …) up to this match's maximum (Games/Sets to Win × 2 − 1), blank until each one's actually reached. In "Pick from list", picking Set 1's real field auto-derives the pattern for every other set from it.
                           </p>
-                          {exactField(t, idx, 'setScoreColorFieldA', `${cfg.teamAName || 'Team A'} — Color Field Override (optional)`, 'Same as Set 1 Field if blank')}
-                          {exactField(t, idx, 'setScoreColorFieldB', `${cfg.teamBName || 'Team B'} — Color Field Override (optional)`, 'Same as Set 1 Field if blank')}
+                          {/* {n}-templated, same as Per-Set Score Fields —
+                             MUST be, since this value is expanded with the
+                             real set number everywhere it's used (the per-
+                             set loop AND fireSetResultActions); an exact
+                             field picker would have stored a literal field
+                             name with no "{n}" in it at all, which the {n}
+                             substitution is then a silent no-op on — every
+                             set recoloring the SAME Set 1 field forever. */}
+                          <Field label={`${cfg.teamAName || 'Team A'} — Color Field Override (optional)`}>
+                            {renderFieldPicker(t.inputKey, t.setScoreColorFieldA ? t.setScoreColorFieldA.replace(/\{n\}/g, '1') : '',
+                              v => updateRacketTarget(idx, { setScoreColorFieldA: deriveSetTemplate(v) }), 'Same as Set 1 Field if blank')}
+                          </Field>
+                          <Field label={`${cfg.teamBName || 'Team B'} — Color Field Override (optional)`}>
+                            {renderFieldPicker(t.inputKey, t.setScoreColorFieldB ? t.setScoreColorFieldB.replace(/\{n\}/g, '1') : '',
+                              v => updateRacketTarget(idx, { setScoreColorFieldB: deriveSetTemplate(v) }), 'Same as Set 1 Field if blank')}
+                          </Field>
                           <p className="app-settings-hint" style={{ margin: '4px 0 0' }}>
                             Leave both blank — the score number's own Text field gets its font color changed directly, no extra setup needed in vMix. Only pick one if you want a DIFFERENT text field recolored instead of the score text itself (e.g. a separate label).
                           </p>
@@ -2138,19 +2149,6 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
                           {colorField('Default Color (not yet decided)', t.setScoreDefaultColor, '#ffffff', v => updateRacketTarget(idx, { setScoreDefaultColor: v }))}
                           <p className="app-settings-hint" style={{ margin: '4px 0 0' }}>
                             Applied to the set currently being played and any set not reached yet — every box gets a consistent, app-controlled color even before it's won or lost, instead of whatever color the vMix title itself defaults to.
-                          </p>
-                          {exactField(t, idx, 'pointWinColorFieldA', `${cfg.teamAName || 'Team A'} — Live Score Color Field Override (optional)`, 'Auto: current set\'s Per-Set field, or Score A Field')}
-                          {exactField(t, idx, 'pointWinColorFieldB', `${cfg.teamBName || 'Team B'} — Live Score Color Field Override (optional)`, 'Auto: current set\'s Per-Set field, or Score B Field')}
-                          <p className="app-settings-hint" style={{ margin: '4px 0 0' }}>
-                            Leave both blank — this colors whichever field is actually showing the live score: the CURRENT set's own Per-Set Score field above (team-a-score-s2.Text while Set 2 is being played, etc.) if you've set one, otherwise the flat Score A/B Field. Only pick one here if you want a different field recolored instead.
-                          </p>
-                          {colorField('Game/Set/Match Point Color', t.pointWinColor, '#f1c40f', v => updateRacketTarget(idx, { pointWinColor: v }))}
-                          <p className="app-settings-hint" style={{ margin: '4px 0 0' }}>
-                            Colors the live score the instant that side's score reaches the winning number (15, or 17 once a deadlock raises it for sepaktakraw) and stays that color as the score keeps climbing — back to Default once this game ends or the other side is the one closing in.
-                          </p>
-                          {colorField('Live Score Default Color', t.pointDefaultColor, '#ffffff', v => updateRacketTarget(idx, { pointDefaultColor: v }))}
-                          <p className="app-settings-hint" style={{ margin: '4px 0 0' }}>
-                            What the live score reverts to the rest of the time — without this, the Point color above would only ever apply once and never clear.
                           </p>
                           <Field label="Server">
                             <CardSelect value={t.serverMode ?? 'text'} onChange={v => updateRacketTarget(idx, { serverMode: v })} columns={3}
