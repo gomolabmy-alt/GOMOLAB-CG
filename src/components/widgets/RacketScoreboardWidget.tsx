@@ -103,6 +103,17 @@ interface RacketVmixTarget {
   fieldGamesWonA?: string;
   fieldGamesWonB?: string;
   fieldSetLabel?: string;
+  /** Match-info fields — same ones a fixture carries (ScheduledMatch) and
+   *  auto-fill from it on load (Match Info section) — pushed as plain
+   *  text, same convention every other field here uses. Sport pushes the
+   *  sport's own display label (SPORT_LABELS[sport], e.g. "Sepak Takraw"),
+   *  not the internal sport id. */
+  fieldVenue?: string;
+  fieldDate?: string;
+  fieldTime?: string;
+  fieldCategory?: string;
+  fieldGroup?: string;
+  fieldSport?: string;
   /** Legacy — a plain prefix assuming the fixed shape "{prefix}{n}A.Text" /
    *  "{prefix}{n}B.Text" (e.g. "Set" → Set1A.Text/Set1B.Text). Still read as
    *  a fallback when neither template below is set, for whatever was
@@ -982,6 +993,8 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
           fieldTeamAShort: config.fieldTeamAShort, fieldTeamBShort: config.fieldTeamBShort,
           fieldTeamALogo: config.fieldTeamALogo, fieldTeamBLogo: config.fieldTeamBLogo,
           fieldSetLabel: config.fieldSetLabel, setScorePrefix: config.setScorePrefix,
+          fieldVenue: config.fieldVenue, fieldDate: config.fieldDate, fieldTime: config.fieldTime,
+          fieldCategory: config.fieldCategory, fieldGroup: config.fieldGroup, fieldSport: config.fieldSport,
           setScoreTemplateA: config.setScoreTemplateA, setScoreTemplateB: config.setScoreTemplateB,
           setScoreColorFieldA: config.setScoreColorFieldA, setScoreColorFieldB: config.setScoreColorFieldB,
           setScoreWinColor: config.setScoreWinColor, setScoreLoseColor: config.setScoreLoseColor,
@@ -1067,6 +1080,12 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
         const unit = scoringMode === 'tennis' || sport === 'sepaktakraw' ? 'Set' : 'Game';
         client.setTextField(t.inputKey, t.fieldSetLabel, matchOver ? 'Final' : `${unit} ${completedGames.length + 1}`);
       }
+      if (t.fieldVenue) client.setTextField(t.inputKey, t.fieldVenue, config.venue ?? '');
+      if (t.fieldDate) client.setTextField(t.inputKey, t.fieldDate, config.scheduledDate ?? '');
+      if (t.fieldTime) client.setTextField(t.inputKey, t.fieldTime, config.scheduledTime ?? '');
+      if (t.fieldCategory) client.setTextField(t.inputKey, t.fieldCategory, config.category ?? '');
+      if (t.fieldGroup) client.setTextField(t.inputKey, t.fieldGroup, config.group ?? '');
+      if (t.fieldSport) client.setTextField(t.inputKey, t.fieldSport, SPORT_LABELS[sport] ?? '');
       // Per-set score — one A/B pair per set, oldest first. Reserves a slot
       // for EVERY set this match could possibly reach (gamesToWin*2-1 — a
       // best-of-3 always gets 3, a best-of-5 always gets 5), not just
@@ -1187,6 +1206,7 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
     tennisState.pointsA, tennisState.pointsB, tennisState.tiebreakA, tennisState.tiebreakB, tennisState.inTiebreak,
     tennisState.gamesA, tennisState.gamesB, tennisState.sets, gamesWonA, gamesWonB, server, matchWinnerSide, teamTieWinner,
     config.startersA, config.startersB, config.playerCount, pointSigA, pointSigB,
+    config.venue, config.scheduledDate, config.scheduledTime, config.category, config.group, config.sport,
   ]);
 
   // ── Server triggers — any target with serverMode 'trigger' fires the
@@ -2600,6 +2620,22 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
             Category
             <input className="wgt-ctimer-settings-input" value={config.category ?? ''} onChange={e => updateWidgetConfig(widgetId, { category: e.target.value })} />
           </label>
+          <label className="wgt-ctimer-settings-row">
+            Group
+            <input className="wgt-ctimer-settings-input" value={config.group ?? ''} onChange={e => updateWidgetConfig(widgetId, { group: e.target.value })} />
+          </label>
+          <label className="wgt-ctimer-settings-row">
+            Venue
+            <input className="wgt-ctimer-settings-input" value={config.venue ?? ''} onChange={e => updateWidgetConfig(widgetId, { venue: e.target.value })} />
+          </label>
+          <label className="wgt-ctimer-settings-row">
+            Date
+            <input type="date" className="wgt-ctimer-settings-input" value={config.scheduledDate ?? ''} onChange={e => updateWidgetConfig(widgetId, { scheduledDate: e.target.value })} />
+          </label>
+          <label className="wgt-ctimer-settings-row">
+            Time
+            <input type="time" className="wgt-ctimer-settings-input" value={config.scheduledTime ?? ''} onChange={e => updateWidgetConfig(widgetId, { scheduledTime: e.target.value })} />
+          </label>
 
           <div className="wgt-ctimer-settings-divider" />
 
@@ -2674,6 +2710,36 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
                 Set/Game Label Field
                 <FieldPickerDropdown inputKey={config.vmixInputKey} value={config.fieldSetLabel ?? ''} allInputs={allVmixInputs}
                   onChange={v => updateWidgetConfig(widgetId, { fieldSetLabel: v })} placeholder="SetLabel.Text" />
+              </label>
+              <label className="wgt-ctimer-settings-row">
+                Venue Field
+                <FieldPickerDropdown inputKey={config.vmixInputKey} value={config.fieldVenue ?? ''} allInputs={allVmixInputs}
+                  onChange={v => updateWidgetConfig(widgetId, { fieldVenue: v })} placeholder="Venue.Text" />
+              </label>
+              <label className="wgt-ctimer-settings-row">
+                Date Field
+                <FieldPickerDropdown inputKey={config.vmixInputKey} value={config.fieldDate ?? ''} allInputs={allVmixInputs}
+                  onChange={v => updateWidgetConfig(widgetId, { fieldDate: v })} placeholder="Date.Text" />
+              </label>
+              <label className="wgt-ctimer-settings-row">
+                Time Field
+                <FieldPickerDropdown inputKey={config.vmixInputKey} value={config.fieldTime ?? ''} allInputs={allVmixInputs}
+                  onChange={v => updateWidgetConfig(widgetId, { fieldTime: v })} placeholder="Time.Text" />
+              </label>
+              <label className="wgt-ctimer-settings-row">
+                Category Field
+                <FieldPickerDropdown inputKey={config.vmixInputKey} value={config.fieldCategory ?? ''} allInputs={allVmixInputs}
+                  onChange={v => updateWidgetConfig(widgetId, { fieldCategory: v })} placeholder="Category.Text" />
+              </label>
+              <label className="wgt-ctimer-settings-row">
+                Group Field
+                <FieldPickerDropdown inputKey={config.vmixInputKey} value={config.fieldGroup ?? ''} allInputs={allVmixInputs}
+                  onChange={v => updateWidgetConfig(widgetId, { fieldGroup: v })} placeholder="Group.Text" />
+              </label>
+              <label className="wgt-ctimer-settings-row">
+                Sport Field
+                <FieldPickerDropdown inputKey={config.vmixInputKey} value={config.fieldSport ?? ''} allInputs={allVmixInputs}
+                  onChange={v => updateWidgetConfig(widgetId, { fieldSport: v })} placeholder="Sport.Text" />
               </label>
               <label className="wgt-ctimer-settings-row">
                 Per-Set Score — Team A

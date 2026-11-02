@@ -354,7 +354,7 @@ export function buildLoadMatchPatch(m: ScheduledMatch): Record<string, any> {
 export function buildLoadMatchPatchRacket(m: ScheduledMatch, opts?: { forceFullSets?: boolean; gamesToWin?: number }): Record<string, any> {
   return {
     competition: m.competition ?? '', subtitle: m.round ?? '', category: m.category ?? '',
-    group: m.group ?? '', tier: m.tier ?? '', scheduledTime: m.time ?? '',
+    group: m.group ?? '', tier: m.tier ?? '', scheduledTime: m.time ?? '', scheduledDate: m.date ?? '', venue: m.venue ?? '',
     teamAId: m.teamAId, teamAName: m.teamAName, teamAShortName: m.teamAShortName ?? '', teamAColor: m.teamAColor, teamALogo: m.teamALogo ?? '',
     teamBId: m.teamBId, teamBName: m.teamBName, teamBShortName: m.teamBShortName ?? '', teamBColor: m.teamBColor, teamBLogo: m.teamBLogo ?? '',
     rallyState: initRallyMatch(), tennisState: initTennisMatch(), pointHistory: [], pointLog: [],

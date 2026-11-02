@@ -1556,6 +1556,18 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
             <Field label="Tier">
               <input className="field-input" value={cfg.tier ?? ''} placeholder="e.g. Cup, Plate" onChange={e => up({ tier: e.target.value })} />
             </Field>
+            <Field label="Venue">
+              <input className="field-input" value={cfg.venue ?? ''} placeholder="e.g. Court 1, Main Arena" onChange={e => up({ venue: e.target.value })} />
+            </Field>
+            <Field label="Scheduled Date">
+              <input type="date" className="field-input" value={cfg.scheduledDate ?? ''} onChange={e => up({ scheduledDate: e.target.value })} />
+            </Field>
+            <Field label="Scheduled Time">
+              <input type="time" className="field-input" value={cfg.scheduledTime ?? ''} onChange={e => up({ scheduledTime: e.target.value })} />
+            </Field>
+            <p className="app-settings-hint" style={{ margin: '4px 0 0' }}>
+              Competition/Round/Category/Group/Tier/Venue/Date/Time all auto-fill from the fixture when one's loaded (Next Fixture, Send to Scoreboard) — fill them in by hand here only for a standalone board with nothing linked.
+            </p>
           </CollapsibleSection>
 
           <CollapsibleSection label="Scoring Rules">
@@ -1882,6 +1894,7 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
           fieldTeamALogo?: string; fieldTeamBLogo?: string;
           fieldGamesWonA?: string; fieldGamesWonB?: string;
           fieldSetLabel?: string; setScorePrefix?: string;
+          fieldVenue?: string; fieldDate?: string; fieldTime?: string; fieldCategory?: string; fieldGroup?: string; fieldSport?: string;
           setScoreTemplateA?: string; setScoreTemplateB?: string;
           /** UI-only — which editor these two show as (both store into the
            *  same setScoreTemplateA/B either way). 'picker' (default) lets
@@ -1921,6 +1934,8 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
                 fieldTeamALogo: cfg.fieldTeamALogo, fieldTeamBLogo: cfg.fieldTeamBLogo,
                 fieldGamesWonA: cfg.fieldGamesWonA, fieldGamesWonB: cfg.fieldGamesWonB,
                 fieldSetLabel: cfg.fieldSetLabel, setScorePrefix: cfg.setScorePrefix,
+                fieldVenue: cfg.fieldVenue, fieldDate: cfg.fieldDate, fieldTime: cfg.fieldTime,
+                fieldCategory: cfg.fieldCategory, fieldGroup: cfg.fieldGroup, fieldSport: cfg.fieldSport,
                 setScoreTemplateA: cfg.setScoreTemplateA, setScoreTemplateB: cfg.setScoreTemplateB,
                 setScoreColorFieldA: cfg.setScoreColorFieldA, setScoreColorFieldB: cfg.setScoreColorFieldB,
                 setScoreWinColor: cfg.setScoreWinColor, setScoreLoseColor: cfg.setScoreLoseColor,
@@ -2010,6 +2025,12 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
                           {exactField(t, idx, 'fieldGamesWonA', 'Sets Won A Field', 'SetsWonA.Text')}
                           {exactField(t, idx, 'fieldGamesWonB', 'Sets Won B Field', 'SetsWonB.Text')}
                           {exactField(t, idx, 'fieldSetLabel', 'Set/Game Label Field', 'SetLabel.Text')}
+                          {exactField(t, idx, 'fieldVenue', 'Venue Field', 'Venue.Text')}
+                          {exactField(t, idx, 'fieldDate', 'Date Field', 'Date.Text')}
+                          {exactField(t, idx, 'fieldTime', 'Time Field', 'Time.Text')}
+                          {exactField(t, idx, 'fieldCategory', 'Category Field', 'Category.Text')}
+                          {exactField(t, idx, 'fieldGroup', 'Group Field', 'Group.Text')}
+                          {exactField(t, idx, 'fieldSport', 'Sport Field', 'Sport.Text')}
                           <Field label="Per-Set Score Fields">
                             <CardSelect value={t.setScoreTemplateMode ?? 'picker'} onChange={v => updateRacketTarget(idx, { setScoreTemplateMode: v })} columns={2}
                               options={[
