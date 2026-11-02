@@ -166,14 +166,18 @@ interface RacketVmixTarget {
    *  vMix title itself happens to default a Text field to. Optional —
    *  unset leaves undecided sets at the title's own default color. */
   setScoreDefaultColor?: string;
-  /** Colors the LIVE score field (fieldScoreA/B above by default —
-   *  pointWinColorFieldA/B below override just this, same "blank means use
-   *  the Text field's own name" convention setScoreColorFieldA/B uses) the
+  /** Colors whichever field is actually showing the live score — by
+   *  default, the CURRENT set's own Per-Set Score field (setScoreTemplateA/
+   *  B above, expanded for whichever set is live right now), falling back
+   *  to fieldScoreA/B when no per-set template is set. pointWinColorFieldA/
+   *  B below override this with an explicit field instead. Fires the
    *  instant that side reaches a point that would win the current game/
    *  set/match — same pointSigA/B detection the on-screen Game/Set/Match
-   *  Point badge already uses. pointDefaultColor is what it reverts to the
-   *  rest of the time (point lost, new game started, etc.) — without it,
-   *  the win color would only ever apply once and never clear. */
+   *  Point badge already uses — and runs AFTER the per-set score push so it
+   *  wins over that block's own Set Default Color on the live slot.
+   *  pointDefaultColor is what it reverts to the rest of the time (point
+   *  lost, new game started, etc.) — without it, the win color would only
+   *  ever apply once and never clear. */
   pointWinColorFieldA?: string;
   pointWinColorFieldB?: string;
   pointWinColor?: string;
@@ -1052,24 +1056,6 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
       if (!t.inputKey) continue;
       if (t.fieldScoreA) client.setTextField(t.inputKey, t.fieldScoreA, label);
       if (t.fieldScoreB) client.setTextField(t.inputKey, t.fieldScoreB, labelB);
-      // Game/Set/Match Point color — the LIVE score field (fieldScoreA/B
-      // above, or a dedicated override) changes color the instant that
-      // side reaches a point that would WIN the game/set/match, same
-      // detection the on-screen badge (pointSigA/B) already uses, and back
-      // to pointDefaultColor the instant it no longer does (point lost,
-      // next game, etc.) — not just a one-way color change.
-      if (t.pointWinColor || t.pointDefaultColor) {
-        const colorFieldA = t.pointWinColorFieldA || t.fieldScoreA;
-        const colorFieldB = t.pointWinColorFieldB || t.fieldScoreB;
-        if (colorFieldA) {
-          const color = pointSigA ? t.pointWinColor : t.pointDefaultColor;
-          if (color) client.setTextColor(t.inputKey, colorFieldA, toArgbHex(color));
-        }
-        if (colorFieldB) {
-          const color = pointSigB ? t.pointWinColor : t.pointDefaultColor;
-          if (color) client.setTextColor(t.inputKey, colorFieldB, toArgbHex(color));
-        }
-      }
       if (t.fieldTeamA && config.teamAName != null) client.setTextField(t.inputKey, t.fieldTeamA, config.teamAName);
       if (t.fieldTeamB && config.teamBName != null) client.setTextField(t.inputKey, t.fieldTeamB, config.teamBName);
       if (t.fieldTeamAShort) client.setTextField(t.inputKey, t.fieldTeamAShort, config.teamAShortName ?? '');
@@ -1184,6 +1170,34 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
             if (!isNaN(n) && n > maxSets) client.setTextField(t.inputKey, field.name, '');
           }
         }
+      }
+      // Game/Set/Match Point color — the instant that side reaches a point
+      // that would WIN the game/set/match, same detection the on-screen
+      // badge (pointSigA/B) already uses, and back to pointDefaultColor the
+      // instant it no longer does — not just a one-way color change. Runs
+      // AFTER the per-set block above (not alongside it) so it wins over
+      // that block's own Default Color on the CURRENT slot — a win-point
+      // highlight should show even with a Set Default Color also set.
+      // Target priority: an explicit override field -> the CURRENT set's
+      // own Per-Set Score field (same {n} template convention, expanded for
+      // whichever set is live right now — the common case, since most
+      // setups show the live score through the per-set box rather than a
+      // separate flat field) -> the flat Score A/B field as a last resort
+      // for a target that never set up per-set templates at all. Falls back
+      // to the SAME default swatch values the pickers themselves show
+      // (#f1c40f/#ffffff) when only ONE of Win/Default was ever actually
+      // touched — the swatch default is cosmetic only, never saved to
+      // config until clicked, so leaving the OTHER one alone used to mean
+      // it just never got colored at all once this side stopped being at
+      // point-to-win.
+      if (t.pointWinColor || t.pointDefaultColor) {
+        const currentSetNumber = completedGames.length + 1;
+        const liveFieldA = t.pointWinColorFieldA || (templateA && expandSetTemplate(templateA, currentSetNumber)) || t.fieldScoreA;
+        const liveFieldB = t.pointWinColorFieldB || (templateB && expandSetTemplate(templateB, currentSetNumber)) || t.fieldScoreB;
+        const winColor = t.pointWinColor || '#f1c40f';
+        const defaultColor = t.pointDefaultColor || '#ffffff';
+        if (liveFieldA) client.setTextColor(t.inputKey, liveFieldA, toArgbHex(pointSigA ? winColor : defaultColor));
+        if (liveFieldB) client.setTextColor(t.inputKey, liveFieldB, toArgbHex(pointSigB ? winColor : defaultColor));
       }
       // Starting lineup — one Name/Jersey/Position triple per starter slot
       // (1-based), same template + stale-clear approach as the per-set
@@ -2786,42 +2800,75 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
               </p>
               <label className="wgt-ctimer-settings-row">
                 Team A Color Field Override (optional)
-                <input className="wgt-ctimer-settings-input" value={config.setScoreColorFieldA ?? ''} placeholder="Leave blank to color Team A's Per-Set field above directly"
-                  onChange={e => updateWidgetConfig(widgetId, { setScoreColorFieldA: e.target.value })} />
+                <FieldPickerDropdown inputKey={config.vmixInputKey} value={config.setScoreColorFieldA ?? ''} allInputs={allVmixInputs}
+                  onChange={v => updateWidgetConfig(widgetId, { setScoreColorFieldA: v })} placeholder="Same as Team A's Per-Set field if blank" />
               </label>
               <label className="wgt-ctimer-settings-row">
                 Team B Color Field Override (optional)
-                <input className="wgt-ctimer-settings-input" value={config.setScoreColorFieldB ?? ''} placeholder="Leave blank to color Team B's Per-Set field above directly"
-                  onChange={e => updateWidgetConfig(widgetId, { setScoreColorFieldB: e.target.value })} />
+                <FieldPickerDropdown inputKey={config.vmixInputKey} value={config.setScoreColorFieldB ?? ''} allInputs={allVmixInputs}
+                  onChange={v => updateWidgetConfig(widgetId, { setScoreColorFieldB: v })} placeholder="Same as Team B's Per-Set field if blank" />
               </label>
               <p className="app-settings-hint" style={{ margin: '2px 0 8px' }}>
-                Leave both blank — the score number's own Text field gets its font color changed directly, no extra setup needed in vMix. Only fill one in if you want a DIFFERENT element recolored instead of the score text itself.
+                Leave both blank — the score number's own Text field gets its font color changed directly, no extra setup needed in vMix. Only pick one if you want a DIFFERENT field recolored instead of the score text itself.
               </p>
               <label className="wgt-ctimer-settings-row">
                 Set Won Color
-                <input type="color" value={config.setScoreWinColor ?? '#2ecc71'} onChange={e => updateWidgetConfig(widgetId, { setScoreWinColor: e.target.value })} />
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <input type="color" value={config.setScoreWinColor ?? '#2ecc71'} onChange={e => updateWidgetConfig(widgetId, { setScoreWinColor: e.target.value })} />
+                  <input className="wgt-ctimer-settings-input" style={{ width: 80, fontFamily: 'var(--font-mono)', fontSize: 11 }} value={config.setScoreWinColor ?? '#2ecc71'}
+                    onChange={e => updateWidgetConfig(widgetId, { setScoreWinColor: e.target.value })} placeholder="#2ecc71" />
+                </div>
               </label>
               <label className="wgt-ctimer-settings-row">
                 Set Lost Color
-                <input type="color" value={config.setScoreLoseColor ?? '#e74c3c'} onChange={e => updateWidgetConfig(widgetId, { setScoreLoseColor: e.target.value })} />
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <input type="color" value={config.setScoreLoseColor ?? '#e74c3c'} onChange={e => updateWidgetConfig(widgetId, { setScoreLoseColor: e.target.value })} />
+                  <input className="wgt-ctimer-settings-input" style={{ width: 80, fontFamily: 'var(--font-mono)', fontSize: 11 }} value={config.setScoreLoseColor ?? '#e74c3c'}
+                    onChange={e => updateWidgetConfig(widgetId, { setScoreLoseColor: e.target.value })} placeholder="#e74c3c" />
+                </div>
               </label>
               <p className="app-settings-hint" style={{ margin: '2px 0 8px' }}>
                 The instant a set's decided, the score number itself changes to this color automatically — winner's score this color, loser's score the other. No separate trigger to set up.
               </p>
               <label className="wgt-ctimer-settings-row">
                 Default Color (not yet decided)
-                <input type="color" value={config.setScoreDefaultColor ?? '#ffffff'} onChange={e => updateWidgetConfig(widgetId, { setScoreDefaultColor: e.target.value })} />
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <input type="color" value={config.setScoreDefaultColor ?? '#ffffff'} onChange={e => updateWidgetConfig(widgetId, { setScoreDefaultColor: e.target.value })} />
+                  <input className="wgt-ctimer-settings-input" style={{ width: 80, fontFamily: 'var(--font-mono)', fontSize: 11 }} value={config.setScoreDefaultColor ?? '#ffffff'}
+                    onChange={e => updateWidgetConfig(widgetId, { setScoreDefaultColor: e.target.value })} placeholder="#ffffff" />
+                </div>
               </label>
               <p className="app-settings-hint" style={{ margin: '2px 0 8px' }}>
                 Applied to the set currently being played and any set not reached yet — so every box has a consistent, app-controlled color even before it's won or lost, instead of whatever color the vMix title itself defaults to.
               </p>
               <label className="wgt-ctimer-settings-row">
+                Team A Live Score Color Field Override (optional)
+                <FieldPickerDropdown inputKey={config.vmixInputKey} value={config.pointWinColorFieldA ?? ''} allInputs={allVmixInputs}
+                  onChange={v => updateWidgetConfig(widgetId, { pointWinColorFieldA: v })} placeholder="Auto: current set's Per-Set field, or Score A Field" />
+              </label>
+              <label className="wgt-ctimer-settings-row">
+                Team B Live Score Color Field Override (optional)
+                <FieldPickerDropdown inputKey={config.vmixInputKey} value={config.pointWinColorFieldB ?? ''} allInputs={allVmixInputs}
+                  onChange={v => updateWidgetConfig(widgetId, { pointWinColorFieldB: v })} placeholder="Auto: current set's Per-Set field, or Score B Field" />
+              </label>
+              <p className="app-settings-hint" style={{ margin: '2px 0 8px' }}>
+                Leave both blank — this colors whichever field is actually showing the live score: the CURRENT set's own Per-Set Score field (team-a-score-s2.Text while Set 2 is being played, etc.) if you've set one, otherwise the flat Score A/B Field.
+              </p>
+              <label className="wgt-ctimer-settings-row">
                 Game/Set/Match Point Color
-                <input type="color" value={config.pointWinColor ?? '#f1c40f'} onChange={e => updateWidgetConfig(widgetId, { pointWinColor: e.target.value })} />
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <input type="color" value={config.pointWinColor ?? '#f1c40f'} onChange={e => updateWidgetConfig(widgetId, { pointWinColor: e.target.value })} />
+                  <input className="wgt-ctimer-settings-input" style={{ width: 80, fontFamily: 'var(--font-mono)', fontSize: 11 }} value={config.pointWinColor ?? '#f1c40f'}
+                    onChange={e => updateWidgetConfig(widgetId, { pointWinColor: e.target.value })} placeholder="#f1c40f" />
+                </div>
               </label>
               <label className="wgt-ctimer-settings-row">
                 Live Score Default Color
-                <input type="color" value={config.pointDefaultColor ?? '#ffffff'} onChange={e => updateWidgetConfig(widgetId, { pointDefaultColor: e.target.value })} />
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <input type="color" value={config.pointDefaultColor ?? '#ffffff'} onChange={e => updateWidgetConfig(widgetId, { pointDefaultColor: e.target.value })} />
+                  <input className="wgt-ctimer-settings-input" style={{ width: 80, fontFamily: 'var(--font-mono)', fontSize: 11 }} value={config.pointDefaultColor ?? '#ffffff'}
+                    onChange={e => updateWidgetConfig(widgetId, { pointDefaultColor: e.target.value })} placeholder="#ffffff" />
+                </div>
               </label>
               <p className="app-settings-hint" style={{ margin: '2px 0 8px' }}>
                 Colors the LIVE Score A/B Field above the instant that side reaches a point that would win the game/set/match (same moment the on-screen badge shows) — back to Default the rest of the time.
