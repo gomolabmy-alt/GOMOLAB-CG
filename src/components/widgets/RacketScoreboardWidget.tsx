@@ -114,6 +114,13 @@ interface RacketVmixTarget {
   fieldCategory?: string;
   fieldGroup?: string;
   fieldSport?: string;
+  /** Combines any of the Match Info fields above into ONE string on a
+   *  single field instead of separate ones (see WidgetConfigPanel's
+   *  drag-to-reorder MergeFieldComposer) — same convention Match
+   *  Schedule's own fixture merge uses. */
+  mergedDetailsPrefix?: string;
+  mergedDetailsParts?: string[];
+  mergedDetailsSeparator?: string;
   /** Legacy — a plain prefix assuming the fixed shape "{prefix}{n}A.Text" /
    *  "{prefix}{n}B.Text" (e.g. "Set" → Set1A.Text/Set1B.Text). Still read as
    *  a fallback when neither template below is set, for whatever was
@@ -1086,6 +1093,24 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
       if (t.fieldCategory) client.setTextField(t.inputKey, t.fieldCategory, config.category ?? '');
       if (t.fieldGroup) client.setTextField(t.inputKey, t.fieldGroup, config.group ?? '');
       if (t.fieldSport) client.setTextField(t.inputKey, t.fieldSport, SPORT_LABELS[sport] ?? '');
+      if (t.mergedDetailsPrefix && t.mergedDetailsParts?.length) {
+        const resolveDetailsPart = (part: string): string => {
+          switch (part) {
+            case 'competition': return config.competition ?? '';
+            case 'round': return config.subtitle ?? '';
+            case 'category': return config.category ?? '';
+            case 'group': return config.group ?? '';
+            case 'tier': return config.tier ?? '';
+            case 'venue': return config.venue ?? '';
+            case 'date': return config.scheduledDate ?? '';
+            case 'time': return config.scheduledTime ?? '';
+            case 'sport': return SPORT_LABELS[sport] ?? '';
+            default: return '';
+          }
+        };
+        const merged = t.mergedDetailsParts.map(resolveDetailsPart).join(t.mergedDetailsSeparator ?? ' ');
+        client.setTextField(t.inputKey, t.mergedDetailsPrefix, merged);
+      }
       // Per-set score — one A/B pair per set, oldest first. Reserves a slot
       // for EVERY set this match could possibly reach (gamesToWin*2-1 — a
       // best-of-3 always gets 3, a best-of-5 always gets 5), not just

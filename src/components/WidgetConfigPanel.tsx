@@ -538,6 +538,23 @@ const SCORE_STYLES = [
 // just concatenable into one string instead, in whatever order the
 // operator drags them (see MergeFieldComposer.tsx).
 export type FixturePart = 'teamA' | 'teamB' | 'date' | 'time' | 'round' | 'venue';
+// Racket scoreboard's own Match Info fields (see its 'Match Info' section)
+// merged into one field instead of pushed separately — same catalog shape/
+// convention FIXTURE_MERGE_PARTS below already uses, just this widget's
+// own set of fields (including Sport, which Match Schedule's fixtures
+// don't carry individually).
+const RACKET_DETAILS_MERGE_PARTS: MergePart[] = [
+  { key: 'competition', label: 'Competition', sample: 'Open Championship' },
+  { key: 'round',       label: 'Round/Subtitle', sample: 'Final' },
+  { key: 'category',    label: 'Category',    sample: 'Men' },
+  { key: 'group',       label: 'Group',       sample: 'Group A' },
+  { key: 'tier',        label: 'Tier',        sample: 'Cup' },
+  { key: 'venue',       label: 'Venue',       sample: 'Court 1' },
+  { key: 'date',        label: 'Date',        sample: '2026-08-20' },
+  { key: 'time',        label: 'Time',        sample: '19:00' },
+  { key: 'sport',       label: 'Sport',       sample: 'Sepak Takraw' },
+];
+
 const FIXTURE_MERGE_PARTS: MergePart[] = [
   { key: 'teamA', label: 'Team A', sample: 'Chelsea' },
   { key: 'teamB', label: 'Team B', sample: 'Arsenal' },
@@ -1895,6 +1912,7 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
           fieldGamesWonA?: string; fieldGamesWonB?: string;
           fieldSetLabel?: string; setScorePrefix?: string;
           fieldVenue?: string; fieldDate?: string; fieldTime?: string; fieldCategory?: string; fieldGroup?: string; fieldSport?: string;
+          mergedDetailsPrefix?: string; mergedDetailsParts?: string[]; mergedDetailsSeparator?: string;
           setScoreTemplateA?: string; setScoreTemplateB?: string;
           /** UI-only — which editor these two show as (both store into the
            *  same setScoreTemplateA/B either way). 'picker' (default) lets
@@ -2031,6 +2049,21 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
                           {exactField(t, idx, 'fieldCategory', 'Category Field', 'Category.Text')}
                           {exactField(t, idx, 'fieldGroup', 'Group Field', 'Group.Text')}
                           {exactField(t, idx, 'fieldSport', 'Sport Field', 'Sport.Text')}
+                          <MergeFieldComposer
+                            parts={RACKET_DETAILS_MERGE_PARTS}
+                            mergedParts={t.mergedDetailsParts ?? []}
+                            mergedPrefix={t.mergedDetailsPrefix ?? ''}
+                            mergedSeparator={t.mergedDetailsSeparator ?? ' '}
+                            onChange={patch => updateRacketTarget(idx, {
+                              ...(patch.mergedParts !== undefined ? { mergedDetailsParts: patch.mergedParts } : {}),
+                              ...(patch.mergedPrefix !== undefined ? { mergedDetailsPrefix: patch.mergedPrefix } : {}),
+                              ...(patch.mergedSeparator !== undefined ? { mergedDetailsSeparator: patch.mergedSeparator } : {}),
+                            })}
+                            inputKey={t.inputKey}
+                            allInputs={allInputs}
+                            dragKey={`racket-${t.id}-details`}
+                            fieldLabel="Match details merged field"
+                          />
                           <Field label="Per-Set Score Fields">
                             <CardSelect value={t.setScoreTemplateMode ?? 'picker'} onChange={v => updateRacketTarget(idx, { setScoreTemplateMode: v })} columns={2}
                               options={[
