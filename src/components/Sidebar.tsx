@@ -423,6 +423,14 @@ function VmixConnectPanel({ onClose, anchorRef }: { onClose: () => void; anchorR
         <button
           className="titlebar-scan-btn"
           type="button"
+          onClick={() => quickConnect('127.0.0.1')}
+          title="vMix running right here on this computer — skip Scan/typing an IP entirely"
+        >
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><Monitor size={12} strokeWidth={2} /> This Device</span>
+        </button>
+        <button
+          className="titlebar-scan-btn"
+          type="button"
           onClick={handleScan}
           disabled={scanState === 'scanning'}
         >

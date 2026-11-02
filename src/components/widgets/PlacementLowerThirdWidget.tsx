@@ -79,7 +79,7 @@ export function PlacementLowerThirdWidget({ widgetId, config, outputOnly }: Prop
   const resolveSlotTeam = (slot: PlacementSlot): ResolvedPlacementTeam | null => {
     if (slot.manualTeamName?.trim()) return { name: slot.manualTeamName.trim(), color: '#7f8c8d' };
     if (!tournamentId || !settings || needsCategoryPick) return null;
-    return resolvePlacementTeam(slot.rank, scopedMatches, scopedResults, scopedTeams, tournamentId, settings);
+    return resolvePlacementTeam(slot.rank, scopedMatches, scopedResults, scopedTeams, tournamentId, settings, tournament?.sport);
   };
 
   const [selectedId, setSelectedId] = useState<string | null>(null);

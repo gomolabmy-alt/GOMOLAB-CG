@@ -6,12 +6,15 @@ import { useMatchResultsStore } from '../../stores/matchResultsStore';
 import { useAppSettings } from '../../stores/appSettingsStore';
 import { useVmixStore } from '../../stores/vmixStore';
 import { resolveImageUrl, transparentLogoUrl, clearStaleLogoSlots } from '../../lib/imageUrl';
-import { guardScoreboardOverwrite, buildLoadMatchPatch, useLiveFixtureIds, findDuplicateResult, parseScheduledDateTime, formatLate } from '../../utils/scoreboardSnapshot';
+import { guardScoreboardOverwrite, buildLoadMatchPatch, buildLoadMatchPatchRacket, deriveRacketResultConfig, useLiveFixtureIds, findDuplicateResult, parseScheduledDateTime, formatLate } from '../../utils/scoreboardSnapshot';
 import { useMatchNumbers } from '../../utils/matchNumber';
 import { ConfirmButton } from '../ConfirmButton';
 import { ConfirmModal } from '../ConfirmModal';
 import { CanvasActionContext } from '../../lib/canvasContext';
 import { autoLinkedWidget, autoLinkedWidgetId } from '../../lib/autoLink';
+import { useTournamentStore } from '../../stores/tournamentStore';
+import { SPORT_DEFAULTS } from '../../types/tournament';
+import { extractKnockoutStage } from '../TournamentManager';
 
 /** One vMix input's fixture-list field mapping — every prefix is optional
  *  (blank = don't push that field); indices are 1-based per fixture row,
@@ -120,10 +123,13 @@ export function MatchScheduleWidget({ widgetId, config }: Props) {
     [allMatches, effectiveTournamentId, effectiveVenue, effectiveCategory, effectiveGroup]
   );
 
+  const { tournaments } = useTournamentStore();
   const allWidgets = useMemo(() => pages.flatMap(p => p.widgets), [pages]);
-  // Falls back to the sole Scoreboard widget on this page when nothing's
-  // been explicitly linked in settings — an explicit pick always wins.
-  const targetScoreboard = autoLinkedWidget(pages, widgetId, config.linkedScoreboardId, 'scoreboard') ?? null;
+  // Falls back to the sole Scoreboard (plain OR racket — badminton/table
+  // tennis/tennis/sepaktakraw) widget on this page when nothing's been
+  // explicitly linked in settings — an explicit pick always wins.
+  const targetScoreboard = autoLinkedWidget(pages, widgetId, config.linkedScoreboardId, ['scoreboard', 'racket-scoreboard']) ?? null;
+  const targetIsRacket = targetScoreboard?.type === 'racket-scoreboard';
 
   const sentCount = matches.filter(m => m.sentAt).length;
   const liveFixtureIds = useLiveFixtureIds();
@@ -247,8 +253,23 @@ export function MatchScheduleWidget({ widgetId, config }: Props) {
     const targetTimerCfg = allWidgets.find(w => w.id === targetTimerId)?.config;
     // Protects the outgoing match on the target scoreboard: auto-saves it if
     // it was never saved, or confirms before overwriting if it already was.
-    if (!guardScoreboardOverwrite(targetScoreboard.config, addResult, targetTimerCfg)) return;
-    updateWidgetConfig(targetScoreboard.id, buildLoadMatchPatch(m));
+    // A racket-scoreboard target tracks its live score as rallyState/
+    // tennisState rather than plain scoreA/scoreB — deriveRacketResultConfig
+    // reshapes it into the same plain shape guardScoreboardOverwrite expects
+    // (see its own doc comment).
+    const guardCfg = targetIsRacket ? deriveRacketResultConfig(targetScoreboard.config) : targetScoreboard.config;
+    if (!guardScoreboardOverwrite(guardCfg, addResult, targetTimerCfg)) return;
+    // Group-stage fixture + the tournament's own "Play Full Sets in Group
+    // Stage" setting (RacketSportSettings.forceFullSetsInGroupStage) =
+    // force every set to be played out, so standings have a full set-score
+    // record to rank ties on — never applied to a knockout fixture, no
+    // matter the setting, since there's nothing to rank there.
+    const mTournament = tournaments.find(t => t.id === m.tournamentId);
+    const rsGroup = mTournament ? (mTournament.settings ?? SPORT_DEFAULTS[mTournament.sport]).racketScoring ?? SPORT_DEFAULTS[mTournament.sport].racketScoring : undefined;
+    const isGroupStage = targetIsRacket && !extractKnockoutStage(m) && m.group !== '3rd Place';
+    updateWidgetConfig(targetScoreboard.id, targetIsRacket
+      ? buildLoadMatchPatchRacket(m, { forceFullSets: isGroupStage && !!rsGroup?.forceFullSetsInGroupStage, gamesToWin: rsGroup?.gamesToWin })
+      : buildLoadMatchPatch(m));
     if (targetTimerId) resetWidgetTimer(targetTimerId);
     markSent(m.id);
   };

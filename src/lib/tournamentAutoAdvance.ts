@@ -326,7 +326,7 @@ export function runTournamentAutoAdvance() {
           const groupTeams = scopedTeams.filter(x => x.group === g.name && (cat === undefined || x.category === cat));
           // Only pool-stage results decide who advances — a same-group
           // rematch inside the bracket/wildcard stage must not count twice.
-          standingsByGroup.set(g.name, computeStandings(groupTeams, scopedResults.filter(isPoolStageResult), settings));
+          standingsByGroup.set(g.name, computeStandings(groupTeams, scopedResults.filter(isPoolStageResult), settings, t.sport));
         }
         if (standingsByGroup.size === 0) continue;
 
@@ -334,6 +334,15 @@ export function runTournamentAutoAdvance() {
           for (const side of ['A', 'B'] as const) {
             const curName = side === 'A' ? m.teamAName : m.teamBName;
             if (!curName) continue;
+            // A "Manual pick" side waits for the operator's own choice in
+            // the Bracket tab — never auto-resolved from standings, even
+            // once the feeding group is fully decided. Checked per SIDE (not
+            // the whole match) since a bracket's two sides can independently
+            // be manual or automatic — e.g. one side was explicitly set to
+            // TBD from the Edit Arrangement dropdown while the other was
+            // left on its original automatic fill (see
+            // teamAPlaceholder/teamBPlaceholder's own doc comment).
+            if (side === 'A' ? m.teamAPlaceholder : m.teamBPlaceholder) continue;
 
             const wildcardMatch = curName.match(wildcardRe);
             if (wildcardMatch) {

@@ -5513,6 +5513,7 @@ function ElementInspector({ el, elements, otherWidgets, onConfigChange, onBindin
                   <option value="pointsAgainst">Points Against</option>
                   <option value="diff">Diff (+/-)</option>
                   <option value="pts">Pts</option>
+                  <option value="rankChange">Rank Change (▲/▼/–)</option>
                 </>
               ) : (
                 <option value="teamLogo">Team Logo</option>

@@ -148,7 +148,11 @@ export type MatchScheduleRole =
 export type StandingsRole =
   | 'rank' | 'teamName' | 'shortName' | 'teamLogo'
   | 'played' | 'won' | 'drawn' | 'lost'
-  | 'pointsFor' | 'pointsAgainst' | 'diff' | 'pts';
+  | 'pointsFor' | 'pointsAgainst' | 'diff' | 'pts'
+  /** ▲1 / ▼2 / – text — see computeStandings' own StandingRow.rankChange
+   *  and formatRankChange (TournamentManager.tsx) for what moved this
+   *  team's rank and how it's formatted. */
+  | 'rankChange';
 
 /** Which field of the CURRENT box's own knockout match a 'bracket' row
  *  template's element shows — see TemplateElement's own `bracketRole` doc

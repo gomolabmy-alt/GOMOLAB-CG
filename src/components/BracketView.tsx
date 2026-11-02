@@ -1,7 +1,9 @@
 import { useMemo, useRef, useState, useEffect } from 'react';
-import { Medal, Check, Pencil } from 'lucide-react';
+import { Medal, Check, Pencil, Wand2, RotateCcw } from 'lucide-react';
 import { useMatchScheduleStore, type ScheduledMatch } from '../stores/matchScheduleStore';
 import type { SavedMatchResult } from '../stores/matchResultsStore';
+import { useCanvasStore } from '../stores/canvasStore';
+import { buildGroupKnockoutSlots, PLACEHOLDER_COLOR, type ScheduleTeamRef } from '../lib/scheduleGen';
 import {
   ScheduleBadge, extractKnockoutStage, knockoutStageSize, computeBracketCenters, findMatchScore, findMatchWinner,
   BRACKET_MATCH_H, BRACKET_BASE_GAP, BRACKET_COL_W, BRACKET_COL_GAP,
@@ -27,6 +29,12 @@ export interface BracketViewProps {
    *  doesn't otherwise carry (and, for a tiered tournament, must be scoped
    *  to the SAME tier these `matches` belong to). */
   onAddThirdPlace?: () => void;
+  /** Looks up the real teams sitting in a Draw group by name, category-
+   *  scoped by the caller — powers the manual winner/runner-up pick dropdown
+   *  for a Round 1 slot generated with "Manual pick" fill mode (see
+   *  ScheduledMatch.knockoutManualFill). Omitted (e.g. the read-only OBS
+   *  bracket widget) just means that control never renders. */
+  resolveGroupTeams?: (groupName: string) => ScheduleTeamRef[];
 }
 
 // Shared bracket-tree renderer — the geometry/rendering half of what used to
@@ -35,7 +43,7 @@ export interface BracketViewProps {
 // OBS overlay), which had drifted into two near-identical copies of the same
 // stage-bucketing + SVG-connector + 3rd-place-column code. Extracted so a
 // Cup/Plate/Bowl/Shield tournament's per-tier brackets don't need a third copy.
-export function BracketView({ matches, thirdPlaceMatch, results, tournamentId, editable, onSelectTeam, onAddThirdPlace }: BracketViewProps) {
+export function BracketView({ matches, thirdPlaceMatch, results, tournamentId, editable, onSelectTeam, onAddThirdPlace, resolveGroupTeams }: BracketViewProps) {
   const { updateMatch } = useMatchScheduleStore();
   const [editMode, setEditMode] = useState(false);
 
@@ -181,6 +189,107 @@ export function BracketView({ matches, thirdPlaceMatch, results, tournamentId, e
     }
   };
 
+  // "Auto-arrange" — snaps Round 1 back to the same clash-avoidance pairing
+  // buildGroupKnockoutSlots itself would generate (1st vs 2nd of another
+  // group, group-mates avoided where possible), in one click, instead of
+  // re-dragging every slot back by hand via the dropdowns above. Only
+  // offered while every Round 1 name still looks like a group-stage
+  // placeholder ("1st Group A", "2nd Pool B", …, exactly what placeholder()
+  // in scheduleGen.ts produces) — once any slot holds a REAL team name
+  // (group stage finished and auto-advance filled it in, or the operator
+  // typed/picked a real team manually), there's no reliable way to recover
+  // which pool/rank it came from, so re-auto-arranging could silently
+  // produce a nonsense bracket instead of just refusing.
+  const PLACEHOLDER_RANK_RE = /^(\d+)(?:st|nd|rd|th)\s+(.+)$/;
+  const parsedPlaceholders = useMemo(
+    () => round1Slots.map(s => PLACEHOLDER_RANK_RE.exec(s.name)),
+    [round1Slots],
+  );
+  const autoArrangeAvailable = round1Slots.length > 0 && parsedPlaceholders.every(p => p !== null);
+  const autoArrangeRound1 = () => {
+    if (!autoArrangeAvailable) return;
+    // Reconstructs each pool's size as "the highest rank actually seen for
+    // it" — the real pool could have more teams than that, but
+    // buildGroupKnockoutSlots only ever checks `size >= rank` for ranks up
+    // to advanceCount, so this is exactly enough information to reproduce
+    // the identical result a fresh auto-generation would have.
+    const poolMaxRank = new Map<string, number>();
+    for (const m of parsedPlaceholders) {
+      if (!m) continue;
+      const rank = parseInt(m[1], 10);
+      poolMaxRank.set(m[2], Math.max(poolMaxRank.get(m[2]) ?? 0, rank));
+    }
+    const pools = Array.from(poolMaxRank.entries()).map(([name, size]) => ({ name, size }));
+    const advanceCount = Math.max(...Array.from(poolMaxRank.values()));
+    const arranged = buildGroupKnockoutSlots(pools, advanceCount);
+    const round1 = stages[0]?.[1] ?? [];
+    arranged.forEach((entrant, i) => {
+      const match = round1[Math.floor(i / 2)];
+      if (!match) return;
+      const patch = i % 2 === 0
+        ? { teamAName: entrant.name, teamAShortName: undefined, teamAColor: entrant.color, teamALogo: undefined }
+        : { teamBName: entrant.name, teamBShortName: undefined, teamBColor: entrant.color, teamBLogo: undefined };
+      updateMatch(match.id, patch);
+    });
+  };
+
+  // Manual winner/runner-up pick (Round 1 "Manual pick" fill mode) — fills
+  // a still-unresolved "1st Group A" placeholder with a real team the
+  // operator chooses directly, instead of waiting for (or in place of) the
+  // automatic standings-based fill that knockoutManualFill suppresses. Also
+  // syncs any scoreboard already loaded with the placeholder, same as the
+  // automatic fill does (see tournamentAutoAdvance.ts).
+  const pickManualTeam = (matchId: string, side: 'A' | 'B', oldPlaceholder: string, team: ScheduleTeamRef) => {
+    updateMatch(matchId, side === 'A'
+      ? { teamAId: team.id, teamAName: team.name, teamAShortName: team.shortName, teamAColor: team.color, teamALogo: team.logo }
+      : { teamBId: team.id, teamBName: team.name, teamBShortName: team.shortName, teamBColor: team.color, teamBLogo: team.logo });
+    useCanvasStore.getState().syncScoreboardTeamForFixture(matchId, side, oldPlaceholder, team);
+  };
+
+  // Clears an already-made manual pick back to blank/TBD — the placeholder
+  // text itself is never lost (see teamAPlaceholder's own doc comment), so
+  // this is always available, not just immediately after generation.
+  const resetToTBD = (matchId: string, side: 'A' | 'B', placeholder: string) => {
+    updateMatch(matchId, side === 'A'
+      ? { teamAId: undefined, teamAName: placeholder, teamAShortName: undefined, teamAColor: PLACEHOLDER_COLOR, teamALogo: undefined }
+      : { teamBId: undefined, teamBName: placeholder, teamBShortName: undefined, teamBColor: PLACEHOLDER_COLOR, teamBLogo: undefined });
+  };
+
+  // Lets the operator turn ANY still-unresolved Round 1 slot into a manual
+  // "TBD" one from the Edit Arrangement dropdown itself, even on a bracket
+  // generated with today's default Automatic fill — not just one explicitly
+  // generated with "Manual pick" fill mode. The slot's current placeholder
+  // text ("1st Group A") already IS the group/rank it needs, so the only
+  // thing that changes is recording it as teamAPlaceholder/teamBPlaceholder
+  // — the SAME field the generation-time manual-pick flow uses — which hands
+  // this one side off to the TBD pick/Reset-to-TBD control above the moment
+  // Edit Arrangement is turned back off. Scoped per SIDE, not the whole
+  // match, so the other side's own fill mode (manual or automatic) is
+  // completely unaffected — see tournamentAutoAdvance.ts's own per-side gate.
+  const TBD_OPTION = '\u0000__TBD__';
+  const setSlotToTBD = (matchId: string, side: 'A' | 'B', placeholderText: string) => {
+    updateMatch(matchId, side === 'A'
+      ? { knockoutManualFill: true, teamAPlaceholder: placeholderText }
+      : { knockoutManualFill: true, teamBPlaceholder: placeholderText });
+  };
+
+  // "Draw" — a one-click bulk version of setSlotToTBD above, for a
+  // tournament doing a live on-air draw for the whole knockout stage rather
+  // than one slot at a time: every still-unresolved Round 1 placeholder (on
+  // either side of every Round 1 match) becomes a manual TBD slot at once,
+  // ready for the operator to reveal/assign live via the pick dropdown each
+  // one already offers. Already-resolved real team names are left alone —
+  // same "only ever touches unresolved placeholders" rule setSlotToTBD and
+  // autoArrangeAvailable both follow.
+  const drawAllAvailable = editable && !!resolveGroupTeams && round1Slots.some(s => PLACEHOLDER_RANK_RE.test(s.name));
+  const drawAllToTBD = () => {
+    const round1 = stages[0]?.[1] ?? [];
+    for (const m of round1) {
+      if (PLACEHOLDER_RANK_RE.test(m.teamAName)) setSlotToTBD(m.id, 'A', m.teamAName);
+      if (m.teamBName && PLACEHOLDER_RANK_RE.test(m.teamBName)) setSlotToTBD(m.id, 'B', m.teamBName);
+    }
+  };
+
   const semifinalStage = stages.find(([name]) => name === 'Semifinal');
   const canAddThirdPlace = editable && !!onAddThirdPlace && !!semifinalStage && !thirdPlaceMatch;
 
@@ -192,6 +301,17 @@ export function BracketView({ matches, thirdPlaceMatch, results, tournamentId, e
     const win = findWinner(m);
     const aWins = win?.side === 'A';
     const bWins = win?.side === 'B';
+    // Manual-pick slots (see pickManualTeam/resetToTBD's doc comments) —
+    // offered whenever this side was generated with a placeholder, whether
+    // or not it's been picked yet, so the operator can always come back and
+    // change or clear a pick. Only outside Edit Arrangement mode, so the two
+    // per-slot controls never compete for the same dropdown.
+    const aPlaceholderMatch = !slotEditable && editable && m.knockoutManualFill && resolveGroupTeams && m.teamAPlaceholder
+      ? PLACEHOLDER_RANK_RE.exec(m.teamAPlaceholder) : null;
+    const bPlaceholderMatch = !slotEditable && editable && m.knockoutManualFill && resolveGroupTeams && m.teamBPlaceholder
+      ? PLACEHOLDER_RANK_RE.exec(m.teamBPlaceholder) : null;
+    const aResolved = !!aPlaceholderMatch && m.teamAName !== m.teamAPlaceholder;
+    const bResolved = !!bPlaceholderMatch && m.teamBName !== m.teamBPlaceholder;
     return (
       <div
         key={m.id}
@@ -202,9 +322,36 @@ export function BracketView({ matches, thirdPlaceMatch, results, tournamentId, e
         <div className={`tm-bracket-team${aWins ? ' tm-bracket-team--winner' : ''}`}>
           <div style={{ width: 26, height: 26, flexShrink: 0 }}><ScheduleBadge logo={m.teamALogo} color={m.teamAColor} /></div>
           {slotEditable ? (
-            <select className="tm-bracket-slot-select" value={m.teamAName} onChange={e => swapSlot(m.id, 'A', e.target.value)}>
+            <select
+              className="tm-bracket-slot-select"
+              value={m.teamAName}
+              onChange={e => e.target.value === TBD_OPTION ? setSlotToTBD(m.id, 'A', m.teamAName) : swapSlot(m.id, 'A', e.target.value)}
+            >
               {round1Slots.map(s => <option key={`${s.matchId}-${s.side}`} value={s.name}>{s.name}</option>)}
+              {resolveGroupTeams && PLACEHOLDER_RANK_RE.test(m.teamAName) && <option value={TBD_OPTION}>— Set to TBD —</option>}
             </select>
+          ) : aPlaceholderMatch ? (
+            <>
+              <select
+                className="tm-bracket-slot-select"
+                value={aResolved ? m.teamAName : ''}
+                title={aResolved ? `Change who's ${m.teamAPlaceholder}` : `Pick who's actually ${m.teamAPlaceholder}`}
+                onChange={e => {
+                  if (!e.target.value) { resetToTBD(m.id, 'A', m.teamAPlaceholder!); return; }
+                  const team = resolveGroupTeams!(aPlaceholderMatch[2]).find(t => t.name === e.target.value);
+                  if (team) pickManualTeam(m.id, 'A', m.teamAName, team);
+                }}
+              >
+                <option value="">TBD — {m.teamAPlaceholder}</option>
+                {resolveGroupTeams!(aPlaceholderMatch[2]).map(t => <option key={t.id ?? t.name} value={t.name}>{t.name}</option>)}
+              </select>
+              {aResolved && (
+                <button type="button" className="tm-io-btn" style={{ padding: 2, marginLeft: 4 }}
+                  title="Reset to TBD" onClick={() => resetToTBD(m.id, 'A', m.teamAPlaceholder!)}>
+                  <RotateCcw size={12} />
+                </button>
+              )}
+            </>
           ) : onSelectTeam ? (
             <span className="tm-bracket-team-name tm-bracket-team-name--clickable" onClick={() => onSelectTeam(m.teamAName)}>{m.teamAShortName || m.teamAName}</span>
           ) : (
@@ -215,9 +362,36 @@ export function BracketView({ matches, thirdPlaceMatch, results, tournamentId, e
         <div className={`tm-bracket-team${bWins ? ' tm-bracket-team--winner' : ''}`}>
           <div style={{ width: 26, height: 26, flexShrink: 0 }}><ScheduleBadge logo={m.teamBLogo} color={m.teamBColor} /></div>
           {slotEditable && m.teamBName ? (
-            <select className="tm-bracket-slot-select" value={m.teamBName} onChange={e => swapSlot(m.id, 'B', e.target.value)}>
+            <select
+              className="tm-bracket-slot-select"
+              value={m.teamBName}
+              onChange={e => e.target.value === TBD_OPTION ? setSlotToTBD(m.id, 'B', m.teamBName) : swapSlot(m.id, 'B', e.target.value)}
+            >
               {round1Slots.map(s => <option key={`${s.matchId}-${s.side}`} value={s.name}>{s.name}</option>)}
+              {resolveGroupTeams && PLACEHOLDER_RANK_RE.test(m.teamBName) && <option value={TBD_OPTION}>— Set to TBD —</option>}
             </select>
+          ) : bPlaceholderMatch ? (
+            <>
+              <select
+                className="tm-bracket-slot-select"
+                value={bResolved ? m.teamBName : ''}
+                title={bResolved ? `Change who's ${m.teamBPlaceholder}` : `Pick who's actually ${m.teamBPlaceholder}`}
+                onChange={e => {
+                  if (!e.target.value) { resetToTBD(m.id, 'B', m.teamBPlaceholder!); return; }
+                  const team = resolveGroupTeams!(bPlaceholderMatch[2]).find(t => t.name === e.target.value);
+                  if (team) pickManualTeam(m.id, 'B', m.teamBName, team);
+                }}
+              >
+                <option value="">TBD — {m.teamBPlaceholder}</option>
+                {resolveGroupTeams!(bPlaceholderMatch[2]).map(t => <option key={t.id ?? t.name} value={t.name}>{t.name}</option>)}
+              </select>
+              {bResolved && (
+                <button type="button" className="tm-io-btn" style={{ padding: 2, marginLeft: 4 }}
+                  title="Reset to TBD" onClick={() => resetToTBD(m.id, 'B', m.teamBPlaceholder!)}>
+                  <RotateCcw size={12} />
+                </button>
+              )}
+            </>
           ) : (
             <span
               className={m.teamBName && onSelectTeam ? 'tm-bracket-team-name tm-bracket-team-name--clickable' : 'tm-bracket-team-name'}
@@ -250,11 +424,31 @@ export function BracketView({ matches, thirdPlaceMatch, results, tournamentId, e
                 : <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><Pencil size={14} /> Edit Arrangement</span>}
             </button>
           )}
+          {editMode && autoArrangeAvailable && (
+            <button
+              className="tm-io-btn"
+              onClick={autoArrangeRound1}
+              title="Snap Round 1 back to the auto clash-avoidance pairing (1st vs 2nd of another group) — undoes any manual swaps made here"
+            >
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><Wand2 size={14} /> Auto-arrange</span>
+            </button>
+          )}
+          {editMode && drawAllAvailable && (
+            <button
+              className="tm-io-btn"
+              onClick={drawAllToTBD}
+              title="Blank every still-unresolved Round 1 slot to TBD at once, for a live draw — pick each one's real team from the Bracket tab afterwards"
+            >
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><RotateCcw size={14} /> Draw (Set All TBD)</span>
+            </button>
+          )}
         </div>
       )}
       {editMode && (
         <div className="tm-gen-warn" style={{ marginTop: 0 }}>
-          Edit mode: pick a different entrant in any Round 1 slot to swap it with whoever currently holds that spot.
+          Edit mode: pick a different entrant in any Round 1 slot to swap it with whoever currently holds that spot
+          {autoArrangeAvailable ? ', click Auto-arrange to snap back to the auto pairing' : ''}
+          {drawAllAvailable ? ', or click Draw (Set All TBD) to blank every slot for a live draw.' : '.'}
         </div>
       )}
 

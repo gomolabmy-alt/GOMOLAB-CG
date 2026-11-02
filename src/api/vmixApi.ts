@@ -643,8 +643,20 @@ export class VmixApiClient {
     }
     await this.fn('SetImage', { Input: inputKey, SelectedName: fieldName, Value: resolved });
   }
+  // Targets a dedicated "Colour"-type GT field (a separate exposed property,
+  // NOT a Text field's own font color) — see setTextColor below for coloring
+  // an actual Text field directly, which is what most callers that want a
+  // plain "recolor this score/text" effect actually need.
   async setColor(inputKey: string, fieldName: string, color: string) {
     await this.fn('SetColor', { Input: inputKey, SelectedName: fieldName, Value: color });
+  }
+  // Colors a Text field's OWN font color directly, by that field's own
+  // name — same name a SetText call to it already uses (e.g.
+  // "Score1A.Text"). This is the one to use for "make this score/text
+  // change color on win/lose" — no separate Colour-type GT element needs to
+  // exist in the title at all, unlike setColor above.
+  async setTextColor(inputKey: string, fieldName: string, color: string) {
+    await this.fn('SetTextColour', { Input: inputKey, SelectedName: fieldName, Value: color });
   }
 
   // ── Transitions ─────────────────────────────────────────────────────────

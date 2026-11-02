@@ -92,6 +92,16 @@ export interface SavedMatchResult {
   /** Which physical venue pushed this result, for multi-venue cloud sync
    *  (see src/lib/cloudSync.ts) — same convention as ScheduledMatch.venueLabel. */
   venueLabel?: string;
+  /** Total RALLY points scored across every set, for a racket-sport result
+   *  (badminton/table tennis/tennis/sepaktakraw) — distinct from scoreA/
+   *  scoreB, which for these sports hold SETS won, not rally points (see
+   *  RacketScoreboardWidget.tsx's own "Save Result" comment). Sepaktakraw's
+   *  official standings table tracks both as separate columns (SW/SL = sets,
+   *  PW/PL = points) — see computeStandingsCore's own racketPtsFor/Against.
+   *  Absent for every non-racket sport, and for a bye/walkover (no rallies
+   *  were actually played). */
+  racketPointsA?: number;
+  racketPointsB?: number;
   /** Best-effort snapshot of the linked Timer widget's clock at save time —
    *  absent if no Timer was linked to the scoreboard. `elapsedMs` is total
    *  game time actually played (regular + extra time + after-ET combined,

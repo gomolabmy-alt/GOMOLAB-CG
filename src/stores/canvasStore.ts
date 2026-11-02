@@ -7,6 +7,7 @@ import { useUndoStore } from './undoStore';
 import { syncClient } from '../lib/syncClient';
 import { transparentLogoUrl } from '../lib/imageUrl';
 import { remapWidgetIdInConfig } from '../lib/autoLink';
+import { initRallyMatch, initTennisMatch } from '../lib/racketScoring';
 import TimerWorkerClass from '../workers/timerWorker?worker&inline';
 
 // Web Worker — used only in browser mode (not Tauri).
@@ -1215,6 +1216,19 @@ export const useCanvasStore = create<CanvasStore>()(
               break;
             case 'App.ScoreUndo':
               store.undoLastScoreEntry(params.Input, (params.Team === 'B' ? 'B' : 'A'));
+              break;
+            // The racket scoreboard's scoring engine (serve rotation, set/
+            // game completion, tiebreaks, timer freezing, …) lives entirely
+            // in RacketScoreboardWidget.tsx's own closures, not duplicated
+            // here — this just drops a "do this" command into that widget's
+            // OWN config for it to notice and act on itself (a fresh nonce
+            // every call guarantees a change even if the same Action fires
+            // twice in a row), same "one shared command channel, single
+            // source of truth" reasoning as a Quick Button driving a Timer
+            // widget through its own existing controls rather than a
+            // parallel copy of its logic.
+            case 'App.RacketAction':
+              store.updateWidgetConfig(params.Input, { racketPendingCommand: { action: params.Action ?? '', nonce: `${Date.now()}-${Math.random()}` } });
               break;
             case 'App.SetVariable': {
               const { globalVariables, setVariable } = useVmixStore.getState();
@@ -2442,7 +2456,7 @@ export const useCanvasStore = create<CanvasStore>()(
           // source widget holds — so only ever match against a real source.
           const resetScoreboardIds = new Set(
             allWidgetsBefore
-              .filter((w) => w.type === 'scoreboard' && !w.config.linkedScoreboardSourceId && idSet.has(w.config.linkedScheduleMatchId))
+              .filter((w) => (w.type === 'scoreboard' || w.type === 'racket-scoreboard') && !w.config.linkedScoreboardSourceId && idSet.has(w.config.linkedScheduleMatchId))
               .map((w) => w.id)
           );
           if (resetScoreboardIds.size === 0) return;
@@ -2452,6 +2466,22 @@ export const useCanvasStore = create<CanvasStore>()(
             widgets: p.widgets.map((w) => {
               if (w.type === 'scoreboard' && resetScoreboardIds.has(w.id)) {
                 return { ...w, config: { ...w.config, scoreA: 0, scoreB: 0, scoreLog: [], cardsA: [], cardsB: [], lastSavedSignature: '' } };
+              }
+              // A racket-scoreboard's live score lives in rallyState/
+              // tennisState, not scoreA/scoreB — same reset newMatch()
+              // itself does (RacketScoreboardWidget.tsx), so a "Reset Game"
+              // from the Schedule tab's Stop menu behaves identically to
+              // pressing Reset directly on the widget.
+              if (w.type === 'racket-scoreboard' && resetScoreboardIds.has(w.id)) {
+                return {
+                  ...w, config: {
+                    ...w.config,
+                    rallyState: initRallyMatch(), tennisState: initTennisMatch(), pointHistory: [], pointLog: [],
+                    regusWonA: 0, regusWonB: 0, reguHistory: [], reguDraftsA: {}, reguDraftsB: {},
+                    gameStartedAt: undefined, gameEndedAt: undefined, gameDurationsMs: [],
+                    lastSavedSignature: '',
+                  },
+                };
               }
               if (w.type === 'timeline' && resetScoreboardIds.has(w.config.linkedScoreboardId)) {
                 return { ...w, config: { ...w.config, events: [] } };

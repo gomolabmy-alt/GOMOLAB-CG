@@ -59,9 +59,12 @@ export function PlayerHeadToHeadWidget({ widgetId, config }: Props) {
   const disp = (name: string) => simplifyPlayerName(name, { simplifyMuhammad: simplifyMuhammadNames, firstNameOnly: simplifyFirstNameOnly, removeBinMarkers, truncateAtBinMarker });
 
   const allPages = [...pages, ...commentatorPages];
-  // Falls back to the sole Scoreboard widget on this page when nothing's
-  // been explicitly linked in settings — an explicit pick always wins.
-  const linkedScoreboard = autoLinkedWidget(allPages, widgetId, config.linkedScoreboardId, 'scoreboard');
+  // Falls back to the sole Scoreboard (plain OR racket — badminton/table
+  // tennis/tennis/sepaktakraw) widget on this page when nothing's been
+  // explicitly linked in settings — an explicit pick always wins. Only team
+  // identity fields are read below, which both widget types share, so a
+  // racket-scoreboard link works correctly here with no further changes.
+  const linkedScoreboard = autoLinkedWidget(allPages, widgetId, config.linkedScoreboardId, ['scoreboard', 'racket-scoreboard']);
   const dc = linkedScoreboard?.config ?? {};
   const teamAName: string = dc.teamAName ?? 'Team A';
   const teamBName: string = dc.teamBName ?? 'Team B';

@@ -75,6 +75,23 @@ export interface ScheduledMatch {
    *  a small badge so an operator can tell which venue a merged-in row came
    *  from. Undefined for fixtures that have never been pushed/pulled. */
   venueLabel?: string;
+  /** Set on a Groups→Knockout fixture generated with "manual pick" fill mode
+   *  (an option in Generate Schedule) — tells the auto-advance loop to leave
+   *  this side's "1st Group A"/"2nd Group A" placeholder alone even once that
+   *  group's results are fully decided, instead of resolving it automatically
+   *  from standings. The operator then fills it in by hand from the Bracket
+   *  tab (a dropdown of that group's real teams) once ready. Unset/false
+   *  keeps today's automatic behavior. */
+  knockoutManualFill?: boolean;
+  /** The ORIGINAL "1st Group A"/"2nd Group A" placeholder text for a manual-
+   *  pick side, captured at generation time and never overwritten — unlike
+   *  teamAName/teamBName, which get replaced with the real team's name once
+   *  picked. Lets the Bracket tab keep offering the pick dropdown (and a
+   *  "Reset to TBD" control) even after a pick has already been made,
+   *  instead of only while the slot is still literally blank. Unset for any
+   *  fixture that isn't a manual-pick slot. */
+  teamAPlaceholder?: string;
+  teamBPlaceholder?: string;
 }
 
 // sortIndex is the real ordering — an explicit, manually-arrangeable

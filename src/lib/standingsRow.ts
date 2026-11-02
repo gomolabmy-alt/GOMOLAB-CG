@@ -8,7 +8,7 @@ import { useMemo } from 'react';
 import { useTeamDbStore, type SavedTeam } from '../stores/teamDbStore';
 import { useMatchResultsStore } from '../stores/matchResultsStore';
 import { useTournamentStore } from '../stores/tournamentStore';
-import { computeStandings, isPoolStageResult, type StandingRow } from '../components/TournamentManager';
+import { computeStandings, isPoolStageResult, formatRankChange, type StandingRow } from '../components/TournamentManager';
 import type { StandingsRole } from '../types/canvas';
 
 export interface StandingsRankRow extends StandingRow {
@@ -43,7 +43,7 @@ export function useStandingsData(tournamentId: string | undefined, group: string
     // Group standings must only count pool-stage results — same rule
     // StandingsWidget/GroupStandingsWidget already apply via isPoolStageResult.
     const results = allResults.filter((r) => r.tournamentId === tournament.id && isPoolStageResult(r));
-    return computeStandings(teams, results, tournament.settings ?? { pointsWin: 3, pointsDraw: 1, pointsLoss: 0 } as any)
+    return computeStandings(teams, results, tournament.settings ?? { pointsWin: 3, pointsDraw: 1, pointsLoss: 0 } as any, tournament.sport)
       .map((r, i) => ({ ...r, rank: i + 1 }));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allTeams, allResults, tournament?.id, tournament?.settings, group, category]);
@@ -83,6 +83,7 @@ export function resolveStandingsRoleValue(role: StandingsRole, row: StandingsRan
     case 'pointsAgainst': return String(row.pa);
     case 'diff':       return `${diff > 0 ? '+' : ''}${diff}`;
     case 'pts':        return String(row.pts);
+    case 'rankChange': return formatRankChange(row.rankChange);
     default: return '';
   }
 }

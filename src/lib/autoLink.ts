@@ -18,17 +18,21 @@ export function findOwningPage(pages: CanvasPage[], widgetId: string): CanvasPag
  * an explicit choice — auto-linking to the wrong one of several candidates
  * would be worse than just asking.
  */
+// `targetType` also accepts an array (e.g. ['scoreboard', 'racket-scoreboard'])
+// for a link that's valid against more than one widget type — every existing
+// call site just passes a single WidgetType and keeps working identically.
 export function autoLinkedWidget(
-  pages: CanvasPage[], ownWidgetId: string, explicitId: string | undefined, targetType: WidgetType,
+  pages: CanvasPage[], ownWidgetId: string, explicitId: string | undefined, targetType: WidgetType | WidgetType[],
 ): CanvasWidget | undefined {
+  const types = Array.isArray(targetType) ? targetType : [targetType];
   const allWidgets = pages.flatMap(p => p.widgets);
   if (explicitId) {
-    const explicit = allWidgets.find(w => w.id === explicitId && w.type === targetType);
+    const explicit = allWidgets.find(w => w.id === explicitId && types.includes(w.type));
     if (explicit) return explicit;
   }
   const page = findOwningPage(pages, ownWidgetId);
   if (!page) return undefined;
-  const candidates = page.widgets.filter(w => w.type === targetType && w.id !== ownWidgetId);
+  const candidates = page.widgets.filter(w => types.includes(w.type) && w.id !== ownWidgetId);
   return candidates.length === 1 ? candidates[0] : undefined;
 }
 

@@ -20,8 +20,8 @@ import { SCORE_MERGE_PARTS_A, SCORE_MERGE_PARTS_B, SCORE_MERGE_PARTS_INFO } from
 import type { ActionItem } from '../lib/buttonActions';
 import { HotkeyRecorder } from './HotkeyRecorder';
 import { collectHotkeyBindings } from '../lib/hotkeyBindings';
-import { SPORT_DEFAULTS, type SportType, type RacketSportSettings } from '../types/tournament';
-import { initRallyMatch, initTennisMatch, normalizePlayerEntry, type RacketPlayerEntry } from '../lib/racketScoring';
+import { SPORT_DEFAULTS, SPORT_LABELS, type SportType, type RacketSportSettings } from '../types/tournament';
+import { initRallyMatch, initTennisMatch, normalizePlayerEntry, type RacketPlayerEntry, RACKET_SHORTCUT_ACTIONS } from '../lib/racketScoring';
 
 // Label for a player-list widget in a picker dropdown — shows the linked
 // saved team's name (teamDbStore), falling back to a short widget id.
@@ -571,6 +571,7 @@ const GROUP_STANDINGS_MERGE_PARTS: MergePart[] = [
   { key: 'pa',     label: 'Points Against', sample: '30' },
   { key: 'diff',   label: 'Diff',           sample: '+15' },
   { key: 'pts',    label: 'Points',         sample: '6' },
+  { key: 'rankChange', label: 'Rank Change', sample: '▲1' },
 ];
 const BRACKET_MERGE_PARTS: MergePart[] = [
   { key: 'stage',     label: 'Stage/Round', sample: 'Semifinal' },
@@ -858,17 +859,21 @@ export function CardSelect<T extends string | number | boolean>({ options, value
  *  shows nothing when a setting is off). `desc`/`title` cover the two shapes
  *  a checkbox used to take here: a trailing description line after the box,
  *  or a tooltip explaining a non-obvious rule. */
-export function ToggleCard({ checked, onChange, desc, title, onLabel = 'On', offLabel = 'Off' }: {
+export function ToggleCard({ checked, onChange, desc, title, onLabel = 'On', offLabel = 'Off', className }: {
   checked: boolean;
   onChange: (v: boolean) => void;
   desc?: string;
   title?: string;
   onLabel?: string;
   offLabel?: string;
+  /** Extra class(es) on the underlying CardSelect grid — e.g. a size
+   *  modifier for a setting important enough to need a bigger, harder to
+   *  miss on/off control than this component's own default. */
+  className?: string;
 }) {
   return (
     <div title={title}>
-      <CardSelect value={checked} onChange={onChange} columns={2}
+      <CardSelect value={checked} onChange={onChange} columns={2} className={className}
         options={[{ value: true, label: onLabel }, { value: false, label: offLabel }]} />
       {desc && <p className="app-settings-hint" style={{ margin: '4px 0 0' }}>{desc}</p>}
     </div>
@@ -973,7 +978,7 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
   const [vtCollapsed, setVTCollapsed] = useState<Record<string, boolean>>({});
   const [tfCollapsed, setTFCollapsed] = useState<Record<number, boolean>>({});
   const [panelCollapsed, setPanelCollapsed] = useState(false);
-  const [configTab, setConfigTab] = useState<'general' | 'vmix'>('general');
+  const [configTab, setConfigTab] = useState<'general' | 'vmix' | 'player' | 'shortcut'>('general');
   useEffect(() => setConfigTab('general'), [widget.id]);
   const [pos, setPos] = useState<{ x: number; y: number; w: number; h: number }>(() => {
     if (_panelPos.x < 0) _panelPos.x = Math.max(0, window.innerWidth - _panelPos.w - 16);
@@ -1057,10 +1062,14 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
    *  Lets "vMix Input" live as its own page instead of interleaved with the
    *  rest of a widget's settings. Widget types with nothing to send to vMix
    *  just omit the second argument and get a plain explanatory line instead. */
-  const renderTabbed = (general: React.ReactNode, vmix?: React.ReactNode) =>
+  const renderTabbed = (general: React.ReactNode, vmix?: React.ReactNode, player?: React.ReactNode, shortcut?: React.ReactNode) =>
     configTab === 'vmix'
       ? (vmix || <p className="app-settings-hint" style={{ margin: '4px 2px' }}>This widget doesn't send anything to vMix.</p>)
-      : general;
+      : configTab === 'player'
+        ? (player ?? general)
+        : configTab === 'shortcut'
+          ? (shortcut ?? general)
+          : general;
 
   const renderConfig = () => {
     switch (widget.type) {
@@ -1438,6 +1447,12 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
         const sport: SportType = cfg.sport ?? 'badminton';
         const scoringMode: 'rally' | 'tennis' = cfg.scoringMode ?? 'rally';
         const isTennis = scoringMode === 'tennis';
+        // Sepaktakraw's own scoring unit is officially a "set" (ISTAF's own
+        // rules — see RacketScoreboardWidget.tsx's pointBadgeLabel), same as
+        // tennis — badminton/table tennis keep the familiar "game". Used
+        // wherever this panel's wording would otherwise only switch for
+        // tennis and leave sepaktakraw saying "games" too.
+        const usesSetTerm = isTennis || sport === 'sepaktakraw';
         const applySport = (next: SportType) => {
           const rs: RacketSportSettings = SPORT_DEFAULTS[next].racketScoring
             ?? { mode: 'rally', pointsToWin: 21, winBy2: true, gamesToWin: 2, tiebreakAtGames: 6, noAd: false, serviceMode: 'auto', serviceRule: 'rally-winner', serviceAlternateEvery: 2 };
@@ -1618,15 +1633,19 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
                 })}
               </div>
               <p className="app-settings-hint" style={{ margin: '4px 0 0' }}>
-                "Endless" is modeled as an effectively-unreachable 999 {isTennis ? 'sets' : 'games'} to win — the match simply never gets confirmed as decided, so sets/games keep being played and recorded as long as you keep scoring.
+                "Endless" is modeled as an effectively-unreachable 999 {usesSetTerm ? 'sets' : 'games'} to win — the match simply never gets confirmed as decided, so sets/games keep being played and recorded as long as you keep scoring.
               </p>
             </Field>
 
             <CollapsibleSection label="Advanced Match Rules" defaultOpen={false}>
             {sport === 'sepaktakraw' && (
               <>
-                <Field label="Team Event (multiple regu)">
-                  <ToggleCard checked={!!cfg.teamEventOn} onChange={v => up({ teamEventOn: v })} title="A squad fields several regu (Regu 1, Regu 2, Regu 3…) across a team tie — the tie is decided by how many individual regu-matches each squad wins, not by points" />
+                <Field label="Format">
+                  <CardSelect value={!!cfg.teamEventOn} onChange={v => up({ teamEventOn: v })} columns={2}
+                    options={[
+                      { value: false, label: 'Regu', sub: 'One regu, one match' },
+                      { value: true, label: 'Team Regu', sub: `Up to ${(cfg.regusToWin ?? 2) * 2 - 1} regu matches — tie decided by regu wins` },
+                    ]} />
                 </Field>
                 {cfg.teamEventOn && (
                   <Field label="Regu Wins Needed">
@@ -1675,11 +1694,11 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
                 </Field>
               </>
             )}
-            <Field label={`Play All ${isTennis ? 'Sets' : 'Games'}`}>
-              <ToggleCard checked={!!cfg.playAllGames} onChange={v => up({ playAllGames: v, totalGames: v ? (cfg.totalGames ?? (cfg.gamesToWin ?? 2) * 2 - 1) : cfg.totalGames })} title={`Play out every ${isTennis ? 'set' : 'game'} up to Total ${isTennis ? 'Sets' : 'Games'} below, even once the match is already decided — e.g. 3 games with 2 needed to win still plays the 3rd game after a 2-0 lead, instead of stopping there`} />
+            <Field label={`Play All ${usesSetTerm ? 'Sets' : 'Games'}`}>
+              <ToggleCard checked={!!cfg.playAllGames} className="tm-ms-sport-grid--important" onChange={v => up({ playAllGames: v, totalGames: v ? (cfg.totalGames ?? (cfg.gamesToWin ?? 2) * 2 - 1) : cfg.totalGames })} title={`Play out every ${usesSetTerm ? 'set' : 'game'} up to Total ${usesSetTerm ? 'Sets' : 'Games'} below, even once the match is already decided — e.g. 3 games with 2 needed to win still plays the 3rd game after a 2-0 lead, instead of stopping there`} />
             </Field>
             {cfg.playAllGames && (
-              <Field label={`Total ${isTennis ? 'Sets' : 'Games'} to Play`}>
+              <Field label={`Total ${usesSetTerm ? 'Sets' : 'Games'} to Play`}>
                 <input
                   className="field-input" type="number" min={cfg.gamesToWin ?? 2}
                   value={cfg.totalGames ?? (cfg.gamesToWin ?? 2) * 2 - 1}
@@ -1849,27 +1868,413 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
         </>
         );
 
-        const vmix = (
+        // One vMix input's worth of field mappings — multiple of these can
+        // run side by side (cfg.racketVmixTargets), same "+ Add vMix Input"
+        // convention MatchScheduleWidget's own FixtureVmixTarget[] already
+        // uses. Mirrors RacketScoreboardWidget.tsx's own identical local
+        // type exactly (duplicated rather than shared, same as
+        // FixtureVmixTarget's own precedent in this file).
+        type RacketVmixTarget = {
+          id: string; inputKey: string; inputTitle?: string;
+          fieldScoreA?: string; fieldScoreB?: string;
+          fieldTeamA?: string; fieldTeamB?: string;
+          fieldTeamAShort?: string; fieldTeamBShort?: string;
+          fieldTeamALogo?: string; fieldTeamBLogo?: string;
+          fieldGamesWonA?: string; fieldGamesWonB?: string;
+          fieldSetLabel?: string; setScorePrefix?: string;
+          setScoreTemplateA?: string; setScoreTemplateB?: string;
+          /** UI-only — which editor these two show as (both store into the
+           *  same setScoreTemplateA/B either way). 'picker' (default) lets
+           *  you browse the actual Set 1 field on the input and auto-derives
+           *  the {n} template from it; 'manual' is a free-text box for a
+           *  field that doesn't exist in vMix yet, or any naming Set 1
+           *  itself wouldn't reveal. */
+          setScoreTemplateMode?: 'picker' | 'manual';
+          setScoreColorFieldA?: string; setScoreColorFieldB?: string;
+          setScoreWinColor?: string; setScoreLoseColor?: string; setScoreDefaultColor?: string;
+          serverMode?: 'text' | 'image' | 'trigger';
+          fieldServerName?: string; fieldServerImage?: string;
+          serverIconA?: string; serverIconB?: string;
+          serverTriggerMode?: 'simple' | 'advanced';
+          serverVisibleFieldA?: string; serverVisibleTypeA?: 'text' | 'image';
+          serverVisibleFieldB?: string; serverVisibleTypeB?: 'text' | 'image';
+          serverShowActionsA?: ActionItem[]; serverHideActionsA?: ActionItem[];
+          serverShowActionsB?: ActionItem[]; serverHideActionsB?: ActionItem[];
+          playerNameTemplateA?: string; playerJerseyTemplateA?: string; playerPositionTemplateA?: string;
+          playerNameTemplateB?: string; playerJerseyTemplateB?: string; playerPositionTemplateB?: string;
+          playerTemplateMode?: 'picker' | 'manual';
+        };
+        // An existing widget saved before multi-target existed has its
+        // fields flat on cfg itself (cfg.vmixInputKey/fieldScoreA/etc) —
+        // show that as a single pre-filled "legacy" target instead of an
+        // empty list, so opening Settings for the first time after this
+        // update doesn't look like the old config vanished.
+        const racketTargets: RacketVmixTarget[] = cfg.racketVmixTargets?.length
+          ? cfg.racketVmixTargets
+          : cfg.vmixInputKey
+            ? [{
+                id: 'legacy', inputKey: cfg.vmixInputKey, inputTitle: cfg.vmixInputTitle,
+                fieldScoreA: cfg.fieldScoreA, fieldScoreB: cfg.fieldScoreB,
+                fieldTeamA: cfg.fieldTeamA, fieldTeamB: cfg.fieldTeamB,
+                fieldTeamAShort: cfg.fieldTeamAShort, fieldTeamBShort: cfg.fieldTeamBShort,
+                fieldTeamALogo: cfg.fieldTeamALogo, fieldTeamBLogo: cfg.fieldTeamBLogo,
+                fieldGamesWonA: cfg.fieldGamesWonA, fieldGamesWonB: cfg.fieldGamesWonB,
+                fieldSetLabel: cfg.fieldSetLabel, setScorePrefix: cfg.setScorePrefix,
+                setScoreTemplateA: cfg.setScoreTemplateA, setScoreTemplateB: cfg.setScoreTemplateB,
+                setScoreColorFieldA: cfg.setScoreColorFieldA, setScoreColorFieldB: cfg.setScoreColorFieldB,
+                setScoreWinColor: cfg.setScoreWinColor, setScoreLoseColor: cfg.setScoreLoseColor,
+                setScoreDefaultColor: cfg.setScoreDefaultColor,
+                serverMode: 'text', fieldServerName: cfg.fieldServerName,
+              }]
+            : [];
+        const setRacketTargets = (next: RacketVmixTarget[]) => up({ racketVmixTargets: next });
+        const updateRacketTarget = (idx: number, patch: Partial<RacketVmixTarget>) =>
+          setRacketTargets(racketTargets.map((t, i) => i === idx ? { ...t, ...patch } : t));
+        // Exact-field pickers (not prefix+index — this board only ever has
+        // ONE current match, no list of rows to index) for every single-
+        // value field: pick a real field name on the chosen input directly.
+        const exactField = (target: RacketVmixTarget, idx: number, key: keyof RacketVmixTarget, fieldLabel: string, placeholder: string, fieldFilter?: (n: string) => boolean) => (
+          <Field label={fieldLabel}>
+            {renderFieldPicker(target.inputKey, (target[key] as string) ?? '', v => updateRacketTarget(idx, { [key]: v } as Partial<RacketVmixTarget>), placeholder, fieldFilter)}
+          </Field>
+        );
+        // Turns a picked REAL field name (assumed to be Set 1's — the
+        // picker always shows/searches with n=1 substituted in, see
+        // setScoreTemplateField below) into a reusable {n} template by
+        // replacing the LAST run of digits in it — the set number is
+        // almost always the last number in the name, right before a
+        // .Text/.Source suffix (e.g. "team-a-score-s1.Text" → "team-a-
+        // score-s{n}.Text"). Falls back to appending {n} if the picked
+        // field has no digits at all (nothing to replace).
+        const deriveSetTemplate = (fieldName: string): string =>
+          /\d/.test(fieldName) ? fieldName.replace(/(\d+)(?!.*\d)/, '{n}') : `${fieldName}{n}`;
+        // Per-set score field for one side — 'picker' mode (default) browses
+        // the real Set 1 field and auto-derives the {n} template from
+        // whatever's picked; 'manual' is a free-text box for typing the
+        // pattern directly (a field that doesn't exist in vMix yet, or a
+        // naming scheme Set 1 alone wouldn't reveal — e.g. {n} not simply
+        // replacing the last digit). Both write into the exact same
+        // setScoreTemplateA/B field either way.
+        const setScoreTemplateField = (target: RacketVmixTarget, idx: number, key: 'setScoreTemplateA' | 'setScoreTemplateB', fieldLabel: string, placeholder: string) => {
+          const mode = target.setScoreTemplateMode ?? 'picker';
+          const template = target[key] ?? '';
+          return (
+            <Field label={fieldLabel}>
+              {mode === 'manual' ? (
+                <input className="field-input" value={template} placeholder={placeholder}
+                  onChange={e => updateRacketTarget(idx, { [key]: e.target.value } as Partial<RacketVmixTarget>)} />
+              ) : (
+                renderFieldPicker(
+                  target.inputKey,
+                  template ? template.replace(/\{n\}/g, '1') : '',
+                  v => updateRacketTarget(idx, { [key]: deriveSetTemplate(v) } as Partial<RacketVmixTarget>),
+                  placeholder.replace('{n}', '1'),
+                )
+              )}
+            </Field>
+          );
+        };
+        const racketVmixSection = (
           <CollapsibleSection label="vMix Output" defaultOpen={false}>
-            <Field label="Input">
-              <input className="field-input" value={cfg.vmixInputKey ?? ''} placeholder="Input name/number" onChange={e => up({ vmixInputKey: e.target.value })} />
-            </Field>
-            <Field label="Score A Field">
-              <input className="field-input" value={cfg.fieldScoreA ?? ''} placeholder="ScoreA.Text" onChange={e => up({ fieldScoreA: e.target.value })} />
-            </Field>
-            <Field label="Score B Field">
-              <input className="field-input" value={cfg.fieldScoreB ?? ''} placeholder="ScoreB.Text" onChange={e => up({ fieldScoreB: e.target.value })} />
-            </Field>
-            <Field label="Team A Field">
-              <input className="field-input" value={cfg.fieldTeamA ?? ''} placeholder="TeamA.Text" onChange={e => up({ fieldTeamA: e.target.value })} />
-            </Field>
-            <Field label="Team B Field">
-              <input className="field-input" value={cfg.fieldTeamB ?? ''} placeholder="TeamB.Text" onChange={e => up({ fieldTeamB: e.target.value })} />
-            </Field>
+            {racketTargets.map((t, idx) => {
+              const collapseKey = `racket-vmix-${t.id}`;
+              const isCollapsed = vilCollapsed[collapseKey] ?? false;
+              return (
+                <div key={t.id} className="vil-cfg-block">
+                  <div className="vil-cfg-header">
+                    <button className="btn btn--ghost btn--small tf-collapse-btn"
+                      onClick={() => setVilCollapsed(p => ({ ...p, [collapseKey]: !p[collapseKey] }))}
+                      title={isCollapsed ? 'Expand' : 'Collapse'}>
+                      {isCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+                    </button>
+                    <span className="vil-cfg-label">vMix Input {idx + 1}</span>
+                    {racketTargets.length > 1 && <button className="btn btn--ghost btn--small" onClick={() => setRacketTargets(racketTargets.filter((_, i) => i !== idx))}>×</button>}
+                  </div>
+                  {!isCollapsed && (
+                    <>
+                      {renderInputPicker('Input', t.inputKey, t.inputTitle,
+                        (key, title) => updateRacketTarget(idx, { inputKey: key, inputTitle: title }))}
+                      {t.inputKey && (
+                        <>
+                          {exactField(t, idx, 'fieldScoreA', 'Score A Field', 'ScoreA.Text')}
+                          {exactField(t, idx, 'fieldScoreB', 'Score B Field', 'ScoreB.Text')}
+                          {exactField(t, idx, 'fieldTeamA', 'Team A Field', 'TeamA.Text')}
+                          {exactField(t, idx, 'fieldTeamB', 'Team B Field', 'TeamB.Text')}
+                          {exactField(t, idx, 'fieldTeamAShort', 'Team A Short Name Field', 'TeamAShort.Text')}
+                          {exactField(t, idx, 'fieldTeamBShort', 'Team B Short Name Field', 'TeamBShort.Text')}
+                          {exactField(t, idx, 'fieldTeamALogo', 'Team A Logo Field', 'TeamALogo.Source', (n: string) => n.toLowerCase().endsWith('.source'))}
+                          {exactField(t, idx, 'fieldTeamBLogo', 'Team B Logo Field', 'TeamBLogo.Source', (n: string) => n.toLowerCase().endsWith('.source'))}
+                          {exactField(t, idx, 'fieldGamesWonA', 'Sets Won A Field', 'SetsWonA.Text')}
+                          {exactField(t, idx, 'fieldGamesWonB', 'Sets Won B Field', 'SetsWonB.Text')}
+                          {exactField(t, idx, 'fieldSetLabel', 'Set/Game Label Field', 'SetLabel.Text')}
+                          <Field label="Per-Set Score Fields">
+                            <CardSelect value={t.setScoreTemplateMode ?? 'picker'} onChange={v => updateRacketTarget(idx, { setScoreTemplateMode: v })} columns={2}
+                              options={[
+                                { value: 'picker', label: 'Pick from list', sub: 'Browse Set 1\'s real field — the pattern is derived automatically' },
+                                { value: 'manual', label: 'Type manually', sub: 'For a field that doesn\'t exist in vMix yet' },
+                              ]} />
+                          </Field>
+                          {setScoreTemplateField(t, idx, 'setScoreTemplateA', `${cfg.teamAName || 'Team A'} — Set 1 Field`, 'team-a-score-s{n}.Text')}
+                          {setScoreTemplateField(t, idx, 'setScoreTemplateB', `${cfg.teamBName || 'Team B'} — Set 1 Field`, 'team-b-score-s{n}.Text')}
+                          <p className="app-settings-hint" style={{ margin: '4px 0 0' }}>
+                            Pushes a score pair per set — the field's own set number keeps incrementing (Set1, Set2, …) up to this match's maximum (Games/Sets to Win × 2 − 1), blank until each one's actually reached. In "Pick from list", picking Set 1's real field auto-derives the pattern for every other set from it.
+                          </p>
+                          <Field label={`${cfg.teamAName || 'Team A'} — Color Field Override (optional)`}>
+                            <input className="field-input" value={t.setScoreColorFieldA ?? ''} placeholder="Leave blank to color the Set 1 Field above directly"
+                              onChange={e => updateRacketTarget(idx, { setScoreColorFieldA: e.target.value })} />
+                          </Field>
+                          <Field label={`${cfg.teamBName || 'Team B'} — Color Field Override (optional)`}>
+                            <input className="field-input" value={t.setScoreColorFieldB ?? ''} placeholder="Leave blank to color the Set 1 Field above directly"
+                              onChange={e => updateRacketTarget(idx, { setScoreColorFieldB: e.target.value })} />
+                            <p className="app-settings-hint" style={{ margin: '4px 0 0' }}>
+                              Leave blank — the score number's own Text field gets its font color changed directly, no extra setup needed in vMix. Only fill this in if you want a DIFFERENT element recolored instead of the score text itself (e.g. a background shape with its own name).
+                            </p>
+                          </Field>
+                          <Field label="Set Won Color">
+                            <input type="color" value={t.setScoreWinColor ?? '#2ecc71'} onChange={e => updateRacketTarget(idx, { setScoreWinColor: e.target.value })} />
+                          </Field>
+                          <Field label="Set Lost Color">
+                            <input type="color" value={t.setScoreLoseColor ?? '#e74c3c'} onChange={e => updateRacketTarget(idx, { setScoreLoseColor: e.target.value })} />
+                            <p className="app-settings-hint" style={{ margin: '4px 0 0' }}>
+                              The instant a set's decided, the score number itself changes to this color automatically — winner's score this color, loser's score the other. Simpler than building a Set Result Trigger action list just for a color change (that section further down still exists for anything beyond a plain color — a different function, a different input, etc).
+                            </p>
+                          </Field>
+                          <Field label="Default Color (not yet decided)">
+                            <input type="color" value={t.setScoreDefaultColor ?? '#ffffff'} onChange={e => updateRacketTarget(idx, { setScoreDefaultColor: e.target.value })} />
+                            <p className="app-settings-hint" style={{ margin: '4px 0 0' }}>
+                              Applied to the set currently being played and any set not reached yet — every box gets a consistent, app-controlled color even before it's won or lost, instead of whatever color the vMix title itself defaults to.
+                            </p>
+                          </Field>
+                          <Field label="Server">
+                            <CardSelect value={t.serverMode ?? 'text'} onChange={v => updateRacketTarget(idx, { serverMode: v })} columns={3}
+                              options={[
+                                { value: 'text', label: 'Team Name', sub: 'Push the serving team\'s name as text' },
+                                { value: 'image', label: 'Server Icon', sub: 'Push a custom icon (not the team logo) when that side serves' },
+                                { value: 'trigger', label: 'Trigger', sub: 'Fire a vMix function when serve changes' },
+                              ]} />
+                          </Field>
+                          {(t.serverMode ?? 'text') === 'text' && exactField(t, idx, 'fieldServerName', 'Server Name Field', 'Server.Text')}
+                          {t.serverMode === 'image' && (
+                            <>
+                              {exactField(t, idx, 'fieldServerImage', 'Server Icon Field', 'Server.Source', (n: string) => n.toLowerCase().endsWith('.source'))}
+                              <Field label={`Icon when ${cfg.teamAName || 'Team A'} serves`}>
+                                <LogoUrlPicker value={t.serverIconA ?? ''} onChange={url => updateRacketTarget(idx, { serverIconA: url })} placeholder="Server icon URL" />
+                              </Field>
+                              <Field label={`Icon when ${cfg.teamBName || 'Team B'} serves`}>
+                                <LogoUrlPicker value={t.serverIconB ?? ''} onChange={url => updateRacketTarget(idx, { serverIconB: url })} placeholder="Server icon URL" />
+                              </Field>
+                              <p className="app-settings-hint" style={{ margin: '4px 0 0' }}>
+                                A dedicated serving indicator (e.g. a shuttle/ball icon or arrow) — not the team's own logo. Use the same image for both sides if you just want one icon to show/hide, or different images per side.
+                              </p>
+                            </>
+                          )}
+                          {t.serverMode === 'trigger' && (
+                            <>
+                              <p className="app-settings-hint" style={{ margin: '4px 0 8px' }}>
+                                Fires the instant serve actually changes — whoever just started serving shows, whoever just stopped hides.
+                              </p>
+                              <Field label="Trigger Type">
+                                <CardSelect value={t.serverTriggerMode ?? 'simple'} onChange={v => updateRacketTarget(idx, { serverTriggerMode: v })} columns={2}
+                                  options={[
+                                    { value: 'simple', label: 'Show/Hide a field', sub: 'Pick a text or image field — it just toggles visible on/off' },
+                                    { value: 'advanced', label: 'Action list', sub: 'Any vMix or app function, same picker as a Quick Button' },
+                                  ]} />
+                              </Field>
+                              {(t.serverTriggerMode ?? 'simple') === 'simple' ? (
+                                ([
+                                  ['A', cfg.teamAName || 'Team A', 'serverVisibleFieldA', 'serverVisibleTypeA'],
+                                  ['B', cfg.teamBName || 'Team B', 'serverVisibleFieldB', 'serverVisibleTypeB'],
+                                ] as const).map(([side, name, fieldKey, typeKey]) => {
+                                  return (
+                                    <CollapsibleSection key={side} label={`${name}'s serving indicator`} defaultOpen={false}>
+                                      <Field label="Type">
+                                        <CardSelect value={t[typeKey] ?? 'text'} onChange={v => updateRacketTarget(idx, { [typeKey]: v } as Partial<RacketVmixTarget>)} columns={2}
+                                          options={[{ value: 'text', label: 'Text' }, { value: 'image', label: 'Image' }]} />
+                                      </Field>
+                                      {/* Same vMix Input as the rest of this target (picked at the
+                                         top) — no separate Input picker here, this field lives on
+                                         the same input every other field on this target uses. */}
+                                      <Field label="Field">
+                                        {renderFieldPicker(t.inputKey, (t[fieldKey] as string) ?? '',
+                                          v => updateRacketTarget(idx, { [fieldKey]: v } as Partial<RacketVmixTarget>),
+                                          (t[typeKey] ?? 'text') === 'image' ? 'Server.Source' : 'Server.Text',
+                                          (t[typeKey] ?? 'text') === 'image' ? (n: string) => n.toLowerCase().endsWith('.source') : undefined)}
+                                      </Field>
+                                    </CollapsibleSection>
+                                  );
+                                })
+                              ) : (
+                                ([
+                                  ['serverShowActionsA', `${cfg.teamAName || 'Team A'} starts serving`],
+                                  ['serverHideActionsA', `${cfg.teamAName || 'Team A'} stops serving`],
+                                  ['serverShowActionsB', `${cfg.teamBName || 'Team B'} starts serving`],
+                                  ['serverHideActionsB', `${cfg.teamBName || 'Team B'} stops serving`],
+                                ] as const).map(([key, label]) => (
+                                  <CollapsibleSection key={key} label={label} defaultOpen={false}>
+                                    <ActionListEditor actions={t[key] ?? []} onChange={(next) => updateRacketTarget(idx, { [key]: next })} sectionKey={`racket-${t.id}-${key}`}
+                                      pages={pages} timerWidgets={pages.flatMap(p => p.widgets.filter(w => w.type === 'timer'))}
+                                      scoreboardWidgets={pages.flatMap(p => p.widgets.filter(w => w.type === 'scoreboard' || w.type === 'racket-scoreboard'))}
+                                      globalVariables={globalVariables} allInputs={allInputs}
+                                      cgTemplateWidgets={[...pages, ...store.libraryPages].flatMap(p => p.widgets.filter(w => w.type === 'cg-template'))} />
+                                  </CollapsibleSection>
+                                ))
+                              )}
+                            </>
+                          )}
+                        </>
+                      )}
+                    </>
+                  )}
+                </div>
+              );
+            })}
+            <button className="btn btn--ghost btn--small" onClick={() => setRacketTargets([...racketTargets, { id: crypto.randomUUID(), inputKey: '' }])}>+ Add vMix Input</button>
           </CollapsibleSection>
         );
 
-        return renderTabbed(general, vmix);
+        const vmix = (
+          <>
+          {racketVmixSection}
+          <CollapsibleSection label="Set Result Triggers" defaultOpen={false}>
+            <p className="app-settings-hint" style={{ margin: '0 0 8px' }}>
+              Fires the instant a set is decided — one action list per team per outcome, so each can drive its own vMix function (change a color, set text/image, overlay in/out, or anything else — same picker as a Quick Button).
+            </p>
+            {([
+              ['setWinActionsA', `${cfg.teamAName || 'Team A'} wins a set`],
+              ['setLoseActionsA', `${cfg.teamAName || 'Team A'} loses a set`],
+              ['setWinActionsB', `${cfg.teamBName || 'Team B'} wins a set`],
+              ['setLoseActionsB', `${cfg.teamBName || 'Team B'} loses a set`],
+            ] as const).map(([key, label]) => (
+              <CollapsibleSection key={key} label={label} defaultOpen={false}>
+                <ActionListEditor actions={cfg[key] ?? []} onChange={(next) => up({ [key]: next })} sectionKey={`racket-${key}`}
+                  pages={pages} timerWidgets={pages.flatMap(p => p.widgets.filter(w => w.type === 'timer'))}
+                  scoreboardWidgets={pages.flatMap(p => p.widgets.filter(w => w.type === 'scoreboard' || w.type === 'racket-scoreboard'))}
+                  globalVariables={globalVariables} allInputs={allInputs}
+                  cgTemplateWidgets={[...pages, ...store.libraryPages].flatMap(p => p.widgets.filter(w => w.type === 'cg-template'))} />
+              </CollapsibleSection>
+            ))}
+          </CollapsibleSection>
+          </>
+        );
+
+        // Starting-lineup field template for one side/slot-type — same
+        // picker-or-manual {n} convention setScoreTemplateField above
+        // already uses, just keyed to the 6 playerNameTemplateA/B etc.
+        // fields instead and sharing ONE mode toggle (playerTemplateMode)
+        // across all of them rather than one each, since in practice a
+        // naming scheme is either all-picker or all-manual.
+        const playerTemplateField = (
+          target: RacketVmixTarget, idx: number,
+          key: 'playerNameTemplateA' | 'playerJerseyTemplateA' | 'playerPositionTemplateA' | 'playerNameTemplateB' | 'playerJerseyTemplateB' | 'playerPositionTemplateB',
+          fieldLabel: string, placeholder: string,
+        ) => {
+          const mode = target.playerTemplateMode ?? 'picker';
+          const template = target[key] ?? '';
+          return (
+            <Field label={fieldLabel}>
+              {mode === 'manual' ? (
+                <input className="field-input" value={template} placeholder={placeholder}
+                  onChange={e => updateRacketTarget(idx, { [key]: e.target.value } as Partial<RacketVmixTarget>)} />
+              ) : (
+                renderFieldPicker(
+                  target.inputKey,
+                  template ? template.replace(/\{n\}/g, '1') : '',
+                  v => updateRacketTarget(idx, { [key]: deriveSetTemplate(v) } as Partial<RacketVmixTarget>),
+                  placeholder.replace('{n}', '1'),
+                )
+              )}
+            </Field>
+          );
+        };
+
+        const player = (
+          <>
+            <CollapsibleSection label="Player Area Size">
+              <Field label="Size">
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <input type="range" min={60} max={250} step={10} className="field-range"
+                    value={Math.round((cfg.playerAreaScale ?? 1) * 100)}
+                    onChange={e => up({ playerAreaScale: Number(e.target.value) / 100 })} />
+                  <span style={{ minWidth: 40, textAlign: 'right', fontSize: 12, color: 'var(--text-secondary)' }}>{Math.round((cfg.playerAreaScale ?? 1) * 100)}%</span>
+                </div>
+                <p className="app-settings-hint" style={{ margin: '4px 0 0' }}>
+                  Starters/Subs/Roster start tiny (an 8-9px lineup list) to fit a long roster without dominating the widget — bump this up if it's too small to read at a glance.
+                </p>
+              </Field>
+            </CollapsibleSection>
+            <CollapsibleSection label="Push Starting Lineup to vMix" defaultOpen={false}>
+              <p className="app-settings-hint" style={{ margin: '0 0 8px' }}>
+                Pushes each starter slot's Name/Jersey/Position to its own field, same {'{n}'}-per-slot convention the Per-Set Score fields use — slot 1 is the first starter, slot 2 the second, and so on up to Player Count (Scoring Rules tab) slots.
+              </p>
+              {racketTargets.map((t, idx) => (
+                <CollapsibleSection key={t.id} label={racketTargets.length > 1 ? `vMix Input ${idx + 1}` : 'Fields'} defaultOpen={racketTargets.length === 1}>
+                  {!t.inputKey ? (
+                    <p className="app-settings-hint" style={{ margin: 0 }}>Pick this target's vMix Input on the vMix Output tab first.</p>
+                  ) : (
+                    <>
+                      <Field label="Field Naming">
+                        <CardSelect value={t.playerTemplateMode ?? 'picker'} onChange={v => updateRacketTarget(idx, { playerTemplateMode: v })} columns={2}
+                          options={[
+                            { value: 'picker', label: 'Pick from list', sub: 'Browse Slot 1\'s real field — the pattern is derived automatically' },
+                            { value: 'manual', label: 'Type manually', sub: 'For a field that doesn\'t exist in vMix yet' },
+                          ]} />
+                      </Field>
+                      {playerTemplateField(t, idx, 'playerNameTemplateA', `${cfg.teamAName || 'Team A'} — Name Field`, 'PlayerA{n}Name.Text')}
+                      {playerTemplateField(t, idx, 'playerJerseyTemplateA', `${cfg.teamAName || 'Team A'} — Jersey Field`, 'PlayerA{n}Jersey.Text')}
+                      {playerTemplateField(t, idx, 'playerPositionTemplateA', `${cfg.teamAName || 'Team A'} — Position Field`, 'PlayerA{n}Position.Text')}
+                      {playerTemplateField(t, idx, 'playerNameTemplateB', `${cfg.teamBName || 'Team B'} — Name Field`, 'PlayerB{n}Name.Text')}
+                      {playerTemplateField(t, idx, 'playerJerseyTemplateB', `${cfg.teamBName || 'Team B'} — Jersey Field`, 'PlayerB{n}Jersey.Text')}
+                      {playerTemplateField(t, idx, 'playerPositionTemplateB', `${cfg.teamBName || 'Team B'} — Position Field`, 'PlayerB{n}Position.Text')}
+                    </>
+                  )}
+                </CollapsibleSection>
+              ))}
+              {!racketTargets.length && (
+                <p className="app-settings-hint" style={{ margin: 0 }}>Add a vMix Input on the vMix Output tab first.</p>
+              )}
+            </CollapsibleSection>
+          </>
+        );
+
+        const racketHotkeys: { id: string; label?: string; hotkey: string; action: string }[] = cfg.racketHotkeys ?? [];
+        const updateRacketHotkey = (i: number, patch: Partial<{ label: string; hotkey: string; action: string }>) =>
+          up({ racketHotkeys: racketHotkeys.map((h, j) => j === i ? { ...h, ...patch } : h) });
+        const shortcut = (
+          <CollapsibleSection label="Shortcut Keys">
+            <p className="app-settings-hint" style={{ margin: '0 0 8px' }}>
+              Bind a physical key to any button on this widget — scoring, undo, serve, timer, reset. Fires even while the app is minimized or unfocused, and works exactly like clicking the button itself (same guards — e.g. scoring stays locked until Start, Reset still needs two presses to confirm).
+            </p>
+            {racketHotkeys.map((h, i) => (
+              <div key={h.id} className="vil-cfg-block">
+                <div className="vil-cfg-header">
+                  <span className="vil-cfg-label">{h.label || RACKET_SHORTCUT_ACTIONS.find(a => a.value === h.action)?.label || `Shortcut ${i + 1}`}</span>
+                  <button className="btn btn--ghost btn--small"
+                    onClick={() => up({ racketHotkeys: racketHotkeys.filter((_, j) => j !== i) })}>×</button>
+                </div>
+                <Field label="Button">
+                  <CustomBox>
+                    <select className="field-input" value={h.action} onChange={e => updateRacketHotkey(i, { action: e.target.value })}>
+                      <option value="">— pick a button —</option>
+                      {RACKET_SHORTCUT_ACTIONS.map(a => <option key={a.value} value={a.value}>{a.label}</option>)}
+                    </select>
+                  </CustomBox>
+                </Field>
+                <Field label="Label (optional)">
+                  <input className="field-input" value={h.label ?? ''} placeholder="Shown in Companion/the duplicate-key warning" onChange={e => updateRacketHotkey(i, { label: e.target.value })} />
+                </Field>
+                <Field label="Hotkey">
+                  <HotkeyRecorder value={h.hotkey} onChange={v => updateRacketHotkey(i, { hotkey: v })} allBindings={allHotkeyBindings} />
+                </Field>
+              </div>
+            ))}
+            <button className="action-add-btn"
+              onClick={() => up({ racketHotkeys: [...racketHotkeys, { id: crypto.randomUUID(), label: '', hotkey: '', action: '' }] })}>
+              + Add Shortcut
+            </button>
+          </CollapsibleSection>
+        );
+
+        return renderTabbed(general, vmix, player, shortcut);
       }
 
       case 'scoreboard': {
@@ -3989,8 +4394,12 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
             <CustomBox>
               <select className="field-input" value={cfg.linkedScoreboardId ?? ''} onChange={e => up({ linkedScoreboardId: e.target.value })}>
                 <option value="">— none —</option>
-                {pages.flatMap(p => p.widgets.filter(w => w.type === 'scoreboard')).map(w => (
-                  <option key={w.id} value={w.id}>{w.config.name || `Scoreboard (${w.config.teamAName || 'A'} vs ${w.config.teamBName || 'B'})`}</option>
+                {pages.flatMap(p => p.widgets.filter(w => w.type === 'scoreboard' || w.type === 'racket-scoreboard')).map(w => (
+                  <option key={w.id} value={w.id}>
+                    {w.config.name || (w.type === 'racket-scoreboard'
+                      ? `${SPORT_LABELS[w.config.sport as SportType] ?? 'Racket'} (${w.config.teamAName || 'A'} vs ${w.config.teamBName || 'B'})`
+                      : `Scoreboard (${w.config.teamAName || 'A'} vs ${w.config.teamBName || 'B'})`)}
+                  </option>
                 ))}
               </select>
             </CustomBox>
@@ -4681,6 +5090,10 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
                   {prefixField('paPrefix', 'Points Against prefix', 'Pick PA1.Text → auto-prefix')}
                   {prefixField('diffPrefix', 'Diff prefix', 'Pick Diff1.Text → auto-prefix')}
                   {prefixField('ptsPrefix', 'Points prefix', 'Pick Pts1.Text → auto-prefix')}
+                  {prefixField('rankChangePrefix', 'Rank Change prefix', 'Pick RankChange1.Text → auto-prefix')}
+                  <p style={{ fontSize: 10, color: 'var(--text-muted)', margin: '-4px 0 4px' }}>
+                    Rank Change shows ▲1 / ▼2 / – — how many places each team moved because of the most recently saved result in this group.
+                  </p>
                   {prefixField('logoPrefix', 'Logo prefix', 'Pick Logo1.Source → auto-prefix', 'Source')}
                   <MergeFieldComposer
                     parts={GROUP_STANDINGS_MERGE_PARTS}
@@ -6180,6 +6593,14 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
           <div className="config-panel-tabs">
             <button type="button" className={`config-panel-tab${configTab === 'general' ? ' config-panel-tab--active' : ''}`}
               onClick={() => setConfigTab('general')}>General</button>
+            {widget.type === 'racket-scoreboard' && (
+              <>
+                <button type="button" className={`config-panel-tab${configTab === 'player' ? ' config-panel-tab--active' : ''}`}
+                  onClick={() => setConfigTab('player')}><Users size={12} strokeWidth={2} /> Players</button>
+                <button type="button" className={`config-panel-tab${configTab === 'shortcut' ? ' config-panel-tab--active' : ''}`}
+                  onClick={() => setConfigTab('shortcut')}><Zap size={12} strokeWidth={2} /> Shortcut</button>
+              </>
+            )}
             <button type="button" className={`config-panel-tab${configTab === 'vmix' ? ' config-panel-tab--active' : ''}`}
               onClick={() => setConfigTab('vmix')}><Cast size={12} strokeWidth={2} /> vMix Input</button>
           </div>

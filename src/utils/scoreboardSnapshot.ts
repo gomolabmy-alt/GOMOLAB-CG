@@ -4,6 +4,7 @@ import { useTeamDbStore } from '../stores/teamDbStore';
 import { useMatchScheduleStore, type ScheduledMatch } from '../stores/matchScheduleStore';
 import { useCanvasStore } from '../stores/canvasStore';
 import { computeShootoutStatus } from '../lib/shootout';
+import { initRallyMatch, initTennisMatch, rallyGamesWon, type RallyMatchState, type TennisMatchState } from '../lib/racketScoring';
 
 function formatTimeOfDay(ms: number): string {
   const d = new Date(ms);
@@ -60,6 +61,45 @@ export function computeMatchSignature(cfg: Record<string, any>): string {
 
 export function hasScoreboardContent(cfg: Record<string, any>): boolean {
   return !!(cfg.teamAName || cfg.teamBName);
+}
+
+// A RacketScoreboardWidget config (badminton/table tennis/tennis/
+// sepaktakraw) tracks its live score as rallyState/tennisState, not the
+// plain scoreA/scoreB every other scoreboard uses — guardScoreboardOverwrite/
+// buildResultFromConfig/computeMatchSignature below are all written against
+// that plain scoreA/scoreB shape (and already work correctly when the WIDGET
+// itself calls them with its own derived "resultConfig" — see
+// RacketScoreboardWidget.tsx's own Save Result section). This reproduces
+// that exact same derivation so the Schedule tab's "Send to Scoreboard" can
+// call those same generic helpers on a racket target BEFORE overwriting it,
+// without needing its own racket-specific guard/save logic. Deliberately a
+// simplified scoreLog (no tennis tiebreak-loser "(4)" suffix) — this is only
+// ever used for the protective pre-overwrite auto-save, not shown anywhere.
+export function deriveRacketResultConfig(cfg: Record<string, any>): Record<string, any> {
+  const scoringMode: 'rally' | 'tennis' = cfg.scoringMode ?? 'rally';
+  const rallyState: RallyMatchState = cfg.rallyState ?? initRallyMatch();
+  const tennisState: TennisMatchState = cfg.tennisState ?? initTennisMatch();
+  const completedGames = scoringMode === 'tennis' ? tennisState.sets : rallyState.games;
+  const gamesWonA = scoringMode === 'tennis' ? tennisState.setsA : rallyGamesWon(rallyState, 'A');
+  const gamesWonB = scoringMode === 'tennis' ? tennisState.setsB : rallyGamesWon(rallyState, 'B');
+  return {
+    ...cfg,
+    scoreA: gamesWonA, scoreB: gamesWonB,
+    scoreLog: completedGames.map((g, i) => ({
+      team: (g.a > g.b ? 'A' : 'B') as 'A' | 'B',
+      action: `Game ${i + 1}`, points: 1, period: i + 1,
+      timeStr: `${g.a}-${g.b}`,
+    })),
+    // Total RALLY points across every set (see SavedMatchResult.racketPointsA/B's
+    // own doc comment) — e.g. sepaktakraw's official standings PW/PL columns.
+    // Only computed for sepaktakraw itself — every other racket sport
+    // (badminton/table tennis/tennis) never reads this back, so there's
+    // nothing to compute for them.
+    ...(cfg.sport === 'sepaktakraw' ? {
+      racketPointsA: completedGames.reduce((sum, g) => sum + g.a, 0),
+      racketPointsB: completedGames.reduce((sum, g) => sum + g.b, 0),
+    } : {}),
+  };
 }
 
 // Best-effort "how much game time was actually played" summary from a
@@ -149,6 +189,11 @@ export function buildResultFromConfig(cfg: Record<string, any>, timerCfg?: Recor
     matchType: cfg.matchType || undefined,
     walkoverLoser: cfg.walkoverLoser || undefined,
     sourceScheduleId: cfg.linkedScheduleMatchId || undefined,
+    // Only ever set on a racket-sport resultConfig (see deriveRacketResultConfig
+    // and RacketScoreboardWidget.tsx's own resultConfig) — a plain-scoreboard
+    // cfg never has these, so this is just undefined/undefined there.
+    racketPointsA: typeof cfg.racketPointsA === 'number' ? cfg.racketPointsA : undefined,
+    racketPointsB: typeof cfg.racketPointsB === 'number' ? cfg.racketPointsB : undefined,
     scoreLog: (cfg.scoreLog ?? []).length > 0
       ? (cfg.scoreLog as any[]).map(e => ({
           team: e.team, action: e.action, points: e.points,
@@ -206,7 +251,29 @@ export function buildResultFromConfig(cfg: Record<string, any>, timerCfg?: Recor
         return out;
       };
       const lineup = [...lineupFor(cfg.linkedPlayerListA, 'A'), ...lineupFor(cfg.linkedPlayerListB, 'B')];
-      return lineup.length > 0 ? lineup : undefined;
+      if (lineup.length > 0) return lineup;
+      // A racket-scoreboard (badminton/table tennis/tennis/sepaktakraw)
+      // tracks its own starters (config.startersA/startersB — a sepaktakraw
+      // regu's Tekong/Apit Kiri/Apit Kanan, a doubles pair, etc.) directly on
+      // the widget, with no separate Player List widget needed — fall back
+      // to THAT when there's no linked-Player-List lineup above, so the
+      // result (and from there, the public scoring page) still gets a
+      // roster instead of none at all. No real playerId exists for these
+      // (just name/jerseyNo/position, see RacketPlayerEntry), so one's
+      // synthesized from name+jerseyNo — stable enough for list rendering,
+      // just not a real Team DB player link.
+      const racketLineupFor = (side: 'A' | 'B'): NonNullable<SavedMatchResult['lineup']> => {
+        const raw: unknown[] = Array.isArray(cfg[side === 'A' ? 'startersA' : 'startersB']) ? cfg[side === 'A' ? 'startersA' : 'startersB'] : [];
+        return raw.flatMap((r, i): NonNullable<SavedMatchResult['lineup']> => {
+          const entry = typeof r === 'string' ? { name: r, jerseyNo: '' } : (r && typeof r === 'object' ? r as Record<string, unknown> : {});
+          const name = typeof entry.name === 'string' ? entry.name : '';
+          if (!name) return [];
+          const jerseyNo = typeof entry.jerseyNo === 'string' ? entry.jerseyNo : '';
+          return [{ team: side, playerId: `${name}#${jerseyNo || i}`, jerseyNo, name, section: 'starter', subbedOn: false }];
+        });
+      };
+      const racketLineup = [...racketLineupFor('A'), ...racketLineupFor('B')];
+      return racketLineup.length > 0 ? racketLineup : undefined;
     })(),
     timerSummary: computeTimerSummary(timerCfg),
   };
@@ -262,6 +329,40 @@ export function buildLoadMatchPatch(m: ScheduledMatch): Record<string, any> {
     shootoutKicks: [], shootoutOpen: false,
     lastSavedSignature: '',
     actualKickoffAt: undefined,
+    linkedTournamentId: m.tournamentId ?? '',
+    linkedScheduleMatchId: m.id,
+    matchType: m.matchType || '',
+    walkoverLoser: m.walkoverLoser || '',
+  };
+}
+
+/**
+ * Same job as buildLoadMatchPatch above, for a RacketScoreboardWidget target
+ * (badminton/table tennis/tennis/sepaktakraw) instead of the plain
+ * ScoreboardWidget — its live score lives in rallyState/tennisState rather
+ * than scoreA/scoreB, so loading a new fixture resets those (plus the Team
+ * Event regu tally and game timer) the same way the widget's own newMatch()
+ * reset does, instead of leaving the outgoing match's score/sets behind.
+ *
+ * `forceFullSets` (see RacketSportSettings.forceFullSetsInGroupStage) auto-
+ * sets the widget's own "Play all games" option for this ONE fixture load —
+ * the caller decides whether that applies (on, AND this is a group-stage
+ * fixture, never a knockout one) rather than this function knowing anything
+ * about stages itself. `gamesToWin` just needs to be the tournament's own
+ * current setting so totalGames (gamesToWin*2-1) matches it exactly.
+ */
+export function buildLoadMatchPatchRacket(m: ScheduledMatch, opts?: { forceFullSets?: boolean; gamesToWin?: number }): Record<string, any> {
+  return {
+    competition: m.competition ?? '', subtitle: m.round ?? '', category: m.category ?? '',
+    group: m.group ?? '', tier: m.tier ?? '', scheduledTime: m.time ?? '',
+    teamAId: m.teamAId, teamAName: m.teamAName, teamAShortName: m.teamAShortName ?? '', teamAColor: m.teamAColor, teamALogo: m.teamALogo ?? '',
+    teamBId: m.teamBId, teamBName: m.teamBName, teamBShortName: m.teamBShortName ?? '', teamBColor: m.teamBColor, teamBLogo: m.teamBLogo ?? '',
+    rallyState: initRallyMatch(), tennisState: initTennisMatch(), pointHistory: [], pointLog: [],
+    regusWonA: 0, regusWonB: 0, reguHistory: [], reguDraftsA: {}, reguDraftsB: {},
+    gameStartedAt: undefined, gameEndedAt: undefined, gameDurationsMs: [],
+    playAllGames: !!opts?.forceFullSets,
+    totalGames: opts?.forceFullSets ? (opts.gamesToWin ?? 2) * 2 - 1 : undefined,
+    lastSavedSignature: '',
     linkedTournamentId: m.tournamentId ?? '',
     linkedScheduleMatchId: m.id,
     matchType: m.matchType || '',
@@ -328,10 +429,10 @@ function useLiveScoreboardConfigMap(): Map<string, Record<string, any>> {
     const completedIds = new Set(matches.filter(m => m.completedAt).map(m => m.id));
     const map = new Map<string, Record<string, any>>();
     for (const w of allWidgets) {
-      if (w.type !== 'scoreboard') continue;
+      if (w.type !== 'scoreboard' && w.type !== 'racket-scoreboard') continue;
       const cfg = w.config;
       const dc = cfg.linkedScoreboardSourceId
-        ? allWidgets.find(x => x.id === cfg.linkedScoreboardSourceId && x.type === 'scoreboard')?.config ?? cfg
+        ? allWidgets.find(x => x.id === cfg.linkedScoreboardSourceId && x.type === w.type)?.config ?? cfg
         : cfg;
       const fixtureId = dc.linkedScheduleMatchId;
       if (fixtureId && !completedIds.has(fixtureId)) map.set(fixtureId, dc);

@@ -1,7 +1,7 @@
 import type { ScheduledMatch } from '../stores/matchScheduleStore';
 import type { SavedMatchResult } from '../stores/matchResultsStore';
 import type { SavedTeam } from '../stores/teamDbStore';
-import type { TournamentSettings } from '../types/tournament';
+import type { TournamentSettings, SportType } from '../types/tournament';
 import { isPlacementRoundLabel, placementRoundRange } from './scheduleGen';
 import { computeStandings, findMatchWinner, extractKnockoutStage, isPoolStageResult } from '../components/TournamentManager';
 
@@ -48,6 +48,7 @@ export function resolvePlacementTeam(
   scopedTeams: SavedTeam[],
   tournamentId: string,
   settings: TournamentSettings,
+  sport?: SportType,
 ): ResolvedPlacementTeam | null {
   if (rank === 1 || rank === 2) {
     const final = scopedMatches.find(m => extractKnockoutStage(m) === 'Final' && (!m.tier || m.tier === 'Cup'));
@@ -78,7 +79,7 @@ export function resolvePlacementTeam(
     }
   }
 
-  const standing = computeStandings(scopedTeams, scopedResults.filter(isPoolStageResult), settings)[rank - 1];
+  const standing = computeStandings(scopedTeams, scopedResults.filter(isPoolStageResult), settings, sport)[rank - 1];
   if (standing) {
     return { id: standing.teamId, name: standing.name, shortName: standing.shortName, color: standing.color, logo: standing.logo };
   }

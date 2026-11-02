@@ -19,6 +19,15 @@ export function ConnectionSetup() {
     await connect({ host: host.trim(), port: parseInt(port, 10) || 8088 });
   };
 
+  // vMix running on THIS machine — by far the most common setup — used to
+  // require knowing/typing its own loopback address like any other device
+  // on the network. One click straight to 127.0.0.1 instead.
+  const handleConnectLocal = async () => {
+    const p = parseInt(port, 10) || 8088;
+    setHost('127.0.0.1');
+    await connect({ host: '127.0.0.1', port: p });
+  };
+
   const handleConnectSaved = (conn: SavedConnection) => {
     setHost(conn.host);
     setPort(String(conn.port));
@@ -42,6 +51,18 @@ export function ConnectionSetup() {
             <span className="connect-logo-sub">vMix Control</span>
           </div>
         </div>
+
+        <button
+          className="btn btn--primary btn--full"
+          type="button"
+          onClick={handleConnectLocal}
+          disabled={isConnecting}
+        >
+          {isConnecting ? 'Connecting…' : 'Connect to Local vMix (This Device)'}
+        </button>
+        <p className="connect-hint" style={{ margin: '6px 0 14px' }}>
+          vMix running on another computer? Enter its address below instead.
+        </p>
 
         <form onSubmit={handleConnect} className="connect-form">
           <div className="field-row">

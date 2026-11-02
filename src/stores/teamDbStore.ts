@@ -43,6 +43,15 @@ export interface SavedTeam {
    *  same group are both given the same explicit position, that slot is
    *  left blank in the group list push rather than guessing which wins. */
   groupPosition?: number;
+  /** Manual tie-break order (1 = ranks highest) for when this team is still
+   *  fully tied with another on every automatic standings criterion (points,
+   *  for/against difference, etc. — see findTiedGroups in TournamentManager.tsx)
+   *  once the group stage is finished. Only ever consulted as the LAST
+   *  resort, after every real criterion already failed to separate two
+   *  teams — set from the Standings tab's tie-break confirmation control,
+   *  never auto-assigned. Unset means "not yet confirmed" (falls back to
+   *  today's arbitrary stable order). */
+  tieBreakPriority?: number;
   /** Seeding pot for the live draw (e.g. "Pot 1") — must match a name in
    *  Tournament.pots. Assigned before drawing; unrelated to `group`, which
    *  is the draw's OUTPUT. */

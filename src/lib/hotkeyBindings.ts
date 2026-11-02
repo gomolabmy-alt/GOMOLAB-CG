@@ -41,6 +41,23 @@ export function collectHotkeyBindings(pages: CanvasPage[]): HotkeyBinding[] {
           out.push({ accelerator: hb.hotkey, actions: hb.actions ?? [], source: hb.label || widgetLabel });
         }
       }
+
+      // Racket scoreboard's own Shortcut tab — a fixed preset-action list
+      // (not a free-form ActionListEditor one like hotkeyActions above)
+      // since each entry just needs to name ONE of this widget's own
+      // buttons (Score A, Undo, Swap Serve, …) — see RACKET_SHORTCUT_ACTIONS
+      // in RacketScoreboardWidget.tsx for the full list. Routed through the
+      // generic App.RacketAction function (canvasStore.ts's own
+      // executeAppFunction) so it reuses this exact same OS-registration
+      // pipeline rather than a parallel one.
+      if (w.type === 'racket-scoreboard') {
+        for (const rh of cfg.racketHotkeys ?? []) {
+          if (rh.hotkey && rh.action) {
+            const widgetLabel = cfg.teamAName ? `${cfg.teamAName} vs ${cfg.teamBName}` : w.type;
+            out.push({ accelerator: rh.hotkey, actions: [{ fn: 'App.RacketAction', params: { Input: w.id, Action: rh.action } }], source: rh.label || widgetLabel });
+          }
+        }
+      }
     }
   }
   return out;
@@ -183,6 +200,18 @@ export function collectCompanionButtonTargets(pages: CanvasPage[]): CompanionBut
           actions: hb.actions ?? [],
           accelerator: hb.hotkey || undefined,
         });
+      }
+
+      if (w.type === 'racket-scoreboard') {
+        for (const rh of cfg.racketHotkeys ?? []) {
+          const widgetLabel = cfg.teamAName ? `${cfg.teamAName} vs ${cfg.teamBName}` : w.type;
+          out.push({
+            id: `${w.id}:hotkey:${rh.id}`,
+            label: rh.label || widgetLabel,
+            actions: rh.action ? [{ fn: 'App.RacketAction', params: { Input: w.id, Action: rh.action } }] : [],
+            accelerator: rh.hotkey || undefined,
+          });
+        }
       }
     }
   }

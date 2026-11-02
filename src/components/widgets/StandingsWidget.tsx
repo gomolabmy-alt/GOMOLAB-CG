@@ -58,14 +58,14 @@ export function StandingsWidget({ widgetId, config }: Props) {
       <div className="wgt-standings-header">{title}</div>
       <div className="wgt-standings-body">
         {groups.length === 0 ? (
-          <StandingsTable title={tournament.name} rows={computeStandings(teams, results, settings)} />
+          <StandingsTable title={tournament.name} rows={computeStandings(teams, results, settings, tournament.sport)} sport={tournament.sport} />
         ) : (
           <>
             {groups.map(g => (
-              <StandingsTable key={g.name} title={g.name} rows={computeStandings(teams.filter(t => t.group === g.name), results, settings)} />
+              <StandingsTable key={g.name} title={g.name} rows={computeStandings(teams.filter(t => t.group === g.name), results, settings, tournament.sport)} sport={tournament.sport} />
             ))}
             {teams.some(t => !t.group) && (
-              <StandingsTable title="Unassigned" rows={computeStandings(teams.filter(t => !t.group), results, settings)} />
+              <StandingsTable title="Unassigned" rows={computeStandings(teams.filter(t => !t.group), results, settings, tournament.sport)} sport={tournament.sport} />
             )}
           </>
         )}

@@ -270,7 +270,13 @@ export const useAppSettings = create<AppSettingsState>()(
       remoteEditMode: false,
       setRemoteEditMode: (v) => set({ remoteEditMode: v }),
 
-      liveSyncDraw: false,
+      // Defaults ON: without it, a Draw assignment made on a remote client
+      // just sits in that window's own local copy and gets silently wiped
+      // by the host's next periodic broadcast (within 5s) — the operator
+      // sees the pairing "work" for a moment, then vanish, with nothing
+      // indicating why. The toggle to turn it off stays available for
+      // whoever deliberately wants to draft offline first.
+      liveSyncDraw: true,
       setLiveSyncDraw: (v) => set({ liveSyncDraw: v }),
 
       clockTimeZone: '',
@@ -320,7 +326,20 @@ export const useAppSettings = create<AppSettingsState>()(
       statusBarEnabled: true,
       setStatusBarEnabled: (v) => set({ statusBarEnabled: v }),
     }),
-    { name: 'gomolab-app-settings' },
+    {
+      name: 'gomolab-app-settings',
+      version: 1,
+      // v1: liveSyncDraw's own default flipped false -> true (see its field
+      // doc comment) — this migration applies that to an already-persisted
+      // install too, not just a fresh one, since a saved `false` from before
+      // this change would otherwise silently keep overriding the new
+      // default forever.
+      migrate: (persisted, version) => {
+        const state = persisted as Record<string, unknown>;
+        if (version < 1 && state?.liveSyncDraw === false) state.liveSyncDraw = true;
+        return state;
+      },
+    },
   ),
 );
 

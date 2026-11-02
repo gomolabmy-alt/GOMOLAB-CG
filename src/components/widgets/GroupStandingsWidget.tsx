@@ -9,7 +9,7 @@ import { SPORT_DEFAULTS } from '../../types/tournament';
 import { CanvasActionContext } from '../../lib/canvasContext';
 import { findTeamRecord } from '../../lib/teamForm';
 import { autoLinkedWidget } from '../../lib/autoLink';
-import { computeStandings, isPoolStageResult, normalizeGroups, StandingsTable, type StandingRow } from '../TournamentManager';
+import { computeStandings, isPoolStageResult, normalizeGroups, StandingsTable, formatRankChange, type StandingRow } from '../TournamentManager';
 import { transparentLogoUrl, clearStaleLogoSlots } from '../../lib/imageUrl';
 
 interface Props {
@@ -22,7 +22,7 @@ interface Props {
 // One row's worth of vMix fields, index-suffixed per team (Rank1.Text,
 // Rank2.Text, ...) — same convention as MatchScheduleWidget's fixture-list
 // push, since a standings table is the same shape (N rows, fixed columns).
-type GroupStandingsMergePart = 'rank' | 'team' | 'shortTeam' | 'played' | 'won' | 'drawn' | 'lost' | 'pf' | 'pa' | 'diff' | 'pts';
+type GroupStandingsMergePart = 'rank' | 'team' | 'shortTeam' | 'played' | 'won' | 'drawn' | 'lost' | 'pf' | 'pa' | 'diff' | 'pts' | 'rankChange';
 function resolveGroupStandingsPart(r: StandingRow, i: number, key: GroupStandingsMergePart): string {
   switch (key) {
     case 'rank':      return String(i + 1);
@@ -36,6 +36,9 @@ function resolveGroupStandingsPart(r: StandingRow, i: number, key: GroupStanding
     case 'pa':     return String(r.pa);
     case 'diff':   return `${r.pf - r.pa > 0 ? '+' : ''}${r.pf - r.pa}`;
     case 'pts':    return String(r.pts);
+    // ▲1 / ▼2 / – — see StandingRow.rankChange's own doc comment for what
+    // this is relative to (the single most recently saved result).
+    case 'rankChange': return formatRankChange(r.rankChange);
   }
 }
 
@@ -56,7 +59,9 @@ export function GroupStandingsWidget({ widgetId, config }: Props) {
   const { tournaments } = useTournamentStore();
 
   const allPages = [...pages, ...commentatorPages];
-  const linkedScoreboard = autoLinkedWidget(allPages, widgetId, config.linkedScoreboardId, 'scoreboard');
+  // Plain OR racket scoreboard (badminton/table tennis/tennis/sepaktakraw) —
+  // only team identity/category fields are read below, shared by both types.
+  const linkedScoreboard = autoLinkedWidget(allPages, widgetId, config.linkedScoreboardId, ['scoreboard', 'racket-scoreboard']);
   const dc = linkedScoreboard?.config ?? {};
   const teamAName: string = dc.teamAName ?? '';
   const teamBName: string = dc.teamBName ?? '';
@@ -77,7 +82,7 @@ export function GroupStandingsWidget({ widgetId, config }: Props) {
     const groupTeams = allTeams.filter(t => t.tournamentId === tournament.id && (!category || t.category === category) && t.group === groupName);
     // Group standings must only count pool-stage results — see isPoolStageResult.
     const poolResults = allResults.filter(r => r.tournamentId === tournament.id && isPoolStageResult(r));
-    return computeStandings(groupTeams, poolResults, settings);
+    return computeStandings(groupTeams, poolResults, settings, tournament.sport);
   }, [tournament, groupName, allTeams, allResults, category]);
 
   const groupLabel = useMemo(() => {
@@ -94,6 +99,7 @@ export function GroupStandingsWidget({ widgetId, config }: Props) {
     { key: 'drawnPrefix', part: 'drawn' }, { key: 'lostPrefix', part: 'lost' },
     { key: 'pfPrefix', part: 'pf' }, { key: 'paPrefix', part: 'pa' },
     { key: 'diffPrefix', part: 'diff' }, { key: 'ptsPrefix', part: 'pts' },
+    { key: 'rankChangePrefix', part: 'rankChange' },
   ];
 
   const sendToVmix = useCallback(() => {
@@ -172,7 +178,7 @@ export function GroupStandingsWidget({ widgetId, config }: Props) {
         )}
       </div>
       <div className="wgt-standings-body">
-        <StandingsTable title={groupLabel} rows={rows} />
+        <StandingsTable title={groupLabel} rows={rows} sport={tournament?.sport} />
       </div>
     </div>
   );

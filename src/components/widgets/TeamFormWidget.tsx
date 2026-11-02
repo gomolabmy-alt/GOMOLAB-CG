@@ -44,9 +44,11 @@ export function TeamFormWidget({ widgetId, config }: Props) {
   const { matches } = useMatchScheduleStore();
 
   const allPages = useMemo(() => [...pages, ...commentatorPages], [pages, commentatorPages]);
-  // Falls back to the sole Scoreboard widget on this page when nothing's
-  // been explicitly linked in settings — an explicit pick always wins.
-  const linkedScoreboard = autoLinkedWidget(allPages, widgetId, config.linkedScoreboardId, 'scoreboard');
+  // Falls back to the sole Scoreboard (plain OR racket — badminton/table
+  // tennis/tennis/sepaktakraw) widget on this page when nothing's been
+  // explicitly linked in settings — an explicit pick always wins. Only team
+  // identity fields are read below, shared by both widget types.
+  const linkedScoreboard = autoLinkedWidget(allPages, widgetId, config.linkedScoreboardId, ['scoreboard', 'racket-scoreboard']);
   const dc = linkedScoreboard?.config ?? {};
 
   const teamAName: string = dc.teamAName ?? 'Team A';

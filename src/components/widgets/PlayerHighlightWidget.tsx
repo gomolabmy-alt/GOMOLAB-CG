@@ -65,7 +65,9 @@ export function PlayerHighlightWidget({ widgetId, config }: Props) {
   const disp = (name: string) => simplifyPlayerName(name, { simplifyMuhammad: simplifyMuhammadNames, firstNameOnly: simplifyFirstNameOnly, removeBinMarkers, truncateAtBinMarker });
 
   const allPages = [...pages, ...commentatorPages];
-  const linkedScoreboard = autoLinkedWidget(allPages, widgetId, config.linkedScoreboardId, 'scoreboard');
+  // Plain OR racket scoreboard (badminton/table tennis/tennis/sepaktakraw) —
+  // only team identity/category fields are read below, shared by both types.
+  const linkedScoreboard = autoLinkedWidget(allPages, widgetId, config.linkedScoreboardId, ['scoreboard', 'racket-scoreboard']);
   const dc = linkedScoreboard?.config ?? {};
   const side: 'A' | 'B' = config.teamSide === 'B' ? 'B' : 'A';
   const teamAName: string = dc.teamAName ?? 'Team A';

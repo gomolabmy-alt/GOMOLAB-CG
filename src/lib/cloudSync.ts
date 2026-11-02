@@ -870,6 +870,20 @@ async function pullAll() {
     } = await res.json();
 
     const liveIds = getLiveFixtureIds();
+    // A record this device deleted locally but hasn't successfully PUSHED
+    // yet (the push is what actually tells the cloud to remove it — see
+    // buildPushPayload's deletedMatchIds/deletedResultIds/deletedTeamIds)
+    // must never get silently re-added by a pull in that window, or the
+    // deletion just evaporates — the record goes right back to being a
+    // normal local row, with no further self-heal on the next push either
+    // (it's no longer "pending deletion" once it's back in the main list).
+    // Concretely: startCloudSync() fires an unawaited pullAll() alongside
+    // pushAll() on every launch, so closing the app right after a delete
+    // and reopening it can resurrect the deleted record from the cloud's
+    // still-stale copy before that launch's own push has reconciled it.
+    const pendingDeletedMatchIds = new Set(useMatchScheduleStore.getState().pendingDeletedIds);
+    const pendingDeletedResultIds = new Set(useMatchResultsStore.getState().pendingDeletedIds);
+    const pendingDeletedTeamIds = new Set(useTeamDbStore.getState().pendingDeletedIds);
 
     for (const rt of body.tournaments ?? []) {
       const local = useTournamentStore.getState().tournaments.find(t => t.id === rt.id);
@@ -905,12 +919,14 @@ async function pullAll() {
       // idly, on a mirrored/linked board) would stay stuck showing as live
       // here forever, since completedAt never had a chance to arrive.
       if (liveIds.has(rm.id) && !(rm.data as any)?.completedAt) continue;
+      if (pendingDeletedMatchIds.has(rm.id)) continue;
       const incoming: ScheduledMatch = { ...rm.data, id: rm.id, tournamentId: rm.tournamentId, venueLabel: rm.venueLabel };
       useMatchScheduleStore.setState(s => ({ matches: upsertById(s.matches, incoming).sort(sortMatches) }));
       lastPushedMatch.set(rm.id, recordKey(rm.venueLabel, rm.data));
     }
 
     for (const rr of body.results ?? []) {
+      if (pendingDeletedResultIds.has(rr.id)) continue;
       const incoming: SavedMatchResult = { ...rr.data, id: rr.id, tournamentId: rr.tournamentId, venueLabel: rr.venueLabel };
       useMatchResultsStore.setState(s => ({ results: upsertById(s.results, incoming) }));
       lastPushedResult.set(rr.id, recordKey(rr.venueLabel, rr.data));
@@ -921,6 +937,7 @@ async function pullAll() {
     useMatchResultsStore.getState().dedupeBySourceSchedule();
 
     for (const rtm of body.teams ?? []) {
+      if (pendingDeletedTeamIds.has(rtm.id)) continue;
       const before = useTeamDbStore.getState().teams.find(t => t.id === rtm.id);
       const incoming: SavedTeam = { ...rtm.data, id: rtm.id, tournamentId: rtm.tournamentId };
       useTeamDbStore.setState(s => ({ teams: upsertById(s.teams, incoming) }));

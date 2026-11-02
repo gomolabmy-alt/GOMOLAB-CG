@@ -90,6 +90,16 @@ export interface Tournament {
    *  pre-assigned to a pot via SavedTeam.pot before drawing; the draw then
    *  randomly places one team per pot into each group in turn. */
   pots?: TournamentPot[];
+  /** Categories (or the sentinel `'__all__'` for a tournament with no
+   *  category scoping) the operator has explicitly marked as finished
+   *  drawing — distinct from "every slot happens to be full" (which the
+   *  Draw tab already shows on its own), since an operator may want to
+   *  declare a draw final even with intentionally-empty slots (byes, a
+   *  withdrawn team). Rides along in the normal tournament push/pull like
+   *  groups/pots — the website reads it to show a "Draw Finalized" state
+   *  and a better empty-state message on the Fixtures tab before fixtures
+   *  themselves are generated. */
+  drawCompletedCategories?: string[];
   /** Freely-defined competition categories (e.g. "Men", "Women", "U21") —
    *  teams are assigned to one via SavedTeam.category. A club entering more
    *  than one category duplicates its team entry per category since rosters
@@ -103,6 +113,14 @@ export interface Tournament {
    *  tournament's own `logo`, same precedence CG template bindings
    *  already apply for "nothing more specific is set"). */
   categoryLogos?: Record<string, string>;
+  /** Per-category accent color (e.g. Men = blue, Women = pink) — same
+   *  `Record<categoryName, hex>` convention as categoryLogos above. Shown as
+   *  a left-edge accent stripe on each of that category's fixtures in the
+   *  Schedule tab, so a mixed-category running order stays visually
+   *  scannable at a glance. A category with no entry here just shows no
+   *  accent (not a fallback color — unlike categoryLogos, there's no
+   *  tournament-wide "default color" concept to fall back to). */
+  categoryColors?: Record<string, string>;
   /** Pushes this tournament's own `logo` to one or more vMix image fields —
    *  same manual "Push" button + input/field picker as groupListVmix below,
    *  just for a single static image rather than a numbered list. */
@@ -454,6 +472,17 @@ export interface RacketSportSettings {
    *  pointsToWin-1, i.e. deuce territory, matching ITTF's own deuce
    *  serving rule regardless of what's picked here). */
   serviceAlternateEvery: 1 | 2;
+  /** When on, a GROUP-stage fixture sent to a racket scoreboard (Schedule
+   *  tab's Send button, or the Match Schedule widget's) auto-enables that
+   *  widget's own "Play all games" option — every set gets played out to
+   *  gamesToWin*2-1 even once the match is already decided, so group-stage
+   *  standings always have a full, comparable set-score/point-difference
+   *  record to rank ties on (see findTiedGroups). A KNOCKOUT-stage fixture
+   *  is never affected either way — it always stops the moment a side wins
+   *  enough sets, regardless of this setting, since there's nothing to rank
+   *  there. Off by default (today's existing behavior: every stage stops
+   *  early once decided, same as the widget's own manual toggle always did). */
+  forceFullSetsInGroupStage?: boolean;
 }
 
 export interface TournamentSettings {
@@ -508,7 +537,7 @@ export const SPORT_DEFAULTS: Record<SportType, TournamentSettings> = {
   // lead needed beyond reaching it — see deuceTarget/isRallyGameOver's own
   // doc comments). Serve alternates one-at-a-time regardless of who wins
   // the rally ("satu servis sahaja berselang-seli"), not winner-serves.
-  sepaktakraw:  { periods: 1, periodDurationMs: 0, halfTimeDurationMs: 0, maxOnField: 3, maxSubs: 2, timerMode: 'countup', walkoverWinScore: 2, pointsWin: 1, pointsDraw: 0, pointsLoss: 0,
+  sepaktakraw:  { periods: 1, periodDurationMs: 0, halfTimeDurationMs: 0, maxOnField: 3, maxSubs: 2, timerMode: 'countup', walkoverWinScore: 2, pointsWin: 2, pointsDraw: 0, pointsLoss: 0,
     racketScoring: { mode: 'rally', pointsToWin: 15, winBy2: false, deuceTarget: 17, gamesToWin: 2, tiebreakAtGames: 6, noAd: false, serviceMode: 'auto', serviceRule: 'alternate', serviceAlternateEvery: 1 } },
   custom:      { periods: 2, periodDurationMs: 2700000, halfTimeDurationMs:  900000, maxOnField: 11, maxSubs:  7, timerMode: 'countup',   walkoverWinScore: 1,  pointsWin: 3, pointsDraw: 1, pointsLoss: 0 },
 };

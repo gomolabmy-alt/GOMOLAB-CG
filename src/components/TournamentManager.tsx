@@ -22,6 +22,7 @@ import type { Tournament, SportType, TournamentSettings, TournamentGroup, Tourna
 import { SPORT_LABELS, SPORT_POSITIONS, SPORT_DEFAULTS, getRosterPositions } from '../types/tournament';
 import type { Player } from '../types/tournament';
 import { LogoUrlPicker } from './LogoUrlPicker';
+import { ColorPicker } from './ColorPicker';
 import { InputPickerDropdown, FieldPickerDropdown, RUGBY_UNION_INCS, RUGBY_LEAGUE_INCS, CardSelect, ToggleCard, CustomBox, CollapsibleSection } from './WidgetConfigPanel';
 import { QuickButtonsBar } from './QuickButtonsBar';
 import { BracketView } from './BracketView';
@@ -31,7 +32,7 @@ import { periodLabel } from './widgets/TimerWidget';
 import { autoLinkedWidget } from '../lib/autoLink';
 import {
   generateRoundRobin, generateDoubleRoundRobin, generateKnockout, generateKnockoutFromSlots,
-  buildGroupKnockoutSlots, buildTieredKnockout, buildRankedPlacementKnockout, tierRank, offsetRounds, shuffle,
+  buildGroupKnockoutSlots, buildKnockoutSlotCandidates, buildWinnerRunnerUpSlots, buildTieredKnockout, buildRankedPlacementKnockout, tierRank, offsetRounds, shuffle,
   ensureTopTeamHomeEarly, isPlacementRoundLabel, placementRoundRange,
   PLACEHOLDER_COLOR, type ScheduleTeamRef, type GeneratedFixture,
 } from '../lib/scheduleGen';
@@ -40,7 +41,7 @@ import { useMatchScheduleStore, type ScheduledMatch } from '../stores/matchSched
 import { useMatchResultsStore, type SavedMatchResult } from '../stores/matchResultsStore';
 import { useRundownStore, sortRundownSegments, deriveRundownStatus, type RundownSegment } from '../stores/rundownStore';
 import { resolveImageUrl, transparentLogoUrl } from '../lib/imageUrl';
-import { guardScoreboardOverwrite, buildLoadMatchPatch, useLiveFixtureIds, useLiveScoreboardConfigs, findDuplicateResult, formatLate, parseScheduledDateTime } from '../utils/scoreboardSnapshot';
+import { guardScoreboardOverwrite, buildLoadMatchPatch, buildLoadMatchPatchRacket, deriveRacketResultConfig, buildResultFromConfig, computeMatchSignature, useLiveFixtureIds, useLiveScoreboardConfigs, findDuplicateResult, formatLate, parseScheduledDateTime } from '../utils/scoreboardSnapshot';
 import { pushTournamentNow, computePushDiff, pushResultsOnly, pullResultsOnly, localizeTournamentLogos, type PushDiffItem } from '../lib/cloudSync';
 import { simplifyPlayerName } from '../lib/simpleName';
 import { computeMatchNumbers, useMatchNumbers } from '../utils/matchNumber';
@@ -610,6 +611,12 @@ function SettingsBar({ tournament, onApply }: { tournament: Tournament; onApply:
   // the dedicated "Scoring" group further down instead.
   const isRacketSport = tournament.sport === 'badminton' || tournament.sport === 'table_tennis' || tournament.sport === 'tennis' || tournament.sport === 'sepaktakraw';
   const isTennis = tournament.sport === 'tennis';
+  // Sepaktakraw's own scoring unit is officially a "set" (ISTAF's own
+  // rules — see RacketScoreboardWidget.tsx's pointBadgeLabel), same as
+  // tennis — badminton/table tennis keep the familiar "game". Used wherever
+  // this panel's wording would otherwise only switch for tennis and leave
+  // sepaktakraw saying "game(s)" too.
+  const usesSetTerm = isTennis || tournament.sport === 'sepaktakraw';
   const rs: RacketSportSettings = s.racketScoring ?? SPORT_DEFAULTS[tournament.sport].racketScoring
     ?? { mode: 'rally', pointsToWin: 21, winBy2: true, gamesToWin: 2, tiebreakAtGames: 6, noAd: false, serviceMode: 'auto', serviceRule: 'rally-winner', serviceAlternateEvery: 2 };
   const updateRacketScoring = (patch: Partial<RacketSportSettings>) => updateTournamentSettings(tournament.id, { racketScoring: { ...rs, ...patch } });
@@ -803,7 +810,7 @@ function SettingsBar({ tournament, onApply }: { tournament: Tournament; onApply:
       {isRacketSport && (
         <>
           <div className="tm-settings-group">
-            <label className="tm-settings-label" title="Points needed to win a game/set — freely customizable regardless of sport">{isTennis ? 'Games/Set' : 'Points/Game'}</label>
+            <label className="tm-settings-label" title="Points needed to win a game/set — freely customizable regardless of sport">{isTennis ? 'Games/Set' : usesSetTerm ? 'Points/Set' : 'Points/Game'}</label>
             <input
               className="tm-settings-input tm-settings-input--sm"
               type="number" min={1}
@@ -848,13 +855,19 @@ function SettingsBar({ tournament, onApply }: { tournament: Tournament; onApply:
             </div>
           )}
           <div className="tm-settings-group">
-            <label className="tm-settings-label">{isTennis ? 'Sets to Win Match' : 'Games to Win Match'}</label>
+            <label className="tm-settings-label">{usesSetTerm ? 'Sets to Win Match' : 'Games to Win Match'}</label>
             <input
               className="tm-settings-input tm-settings-input--sm"
               type="number" min={1}
               value={rs.gamesToWin}
               onChange={e => updateRacketScoring({ gamesToWin: Math.max(1, Number(e.target.value) || 2) })}
             />
+          </div>
+          <div className="tm-settings-group">
+            <label className="tm-settings-label" title="Group-stage fixtures sent to a scoreboard always play out every set (even once already decided), so standings have a full set-score record to rank ties on. Knockout-stage fixtures are never affected — they always stop as soon as the match is won.">
+              Play Full Sets in Group Stage
+            </label>
+            <ToggleCard checked={!!rs.forceFullSetsInGroupStage} onChange={v => updateRacketScoring({ forceFullSetsInGroupStage: v })} />
           </div>
           {isTennis && (
             <div className="tm-settings-group">
@@ -1302,7 +1315,8 @@ function TeamsPanel({ tournament }: { tournament: Tournament }) {
 
   const removeCategory = (name: string) => {
     const { [name]: _removed, ...restLogos } = tournament.categoryLogos ?? {};
-    updateTournament(tournamentId, { categories: categories.filter(c => c !== name), categoryLogos: restLogos });
+    const { [name]: _removedColor, ...restColors } = tournament.categoryColors ?? {};
+    updateTournament(tournamentId, { categories: categories.filter(c => c !== name), categoryLogos: restLogos, categoryColors: restColors });
     for (const t of teams) {
       if (t.category === name) updateTeam(t.id, { category: undefined });
     }
@@ -1316,11 +1330,13 @@ function TeamsPanel({ tournament }: { tournament: Tournament }) {
     const name = newName.trim();
     if (!name || name === oldName || categories.includes(name)) return;
     const { [oldName]: movedLogo, ...restLogos } = tournament.categoryLogos ?? {};
+    const { [oldName]: movedColor, ...restColors } = tournament.categoryColors ?? {};
     updateTournament(tournamentId, {
       categories: categories.map(c => c === oldName ? name : c),
       groups: (tournament.groups ?? []).map(g => g.category === oldName ? { ...g, category: name } : g),
       pots: (tournament.pots ?? []).map(p => p.category === oldName ? { ...p, category: name } : p),
       categoryLogos: movedLogo ? { ...restLogos, [name]: movedLogo } : restLogos,
+      categoryColors: movedColor ? { ...restColors, [name]: movedColor } : restColors,
     });
     for (const t of teams) {
       if (t.category === oldName) updateTeam(t.id, { category: name });
@@ -1379,6 +1395,11 @@ function TeamsPanel({ tournament }: { tournament: Tournament }) {
               onChange={logo => updateTournament(tournamentId, { categoryLogos: { ...tournament.categoryLogos, [c]: logo } })}
               thumbSize={{ w: 22, h: 22 }}
               tournamentId={tournamentId}
+            />
+            <ColorPicker
+              title={`${c} accent color — shown on this category's fixtures in the Schedule tab`}
+              value={tournament.categoryColors?.[c] ?? '#3498db'}
+              onChange={color => updateTournament(tournamentId, { categoryColors: { ...tournament.categoryColors, [c]: color } })}
             />
             {categoryEditMode ? (
               <input
@@ -1737,10 +1758,13 @@ function ScoreboardSendButton({ match, scoreboards, onSend, onStop }: {
   match: ScheduledMatch;
   scoreboards: { id: string; label?: string }[];
   onSend: (targetId: string) => void;
-  /** Stops a live fixture (clears sentAt so it's no longer "in progress") —
-   *  only ever offered while sentAt is set and completedAt isn't (i.e. still
-   *  actually live); a fixture already completed has nothing left to stop. */
-  onStop: () => void;
+  /** Only ever offered while sentAt is set and completedAt isn't (i.e. still
+   *  actually live) — a fixture already completed has nothing left to stop.
+   *  'ended' = save the live board's current score as final and mark
+   *  completed (stays "sent"). 'reset' = clear the live score/timer back to
+   *  zero, stays live. 'not-started' = today's original Stop behavior,
+   *  fully reverts to upcoming. */
+  onStop: (action: 'ended' | 'reset' | 'not-started') => void;
 }) {
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState<{ left: number; bottom: number } | null>(null);
@@ -1761,12 +1785,43 @@ function ScoreboardSendButton({ match, scoreboards, onSend, onStop }: {
     if (match.completedAt) {
       return <span className="tm-sched-sent-tag" title="Already sent to a scoreboard" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><Check size={14} strokeWidth={2} /> Sent</span>;
     }
+    const toggleStop = () => {
+      if (!open && anchorRef.current) {
+        const r = anchorRef.current.getBoundingClientRect();
+        setPos({ left: r.left, bottom: window.innerHeight - r.top + 6 });
+      }
+      setOpen(v => !v);
+    };
+    const pick = (action: 'ended' | 'reset' | 'not-started') => { onStop(action); setOpen(false); };
     return (
       <span className="tm-sched-sent-tag tm-sched-sent-tag--live" title="Currently live on a scoreboard">
         <Check size={14} strokeWidth={2} /> Sent
-        <button className="tm-sched-stop-btn" title="Stop this live game (clears its live status — doesn't touch the score)" onClick={onStop} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-          <Square size={14} strokeWidth={2} fill="currentColor" /> Stop
-        </button>
+        <div style={{ position: 'relative', display: 'inline-flex' }}>
+          <button ref={anchorRef} className="tm-sched-stop-btn" title="Stop this live game — pick what happened" onClick={toggleStop} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            <Square size={14} strokeWidth={2} fill="currentColor" /> Stop
+          </button>
+          {open && pos && createPortal(
+            <div ref={popupRef} style={{
+              position: 'fixed', left: pos.left, bottom: pos.bottom, zIndex: 10000, minWidth: 200,
+              background: 'var(--bg-1)', border: '1px solid var(--border)', borderRadius: 6,
+              boxShadow: '0 -4px 16px rgba(0,0,0,.5)', overflow: 'hidden',
+            }}>
+              <div onClick={() => pick('ended')} title="Save the board's current score as final and mark this fixture completed"
+                style={{ padding: '7px 10px', fontSize: 11, cursor: 'pointer', color: '#2ecc71', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                <Check size={12} strokeWidth={2} /> Ended Game
+              </div>
+              <div onClick={() => pick('reset')} title="Clear the live score and clock back to zero — stays live, for a restart/do-over"
+                style={{ padding: '7px 10px', fontSize: 11, cursor: 'pointer', color: 'var(--text-secondary)', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                <RotateCcw size={12} strokeWidth={2} /> Reset Game
+              </div>
+              <div onClick={() => pick('not-started')} title="Fully revert to upcoming — clears live status and any saved result"
+                style={{ padding: '7px 10px', fontSize: 11, cursor: 'pointer', color: '#e74c3c', display: 'flex', alignItems: 'center', gap: 6 }}>
+                <Undo2 size={12} strokeWidth={2} /> Game Not Started Yet
+              </div>
+            </div>,
+            document.body
+          )}
+        </div>
       </span>
     );
   }
@@ -1817,6 +1872,19 @@ function addDaysToDateStr(dateStr: string, days: number): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
+/** "09:00" + 60 -> { time: "10:00", daysOver: 0 }; carries into daysOver
+ *  (instead of wrapping back to 00:00) whenever the cycle pushes past
+ *  midnight, so a late cycle time doesn't silently land on the same date a
+ *  day late — see computeFixtureSlot's own doc comment for how this feeds
+ *  into "Rounds per day" rollover. */
+function addMinutesToTimeStr(timeStr: string, minutes: number): { time: string; daysOver: number } {
+  const [h, m] = timeStr.split(':').map(Number);
+  const total = (h * 60 + m) + minutes;
+  const daysOver = Math.floor(total / 1440);
+  const wrapped = ((total % 1440) + 1440) % 1440;
+  return { time: `${String(Math.floor(wrapped / 60)).padStart(2, '0')}:${String(wrapped % 60).padStart(2, '0')}`, daysOver };
+}
+
 type ScheduleFormat = 'rr-single' | 'rr-double' | 'knockout' | 'groups-knockout' | 'groups-tiered';
 
 const SCHEDULE_FORMAT_LABELS: Record<ScheduleFormat, string> = {
@@ -1839,7 +1907,7 @@ function GenerateScheduleModal({ tournament, scopedTeams, onClose, onGenerate }:
   tournament: Tournament;
   scopedTeams: SavedTeam[];
   onClose: () => void;
-  onGenerate: (fixtures: { date: string; time?: string; round: string; category?: string; group?: string; tier?: string; teamA: ScheduleTeamRef; teamB: ScheduleTeamRef | null }[]) => void;
+  onGenerate: (fixtures: { date: string; time?: string; round: string; category?: string; group?: string; tier?: string; teamA: ScheduleTeamRef; teamB: ScheduleTeamRef | null; knockoutManualFill?: boolean }[]) => void;
 }) {
   const categories = tournament.categories ?? [];
   const ALL_CATEGORIES = '__all__';
@@ -1881,6 +1949,39 @@ function GenerateScheduleModal({ tournament, scopedTeams, onClose, onGenerate }:
   const [advanceCountByCategory, setAdvanceCountByCategory] = useState<Record<string, number>>({});
   const [tierCountByCategory, setTierCountByCategory] = useState<Record<string, number>>({});
   const [useWildcards, setUseWildcards] = useState(false);
+  // Groups + Knockout only: who plays who in the Round 1 knockout bracket.
+  // 'auto' = today's existing behavior (buildGroupKnockoutSlots' own clash-
+  // avoidance pairing, e.g. 1st A vs 2nd B / 1st B vs 2nd A for an even pool
+  // count). 'manual' = the operator reorders the exact same candidate list
+  // (buildKnockoutSlotCandidates — every pool's Nth-place finisher) into
+  // whatever Round 1 pairing order they want instead — for a live "draw the
+  // knockout bracket" moment rather than trusting the auto arrangement.
+  // Only meaningful for ONE category at a time (the reorder list shows a
+  // single category's own candidates) — "All Categories" always falls back
+  // to auto regardless of this setting, since there's no single shared
+  // candidate list to show/reorder across categories at once.
+  // 'winnerRunnerUp' = every QF's top slot is fixed to a group WINNER and
+  // its bottom slot to a group RUNNER-UP (buildWinnerRunnerUpSlots) — unlike
+  // 'auto', which lets its own clash-avoidance pairing decide which side
+  // each rank lands on, this guarantees the winner/runner-up split itself.
+  // Only meaningful when exactly 2 ranks advance (winner + runner-up); falls
+  // back to 'auto' with a warning otherwise (see generateForCategory).
+  // 'draw' = same slot arrangement as 'auto' (the exact pairing doesn't
+  // matter since every slot starts blank anyway), but also forces
+  // knockoutFillMode to behave as 'manual' for this generation — a one-click
+  // shortcut for "we're doing a live draw ceremony for the knockout stage",
+  // instead of having to separately flip the Winner/Runner-up fill setting
+  // below too.
+  const [knockoutSeeding, setKnockoutSeeding] = useState<'auto' | 'manual' | 'winnerRunnerUp' | 'draw'>('auto');
+  const [manualSeedOrder, setManualSeedOrder] = useState<string[]>([]);
+  // Whether a generated Round 1 knockout placeholder ("1st Group A") should
+  // auto-resolve to a real team the moment that group's results are fully
+  // decided (today's existing behavior, 'auto'), or sit blank/TBD until the
+  // operator manually picks the team themselves in the Bracket tab
+  // ('manual' — see ScheduledMatch.knockoutManualFill). Independent of
+  // knockoutSeeding above, which only controls WHICH slot each rank lands
+  // in, not when/how it gets filled with a real team.
+  const [knockoutFillMode, setKnockoutFillMode] = useState<'auto' | 'manual'>('auto');
   // 'named' = today's Cup/Plate/Bowl/Shield reshuffle-pairing (unchanged
   // default); 'ranked' = only 1st+2nd pair into Cup, every rank below runs
   // its own independent placement bracket labeled by position instead of a
@@ -1892,6 +1993,17 @@ function GenerateScheduleModal({ tournament, scopedTeams, onClose, onGenerate }:
   });
   const [daysBetween, setDaysBetween] = useState(7);
   const [time, setTime] = useState('');
+  // Cycles each successive ROUND through time slots the same day instead of
+  // every round repeating the same flat `time` on a new date — e.g. Start
+  // Time 09:00 + Cycle 60min gives Round 1 = 09:00, Round 2 = 10:00, Round 3
+  // = 11:00, all on `startDate`. 0/blank = off, the exact original behavior
+  // (flat time, date advances by `daysBetween` every round) is unchanged.
+  // "Rounds per day" caps how many cycled slots fit in one day before
+  // rolling over to the next date (via `daysBetween`) and resetting back to
+  // the start time — 0/blank = never roll over, every round stays on
+  // `startDate` no matter how many rounds there are.
+  const [cycleMinutes, setCycleMinutes] = useState(0);
+  const [roundsPerDay, setRoundsPerDay] = useState(0);
   const [randomize, setRandomize] = useState(true);
   const [thirdPlacePlayoff, setThirdPlacePlayoff] = useState(false);
 
@@ -1906,7 +2018,7 @@ function GenerateScheduleModal({ tournament, scopedTeams, onClose, onGenerate }:
   // running "All" schedules every category in parallel on the same calendar
   // dates (Round 1 for Men and Women both land on the start date, etc.) —
   // the normal way multi-category tournaments actually run.
-  const generateForCategory = (cat: string | undefined): { fixtures: PreviewFixture[]; warnings: string[] } => {
+  const generateForCategory = (cat: string | undefined): { fixtures: PreviewFixture[]; warnings: string[]; knockoutCandidates?: string[] } => {
     const inScope = (c?: string) => !cat || !c || c === cat;
     const teamsInScope = scopedTeams.filter(t => inScope(t.category));
     const groupsInScope = normalizeGroups(tournament.groups).filter(g => inScope(g.category));
@@ -1917,6 +2029,10 @@ function GenerateScheduleModal({ tournament, scopedTeams, onClose, onGenerate }:
     const warnPrefix = cat ? `[${cat}] ` : '';
     const warnings: string[] = [];
     let fixtures: PreviewFixture[] = [];
+    // groups-knockout only — every pool's Nth-place candidate, for the
+    // Manual seeding reorder list to show (see knockoutSeeding's own doc
+    // comment). Undefined for every other format/branch.
+    let knockoutCandidates: string[] | undefined;
     // Per-category override, falling back to the plain default — see
     // advanceCountByCategory/tierCountByCategory above.
     const effectiveAdvanceCount = (cat ? advanceCountByCategory[cat] : undefined) ?? advanceCount;
@@ -1975,7 +2091,33 @@ function GenerateScheduleModal({ tournament, scopedTeams, onClose, onGenerate }:
         if (poolSizes.length > 1 && Math.max(...poolSizes) !== Math.min(...poolSizes)) {
           warnings.push(`${warnPrefix}Pools are uneven in size (${Math.min(...poolSizes)}–${Math.max(...poolSizes)} teams) — some ranks won't exist in every pool.`);
         }
-        const slots = buildGroupKnockoutSlots(groupsInScope.map(g => ({ name: g.name, size: groupMembers(g.name).length })), effectiveAdvanceCount);
+        const pools = groupsInScope.map(g => ({ name: g.name, size: groupMembers(g.name).length }));
+        const candidates = buildKnockoutSlotCandidates(pools, effectiveAdvanceCount);
+        // Only meaningful for one category at a time — see knockoutSeeding's
+        // own doc comment on why "All Categories" always falls back to auto.
+        knockoutCandidates = cat !== undefined || categories.length === 0 ? candidates.map(c => c.name) : undefined;
+        let slots: ScheduleTeamRef[];
+        if (knockoutSeeding === 'manual' && category !== ALL_CATEGORIES) {
+          // Reconciled against the live candidate list the same way
+          // orderedCategories reconciles against `categories` — a candidate
+          // not yet in the saved order (a group just added, or advanceCount
+          // just raised) appends at the end instead of vanishing; a saved
+          // label no longer valid (a group removed, advanceCount lowered)
+          // is just dropped.
+          const byLabel = new Map(candidates.map(c => [c.name, c]));
+          const ordered = manualSeedOrder.filter(l => byLabel.has(l)).map(l => byLabel.get(l)!);
+          const missing = candidates.filter(c => !manualSeedOrder.includes(c.name));
+          slots = [...ordered, ...missing];
+        } else if (knockoutSeeding === 'winnerRunnerUp') {
+          if (effectiveAdvanceCount !== 2) {
+            warnings.push(`${warnPrefix}Winner/Runner-up QF split needs exactly 2 teams advancing per group — falling back to Auto-arrange.`);
+            slots = buildGroupKnockoutSlots(pools, effectiveAdvanceCount);
+          } else {
+            slots = buildWinnerRunnerUpSlots(pools);
+          }
+        } else {
+          slots = buildGroupKnockoutSlots(pools, effectiveAdvanceCount);
+        }
         fixtures = fixtures.concat(offsetRounds(generateKnockoutFromSlots(slots, thirdPlacePlayoff), maxRoundIdx + 1));
       }
     } else if (format === 'groups-tiered') {
@@ -2034,7 +2176,7 @@ function GenerateScheduleModal({ tournament, scopedTeams, onClose, onGenerate }:
       fixtureCategory: cat,
     }));
 
-    return { fixtures, warnings };
+    return { fixtures, warnings, knockoutCandidates };
   };
 
   const preview = useMemo(() => {
@@ -2050,10 +2192,45 @@ function GenerateScheduleModal({ tournament, scopedTeams, onClose, onGenerate }:
     }
     return generateForCategory(categories.length > 0 ? category : undefined);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [format, scopedTeams, tournament.groups, randomize, advanceCount, tierCount, advanceCountByCategory, tierCountByCategory, useWildcards, tieredMode, category, categories, orderedCategories, thirdPlacePlayoff]);
+  }, [format, scopedTeams, tournament.groups, randomize, advanceCount, tierCount, advanceCountByCategory, tierCountByCategory, useWildcards, tieredMode, category, categories, orderedCategories, thirdPlacePlayoff, knockoutSeeding, manualSeedOrder]);
 
   const matchCount = preview.fixtures.length;
   const roundCount = matchCount ? Math.max(...preview.fixtures.map(f => f.roundIndex)) + 1 : 0;
+
+  // Live, reconciled view of the Manual knockout-seeding list — same
+  // "saved order, filtered to still-valid candidates, missing ones appended"
+  // logic generateForCategory itself applies, kept in sync here purely for
+  // display/reordering (actual generation always re-reconciles fresh).
+  const reconciledSeedOrder = useMemo(() => {
+    const candidates = preview.knockoutCandidates ?? [];
+    const ordered = manualSeedOrder.filter(l => candidates.includes(l));
+    const missing = candidates.filter(l => !manualSeedOrder.includes(l));
+    return [...ordered, ...missing];
+  }, [preview.knockoutCandidates, manualSeedOrder]);
+  const moveSeedOrder = (index: number, dir: -1 | 1) => {
+    const target = index + dir;
+    if (target < 0 || target >= reconciledSeedOrder.length) return;
+    const next = [...reconciledSeedOrder];
+    [next[index], next[target]] = [next[target], next[index]];
+    setManualSeedOrder(next);
+  };
+
+  // Date+time for a given round index. Cycling (cycleMinutes > 0) spreads
+  // rounds across time slots the same day instead of each round repeating
+  // the flat `time` on a new date — see cycleMinutes/roundsPerDay's own
+  // doc comment above for the exact rule. Falls back to the plain original
+  // behavior whenever cycling is off (0/blank) or no start Time was set at
+  // all (nothing to cycle from).
+  const computeFixtureSlot = (roundIndex: number): { date: string; time?: string } => {
+    if (!cycleMinutes || !time) {
+      return { date: addDaysToDateStr(startDate, roundIndex * daysBetween), time: time || undefined };
+    }
+    const perDay = roundsPerDay > 0 ? roundsPerDay : Infinity;
+    const dayIndex = Math.floor(roundIndex / perDay);
+    const slotInDay = roundIndex % perDay;
+    const { time: slotTime, daysOver } = addMinutesToTimeStr(time, slotInDay * cycleMinutes);
+    return { date: addDaysToDateStr(startDate, dayIndex * daysBetween + daysOver), time: slotTime };
+  };
 
   const handleGenerate = () => {
     if (matchCount === 0) return;
@@ -2062,18 +2239,32 @@ function GenerateScheduleModal({ tournament, scopedTeams, onClose, onGenerate }:
     // must be handed to onGenerate already interleaved by round: every
     // Round 1 (across every group and category) first, then every Round 2,
     // etc. A stable sort by roundIndex does this while preserving each
-    // round's original group/category ordering as the tiebreak.
+    // round's original group/category ordering as the tiebreak — which is
+    // exactly what lets `orderedCategories` (the Category Order list above)
+    // decide which category's matches list first within a shared round/
+    // time slot, same as every category sharing Round 1's date already did
+    // before cycling existed.
     const inRoundOrder = [...preview.fixtures].sort((a, b) => a.roundIndex - b.roundIndex);
-    onGenerate(inRoundOrder.map(f => ({
-      date: addDaysToDateStr(startDate, f.roundIndex * daysBetween),
-      time: time || undefined,
-      round: f.round,
-      category: f.fixtureCategory,
-      group: f.groupName ?? f.stage,
-      tier: f.tier,
-      teamA: f.a,
-      teamB: f.b,
-    })));
+    onGenerate(inRoundOrder.map(f => {
+      const slot = computeFixtureSlot(f.roundIndex);
+      return {
+        date: slot.date,
+        time: slot.time,
+        round: f.round,
+        category: f.fixtureCategory,
+        group: f.groupName ?? f.stage,
+        tier: f.tier,
+        teamA: f.a,
+        teamB: f.b,
+        // Only a Groups+Knockout bracket fixture (f.stage set, no groupName
+        // of its own) can ever carry a "1st Group A"-style placeholder that
+        // Groups→Knockout auto-fill would otherwise resolve — see
+        // knockoutFillMode's own doc comment. "Draw" seeding always implies
+        // manual fill too (see knockoutSeeding's own doc comment), whatever
+        // knockoutFillMode itself is set to.
+        knockoutManualFill: format === 'groups-knockout' && (knockoutFillMode === 'manual' || knockoutSeeding === 'draw') && !!f.stage ? true : undefined,
+      };
+    }));
     onClose();
   };
 
@@ -2100,7 +2291,7 @@ function GenerateScheduleModal({ tournament, scopedTeams, onClose, onGenerate }:
 
         {category === ALL_CATEGORIES && orderedCategories.length > 1 && (
           <>
-            <label className="tm-gen-label">Category order (which starts first each day — all categories still run in parallel on the same dates)</label>
+            <label className="tm-gen-label">Category order (which starts first in each shared round/time slot — all categories still run in parallel on the same dates, cycling through the same time slots together when Cycle is set)</label>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
               {orderedCategories.map((c, i) => (
                 <div key={c} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -2137,6 +2328,42 @@ function GenerateScheduleModal({ tournament, scopedTeams, onClose, onGenerate }:
                   if (categories.length > 0 && category !== ALL_CATEGORIES) setAdvanceCountByCategory(prev => ({ ...prev, [category]: v }));
                   else setAdvanceCount(v);
                 }} />
+            )}
+            {(category !== ALL_CATEGORIES || categories.length === 0) && (
+              <>
+                <label className="tm-gen-label">Knockout Round 1 pairings</label>
+                <CardSelect value={knockoutSeeding} onChange={v => setKnockoutSeeding(v)}
+                  options={[
+                    { value: 'auto', label: 'Auto-arrange', sub: '1st vs 2nd of another group, group-mates avoided where possible' },
+                    { value: 'manual', label: 'Manual Draw', sub: 'Pick the exact Round 1 order yourself' },
+                    { value: 'winnerRunnerUp', label: 'Winner / Runner-up split', sub: 'Every QF: top slot = a group winner, bottom slot = a runner-up (needs exactly 2 advancing per group)' },
+                    { value: 'draw', label: 'Draw', sub: 'Every slot starts blank (TBD) for a live on-air draw after groups finish — see Winner/Runner-up fill below' },
+                  ]} />
+                <label className="tm-gen-label" style={{ marginTop: 10 }}>Winner/Runner-up fill</label>
+                <CardSelect value={knockoutFillMode} onChange={v => setKnockoutFillMode(v)}
+                  options={[
+                    { value: 'auto', label: 'Automatic', sub: 'Fill Round 1 from group standings as soon as each group finishes (today\'s behavior)' },
+                    { value: 'manual', label: 'Manual pick', sub: 'Leave Round 1 blank (TBD) until you manually pick the winner/runner-up in the Bracket tab' },
+                  ]} />
+                {knockoutSeeding === 'manual' && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 6 }}>
+                    <p className="app-settings-hint" style={{ margin: '0 0 2px' }}>
+                      Order below = Round 1 pairing order (pos 1 plays pos 2, pos 3 plays pos 4, …).
+                    </p>
+                    {reconciledSeedOrder.length === 0 ? (
+                      <p className="app-settings-hint" style={{ margin: 0 }}>Set up groups and teams first to see candidates here.</p>
+                    ) : reconciledSeedOrder.map((label, i) => (
+                      <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <span style={{ flex: 1 }}>{i + 1}. {label}</span>
+                        <button type="button" className="tm-io-btn" disabled={i === 0}
+                          onClick={() => moveSeedOrder(i, -1)} title={`Move ${label} earlier`}>↑</button>
+                        <button type="button" className="tm-io-btn" disabled={i === reconciledSeedOrder.length - 1}
+                          onClick={() => moveSeedOrder(i, 1)} title={`Move ${label} later`}>↓</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
             )}
           </>
         )}
@@ -2185,7 +2412,29 @@ function GenerateScheduleModal({ tournament, scopedTeams, onClose, onGenerate }:
           </div>
         </div>
 
-        <label className="tm-gen-label">Days between rounds</label>
+        {time && (
+          <div className="tm-gen-row">
+            <div style={{ flex: 1 }}>
+              <label className="tm-gen-label">Cycle every (minutes)</label>
+              <input className="tm-input" type="number" min={0} placeholder="e.g. 60" value={cycleMinutes || ''}
+                onChange={e => setCycleMinutes(Math.max(0, parseInt(e.target.value, 10) || 0))} style={{ width: '100%' }} />
+            </div>
+            <div style={{ flex: 1 }}>
+              <label className="tm-gen-label">Rounds per day</label>
+              <input className="tm-input" type="number" min={0} placeholder="0 = no limit" value={roundsPerDay || ''}
+                disabled={!cycleMinutes}
+                onChange={e => setRoundsPerDay(Math.max(0, parseInt(e.target.value, 10) || 0))} style={{ width: '100%' }} />
+            </div>
+          </div>
+        )}
+        {!!cycleMinutes && !!time && (
+          <p className="app-settings-hint" style={{ margin: '-4px 0 8px' }}>
+            Each round starts {cycleMinutes} min after the last (Round 1 {time}, Round 2 {addMinutesToTimeStr(time, cycleMinutes).time}
+            {roundCount > 2 ? `, Round 3 ${addMinutesToTimeStr(time, cycleMinutes * 2).time}` : ''}…){roundsPerDay > 0 ? ` — after ${roundsPerDay} round${roundsPerDay === 1 ? '' : 's'}, the next day starts back at ${time}.` : ' — every round stays on the Start Date.'}
+          </p>
+        )}
+
+        <label className="tm-gen-label">{cycleMinutes && roundsPerDay > 0 ? 'Days between each day of rounds' : 'Days between rounds'}</label>
         <input className="tm-input" type="number" min={0} value={daysBetween}
           onChange={e => setDaysBetween(Math.max(0, parseInt(e.target.value, 10) || 0))} />
 
@@ -2534,7 +2783,7 @@ function TierMismatchBanner({ mismatches, matchNumbers, onFix }: {
 function SchedulePanel({ tournament, activeCategory, editMode }: {
   tournament: Tournament; activeCategory: string; editMode: boolean;
 }) {
-  const { matches: allMatches, addMatch, updateMatch, deleteMatch, markSent, unmarkSent } = useMatchScheduleStore();
+  const { matches: allMatches, addMatch, updateMatch, deleteMatch, clearMatches, markSent, unmarkSent, markCompleted } = useMatchScheduleStore();
   const { updateTournament } = useTournamentStore();
   const { teams: allTeams, updateTeam } = useTeamDbStore();
   const { pages, updateWidgetConfig, resetWidgetTimer } = useCanvasStore();
@@ -2573,7 +2822,71 @@ function SchedulePanel({ tournament, activeCategory, editMode }: {
   // this window (native window.confirm() was already found unreliable in
   // the packaged Tauri webview, hence the shared ConfirmModal instead).
   const [deleteFixtureTarget, setDeleteFixtureTarget] = useState<ScheduledMatch | null>(null);
-  const handleStopLive = (m: ScheduledMatch) => {
+  // "Generate Schedule" used to only ever ADD fixtures — regenerating a
+  // category that already had a schedule left the old one sitting in the
+  // store untouched, with the new one just mixed in on top, which read as
+  // "the app keeps loading the old schedule". Confirmed here first (once
+  // there's something to actually overwrite — a brand-new category/scope
+  // skips straight to generating, nothing to warn about) and clearMatches
+  // (not individual deletes) so it's a single undoable action if generating
+  // again was a mistake.
+  type GeneratedFixtureInput = { date: string; time?: string; round: string; category?: string; group?: string; tier?: string; teamA: ScheduleTeamRef; teamB: ScheduleTeamRef | null; knockoutManualFill?: boolean };
+  const [pendingGenerate, setPendingGenerate] = useState<{ fixtures: GeneratedFixtureInput[]; existingIds: string[]; existingWithResults: number } | null>(null);
+  // Finds the scoreboard widget (not just its config) currently showing a
+  // given fixture — same linkedScheduleMatchId/mirror-resolution convention
+  // useLiveFixtureIds/useLiveScoreboardConfigs use, but keeps the widget id
+  // too (needed to call updateWidgetConfig/resetWidgetTimer on it directly
+  // below — those hooks only ever hand back the config). Scoped to the
+  // main canvas only, same as `scoreboards`/sendToScoreboard above — a
+  // commentator-canvas mirror just reflects its source, nothing to act on
+  // there directly.
+  const findLiveScoreboardWidget = (fixtureId: string): { widgetId: string; config: Record<string, any>; isRacket: boolean } | null => {
+    for (const w of pages.flatMap(p => p.widgets)) {
+      if (w.type !== 'scoreboard' && w.type !== 'racket-scoreboard') continue;
+      const cfg: any = w.config;
+      if (cfg.linkedScoreboardSourceId) continue;
+      if (cfg.linkedScheduleMatchId === fixtureId) return { widgetId: w.id, config: cfg, isRacket: w.type === 'racket-scoreboard' };
+    }
+    return null;
+  };
+  // "Mark as Ended" — saves whatever the live board currently shows as this
+  // fixture's final result and marks it completed, WITHOUT touching
+  // sentAt — mirrors ScoreboardWidget's own commitSaveResult exactly (same
+  // buildResultFromConfig/findDuplicateResult/lastSavedSignature dance),
+  // just triggered from the Schedule tab instead of hunting down which
+  // board has this fixture loaded.
+  const endLiveGame = (m: ScheduledMatch) => {
+    const found = findLiveScoreboardWidget(m.id);
+    if (!found) { markCompleted(m.id); return; } // no board has it loaded — nothing to snapshot, just close it out
+    const { widgetId, config, isRacket } = found;
+    const timerCfg = autoLinkedWidget(pages, widgetId, config.linkedTimerWidgetId, 'timer')?.config;
+    // A racket-scoreboard's live score lives in rallyState/tennisState, not
+    // plain scoreA/scoreB — reshape it the same way deriveRacketResultConfig
+    // does before handing it to buildResultFromConfig, same as Send to
+    // Scoreboard's own guard above.
+    const sourceCfg = isRacket ? deriveRacketResultConfig(config) : config;
+    const cfgWithTournament = { ...sourceCfg, linkedTournamentId: tournament.id };
+    const existing = findDuplicateResult(savedResults, cfgWithTournament);
+    const patch = buildResultFromConfig(cfgWithTournament, timerCfg);
+    if (existing) updateResult(existing.id, patch); else addResult(patch);
+    updateWidgetConfig(widgetId, { lastSavedSignature: computeMatchSignature(cfgWithTournament) });
+    markCompleted(m.id);
+  };
+  // "Reset Score" — clears the live board back to 0-0 (score/log/cards,
+  // plus its linked Timer's clock) WITHOUT un-sending the fixture — a
+  // restart/do-over while the match stays live, unlike "Not Started Yet"
+  // below which fully reverts it to upcoming.
+  const resetLiveGame = (m: ScheduledMatch) => {
+    const found = findLiveScoreboardWidget(m.id);
+    useCanvasStore.getState().resetScoreboardStateForMatches([m.id]);
+    if (found?.config.linkedTimerWidgetId) resetWidgetTimer(found.config.linkedTimerWidgetId);
+  };
+  // "Not Started Yet" — today's original "Stop" behavior: fully reverts
+  // the fixture to upcoming (clears sentAt/completedAt and the board's
+  // live state), confirming first if a result was already saved for it —
+  // that result would otherwise silently keep pointing at a fixture that's
+  // "upcoming" again.
+  const handleNotStarted = (m: ScheduledMatch) => {
     const existing = findDuplicateResult(savedResults, {
       linkedScheduleMatchId: m.id, linkedTournamentId: m.tournamentId,
       subtitle: m.round, teamAName: m.teamAName, teamBName: m.teamBName,
@@ -2581,12 +2894,76 @@ function SchedulePanel({ tournament, activeCategory, editMode }: {
     if (existing) setStopTarget({ matchId: m.id, resultId: existing.id });
     else unmarkSent(m.id);
   };
+  const handleStopAction = (m: ScheduledMatch, action: 'ended' | 'reset' | 'not-started') => {
+    if (action === 'ended') endLiveGame(m);
+    else if (action === 'reset') resetLiveGame(m);
+    else handleNotStarted(m);
+  };
   // Every fixture in this tournament, regardless of the category filter —
   // used when sending a fixture to a scoreboard from any category view.
   const allTournamentMatches = useMemo(
     () => allMatches.filter(m => m.tournamentId === tournament.id),
     [allMatches, tournament.id]
   );
+  // Remote (non-host) only: auto-push a moment after any schedule change —
+  // add/delete/edit/drag-reorder/generate — reaches the host, instead of
+  // sitting ONLY in this window's own local copy. Without this, a fixture
+  // deleted (or added, or edited) from a remote window looked like it
+  // "came back": nothing ever told the host about the change, so the
+  // host's own next FULL_STATE heartbeat (every 5s, see main.tsx) just
+  // overwrote this window's edit with the host's still-old schedule —
+  // same root cause class as the Draw tab's own liveSyncDraw fix, just
+  // never applied to matchScheduleStore. Unconditional (no settings
+  // toggle, unlike liveSyncDraw) since schedule edits are infrequent,
+  // deliberate actions, not a rapid-fire interaction like live-dragging a
+  // draw pick — there's no "I want to draft privately first" case here
+  // worth a toggle for.
+  const isRemoteInteractive = !isHostClient && !syncClient.isReadOnly && !syncClient.isCommentator;
+  const scheduleSyncFingerprint = JSON.stringify(allTournamentMatches);
+  useEffect(() => {
+    if (!isRemoteInteractive) return;
+    const timer = setTimeout(() => pushTournamentDataToHost(), 400);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scheduleSyncFingerprint, isRemoteInteractive]);
+  // Recovers a round-robin schedule whose "Round N" labels got scrambled by
+  // a swap/drag from BEFORE applyFixtureSwap started pinning round to the
+  // slot (see its own doc comment) — walks each group+category's fixtures
+  // in their REAL running order (allTournamentMatches is already sorted by
+  // sortIndex/date, same as the store itself always keeps it) and relabels
+  // each distinct round it encounters, in the order it's actually
+  // encountered, as "Round 1", "Round 2", … — so whichever round genuinely
+  // runs first ends up called Round 1 regardless of what it used to say.
+  // Deliberately scoped to round-robin fixtures only (isGroupStageFixture)
+  // — a knockout stage's label (Quarterfinal/Semifinal/Final, or a
+  // placement-ladder range like "9th-12th Placing") is determined by
+  // BRACKET STRUCTURE, not chronological position, so guessing it from
+  // position alone could easily produce a wrong label; pinning round to
+  // the slot on every future swap is what actually protects those, going
+  // forward — this repair is only for the "Round N" case that's safe to
+  // recompute from position, and only for schedules already scrambled by a
+  // swap/drag that happened before that pinning fix shipped.
+  const repairRoundOrder = () => {
+    const scopeKey = (m: ScheduledMatch) => `${m.category ?? ''}\u0000${m.group ?? ''}`;
+    const roundOrderByScope = new Map<string, string[]>();
+    for (const m of allTournamentMatches) {
+      if (!isGroupStageFixture(m)) continue;
+      const key = scopeKey(m);
+      const seen = roundOrderByScope.get(key) ?? [];
+      if (!seen.includes(m.round ?? '')) { seen.push(m.round ?? ''); roundOrderByScope.set(key, seen); }
+    }
+    for (const m of allTournamentMatches) {
+      if (!isGroupStageFixture(m)) continue;
+      const seen = roundOrderByScope.get(scopeKey(m))!;
+      const newRound = `Round ${seen.indexOf(m.round ?? '') + 1}`;
+      if (m.round !== newRound) updateMatch(m.id, { round: newRound });
+    }
+  };
+  // Long explanatory text, so this confirms via the modal (wraps, fits the
+  // window) rather than ConfirmButton's inline pattern (forced to one line
+  // — `white-space: nowrap` — which is fine for a short "Delete 3?" but
+  // overflows the window width for anything this long).
+  const [confirmingRepairRounds, setConfirmingRepairRounds] = useState(false);
   // Flags fixtures whose own content is inconsistent with their stored
   // tier (see findTierMismatches) — most often a leftover from a pre-fix
   // drag/swap — surfaced as a repairable banner instead of requiring a
@@ -2623,8 +3000,18 @@ function SchedulePanel({ tournament, activeCategory, editMode }: {
     () => new Set(allTournamentMatches.map(m => m.venueLabel).filter(Boolean)).size > 1,
     [allTournamentMatches]
   );
+  // 'racket-scoreboard' (badminton/table tennis/tennis/sepaktakraw) is a
+  // valid Send target too, not just the plain 'scoreboard' widget — an
+  // unlabeled one falls back to its sport + current teams (instead of a bare
+  // widget id) so it's distinguishable in the picker when there's more than
+  // one scoreboard on the canvas.
   const scoreboards = useMemo(
-    () => pages.flatMap(p => p.widgets).filter(w => w.type === 'scoreboard').map(w => ({ id: w.id, label: w.label })),
+    () => pages.flatMap(p => p.widgets).filter(w => w.type === 'scoreboard' || w.type === 'racket-scoreboard').map(w => ({
+      id: w.id,
+      label: w.label || (w.type === 'racket-scoreboard'
+        ? `${SPORT_LABELS[w.config?.sport as SportType] ?? 'Racket'}: ${w.config?.teamAName || 'Team A'} vs ${w.config?.teamBName || 'Team B'}`
+        : undefined),
+    })),
     [pages]
   );
   const liveFixtureIds = useLiveFixtureIds();
@@ -2632,9 +3019,20 @@ function SchedulePanel({ tournament, activeCategory, editMode }: {
     const allWidgets = pages.flatMap(p => p.widgets);
     const target = allWidgets.find(w => w.id === targetId);
     if (!target) return;
+    const isRacket = target.type === 'racket-scoreboard';
     const targetTimerCfg = autoLinkedWidget(pages, target.id, target.config.linkedTimerWidgetId, 'timer')?.config;
-    if (!guardScoreboardOverwrite(target.config, addResult, targetTimerCfg)) return;
-    updateWidgetConfig(target.id, buildLoadMatchPatch(m));
+    const guardCfg = isRacket ? deriveRacketResultConfig(target.config) : target.config;
+    if (!guardScoreboardOverwrite(guardCfg, addResult, targetTimerCfg)) return;
+    // Group-stage fixture + the tournament's own "Play Full Sets in Group
+    // Stage" setting (RacketSportSettings.forceFullSetsInGroupStage) =
+    // force every set to be played out, so standings have a full set-score
+    // record to rank ties on — a knockout fixture never gets this, no
+    // matter what the setting is, since there's nothing to rank there.
+    const rsGroup = (tournament.settings ?? SPORT_DEFAULTS[tournament.sport]).racketScoring ?? SPORT_DEFAULTS[tournament.sport].racketScoring;
+    const isGroupStage = isRacket && !extractKnockoutStage(m) && m.group !== '3rd Place';
+    updateWidgetConfig(target.id, isRacket
+      ? buildLoadMatchPatchRacket(m, { forceFullSets: isGroupStage && !!rsGroup?.forceFullSetsInGroupStage, gamesToWin: rsGroup?.gamesToWin })
+      : buildLoadMatchPatch(m));
     // A new match starting means the previous one's clock shouldn't carry over.
     if (target.config.linkedTimerWidgetId) resetWidgetTimer(target.config.linkedTimerWidgetId);
     markSent(m.id);
@@ -2741,58 +3139,73 @@ function SchedulePanel({ tournament, activeCategory, editMode }: {
   const [dragOverFixtureId, setDragOverFixtureId] = useState<string | null>(null);
   const [dragPos, setDragPos] = useState<{ x: number; y: number } | null>(null);
   const dragStateRef = useRef<{ id: string; startX: number; startY: number; active: boolean } | null>(null);
+  // `round` is deliberately NOT in here — see applyFixtureSwap's own doc
+  // comment on why it never travels with the rest of a fixture's content.
   const matchContentOf = (m: ScheduledMatch) => ({
     teamAId: m.teamAId, teamAName: m.teamAName, teamAShortName: m.teamAShortName, teamALogo: m.teamALogo, teamAColor: m.teamAColor,
     teamBId: m.teamBId, teamBName: m.teamBName, teamBShortName: m.teamBShortName, teamBLogo: m.teamBLogo, teamBColor: m.teamBColor,
-    round: m.round, category: m.category, group: m.group, tier: m.tier,
+    category: m.category, group: m.group, tier: m.tier,
     matchType: m.matchType, walkoverLoser: m.walkoverLoser, scoreA: m.scoreA, scoreB: m.scoreB,
     sentAt: m.sentAt, completedAt: m.completedAt,
   });
-  // A group-stage (round-robin) fixture's "Round N" is meant to track
-  // whichever numbered slot it's actually running in — not travel with the
-  // match content on a swap like every other field does — so bracket
-  // auto-advance's group-completion gating and the Standings/Bracket tabs
-  // keep seeing round numbers that match the real running order. Scoped to
-  // two fixtures in the SAME group+category (a swap across different
-  // groups/categories has no shared round sequence to reconcile, so keeps
-  // the plain full-content swap below).
-  const isGroupStageFixture = (m: ScheduledMatch) => !extractKnockoutStage(m) && m.group !== '3rd Place' && !!m.group;
-  const [pendingRoundSwap, setPendingRoundSwap] = useState<{ fromId: string; toId: string; fromRound?: string; toRound?: string } | null>(null);
+  // A round-robin fixture's "Round N" is meant to track whichever numbered
+  // slot it's actually running in — not travel with the match content on a
+  // swap like every other field does — so bracket auto-advance's group-
+  // completion gating and the Standings/Bracket tabs keep seeing round
+  // numbers that match the real running order. Deliberately does NOT
+  // require `m.group` to be set — a plain round robin with no Draw-tab
+  // groups defined at all (generateForCategory's own no-groups branch,
+  // rr-single/rr-double with groupsInScope.length === 0) still has real
+  // "Round N" fixtures, just with every one of them sharing the same
+  // (absent) group — repairRoundOrder's own scopeKey already treats that
+  // as one shared scope correctly, this just has to actually let them in.
+  const isGroupStageFixture = (m: ScheduledMatch) => !extractKnockoutStage(m) && m.group !== '3rd Place';
   // A true swap — only these two slots' content exchanges; every fixture in
   // between keeps its own slot (date/time/count/venue) exactly as it was.
   // Matches what the drag/move-button tooltips already promise ("that
   // slot's count/time stays put") — a splice-based reorder would instead
-  // shift everything between the two positions by one. `keepRound` additionally
-  // leaves each slot's own `round` value in place instead of swapping it too
-  // (see isGroupStageFixture above) — only ever true after the operator has
-  // confirmed it via the modal below, since it also shifts Match # numbering.
-  const applyFixtureSwap = (fromId: string, toId: string, keepRound: boolean) => {
+  // shift everything between the two positions by one.
+  //
+  // `round` always stays with the SLOT, never the content, for every swap —
+  // knockout or round-robin, same group or not. This used to only apply to
+  // two same-group round-robin fixtures (via a since-removed `keepRound`
+  // flag + confirmation dialog); everything else let round travel right
+  // along with the teams, which is how a dragged "Final" could end up
+  // sitting in an earlier slot still labeled "Final" while a genuinely
+  // earlier round's fixture inherited a LATER round's old label — exactly
+  // the "Round 3 before Round 1/2" breakage reported. Pinning round to the
+  // slot universally means a swap only ever changes WHO plays where, never
+  // WHICH structural round/stage a given position in the running order
+  // represents — which is what every downstream consumer of `round`
+  // (Standings, Bracket, auto-advance, Match # numbering) actually needs to
+  // stay correct.
+  const applyFixtureSwap = (fromId: string, toId: string) => {
     const ordered = matches;
     const fromIdx = ordered.findIndex(m => m.id === fromId);
     const toIdx = ordered.findIndex(m => m.id === toId);
     if (fromIdx === -1 || toIdx === -1) return;
     const fromContent = matchContentOf(ordered[fromIdx]);
     const toContent = matchContentOf(ordered[toIdx]);
-    if (keepRound) {
-      updateMatch(ordered[fromIdx].id, { ...toContent, round: fromContent.round });
-      updateMatch(ordered[toIdx].id, { ...fromContent, round: toContent.round });
-    } else {
-      updateMatch(ordered[fromIdx].id, toContent);
-      updateMatch(ordered[toIdx].id, fromContent);
-    }
+    updateMatch(ordered[fromIdx].id, toContent);
+    updateMatch(ordered[toIdx].id, fromContent);
   };
+  // Which two slots the LAST swap touched, so the row highlight below can
+  // show the operator exactly what just moved — both ids stay on their own
+  // original slots (see applyFixtureSwap above: it's the CONTENT that
+  // exchanges, not the row), so highlighting these two ids still correctly
+  // points at "the two rows whose contents just changed", not at wherever
+  // the teams ended up. A fixed timeout made it disappear while still mid-
+  // edit, before the operator was done checking it — holds instead until
+  // Edit mode itself turns off (see the effect below), or until a NEWER
+  // swap replaces it.
+  const [lastSwappedIds, setLastSwappedIds] = useState<Set<string> | null>(null);
+  useEffect(() => {
+    if (!editMode) setLastSwappedIds(null);
+  }, [editMode]);
   const moveFixture = (draggedId: string, targetId: string) => {
     if (draggedId === targetId) return;
-    const fromM = matches.find(m => m.id === draggedId);
-    const toM = matches.find(m => m.id === targetId);
-    if (!fromM || !toM) return;
-    const roundsDiffer = isGroupStageFixture(fromM) && isGroupStageFixture(toM) &&
-      fromM.group === toM.group && fromM.category === toM.category && fromM.round !== toM.round;
-    if (roundsDiffer) {
-      setPendingRoundSwap({ fromId: draggedId, toId: targetId, fromRound: fromM.round, toRound: toM.round });
-      return;
-    }
-    applyFixtureSwap(draggedId, targetId, false);
+    applyFixtureSwap(draggedId, targetId);
+    setLastSwappedIds(new Set([draggedId, targetId]));
   };
   const moveFixtureBy = (id: string, direction: -1 | 1) => {
     const idx = matches.findIndex(m => m.id === id);
@@ -2847,15 +3260,34 @@ function SchedulePanel({ tournament, activeCategory, editMode }: {
     document.addEventListener('mouseup', onUp);
   };
 
-  const handleGeneratedFixtures = (fixtures: { date: string; time?: string; round: string; category?: string; group?: string; tier?: string; teamA: ScheduleTeamRef; teamB: ScheduleTeamRef | null }[]) => {
+  const applyGeneratedFixtures = (fixtures: GeneratedFixtureInput[]) => {
     for (const f of fixtures) {
       addMatch({
         tournamentId: tournament.id, competition: tournament.name,
         date: f.date, time: f.time, round: f.round, category: f.category, group: f.group, tier: f.tier,
         teamAId: f.teamA.id, teamAName: f.teamA.name, teamAShortName: f.teamA.shortName, teamAColor: f.teamA.color, teamALogo: f.teamA.logo,
         teamBId: f.teamB?.id, teamBName: f.teamB?.name ?? '', teamBShortName: f.teamB?.shortName, teamBColor: f.teamB?.color ?? '#95a5a6', teamBLogo: f.teamB?.logo,
+        knockoutManualFill: f.knockoutManualFill,
+        // Captured once, at generation time, so the Bracket tab can always
+        // offer the pick dropdown/Reset-to-TBD control for this slot even
+        // after it's been resolved — see teamAPlaceholder's own doc comment.
+        teamAPlaceholder: f.knockoutManualFill ? f.teamA.name : undefined,
+        teamBPlaceholder: f.knockoutManualFill && f.teamB ? f.teamB.name : undefined,
       });
     }
+  };
+
+  const handleGeneratedFixtures = (fixtures: GeneratedFixtureInput[]) => {
+    // Scoped the same way generateForCategory itself scopes a regenerate —
+    // by category (not group), so regenerating "Men Open" never touches
+    // "Women Open"'s existing schedule even though both just got handed to
+    // this same callback in one combined list.
+    const categoriesInNew = new Set(fixtures.map(f => f.category ?? ''));
+    const existing = allTournamentMatches.filter(m => categoriesInNew.has(m.category ?? ''));
+    if (existing.length === 0) { applyGeneratedFixtures(fixtures); return; }
+    const existingIds = existing.map(m => m.id);
+    const existingWithResults = existing.filter(m => savedResults.some(r => r.sourceScheduleId === m.id)).length;
+    setPendingGenerate({ fixtures, existingIds, existingWithResults });
   };
 
   // Fixtures always show the CURRENT tournament name — keep the stored
@@ -3101,6 +3533,14 @@ function SchedulePanel({ tournament, activeCategory, editMode }: {
             </button>
             <button
               className="tm-io-btn"
+              title="Relabel round-robin &quot;Round N&quot; fixtures to match their real running order"
+              onClick={() => setConfirmingRepairRounds(true)}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
+            >
+              <RotateCcw size={14} strokeWidth={2} /> Fix Round Order
+            </button>
+            <button
+              className="tm-io-btn"
               title={`Import fixtures from CSV / TSV / TXT — matched back to existing fixtures across the whole tournament (any category), so only what actually changed gets updated. A row with no Category column falls back to${activeCategory ? ` the current "${activeCategory}" filter` : ' none'}.`}
               onClick={() => fileInputRef.current?.click()}
               style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
@@ -3215,13 +3655,28 @@ function SchedulePanel({ tournament, activeCategory, editMode }: {
                 const stageLabel = fixtureStageLabel(m);
                 const prevStageLabel = i > 0 ? fixtureStageLabel(rows[i - 1]) : undefined;
                 const showDivider = !!stageLabel && stageLabel !== prevStageLabel;
+                // Per-category accent stripe (see Tournament.categoryColors'
+                // own doc comment) — left as the row's default border color
+                // whenever this fixture's category has none set, so a
+                // single-category tournament (or one where colors were
+                // never configured) looks exactly as before.
+                // Falls back to the round-text prefix ("Men · Quarterfinal
+                // 2") the same way BracketPanel's own effectiveCategory
+                // does — a fixture generated before the dedicated category
+                // field existed, or added by hand (+ Add Fixture/CSV
+                // import never sets one), has no m.category at all, so
+                // looking that field up alone silently left those fixtures
+                // with no accent even when they visibly belong to a category.
+                const fixtureCategory = m.category ?? (m.round?.includes(' · ') ? m.round.split(' · ')[0] : undefined);
+                const categoryColor = tournament.categoryColors?.[fixtureCategory ?? ''];
                 return (
                 <Fragment key={m.id}>
                 {showDivider && <div className="tm-sched-stage-title">{stageLabel}</div>}
                 <div className="tm-sched-row-wrap">
                 <div
                   data-fixture-row={m.id}
-                  className={`tm-sched-row${m.completedAt ? ' tm-sched-row--completed' : ''}${selectedIds.has(m.id) ? ' tm-sched-row--selected' : ''}${canReorder ? ' tm-sched-row--draggable' : ''}${draggedFixtureId === m.id ? ' tm-sched-row--dragging' : ''}${dragOverFixtureId === m.id && draggedFixtureId !== m.id ? ' tm-sched-row--drag-over' : ''}${isLive ? ' tm-sched-row--live' : ''}`}
+                  className={`tm-sched-row${m.completedAt ? ' tm-sched-row--completed' : ''}${selectedIds.has(m.id) ? ' tm-sched-row--selected' : ''}${canReorder ? ' tm-sched-row--draggable' : ''}${draggedFixtureId === m.id ? ' tm-sched-row--dragging' : ''}${dragOverFixtureId === m.id && draggedFixtureId !== m.id ? ' tm-sched-row--drag-over' : ''}${isLive ? ' tm-sched-row--live' : ''}${lastSwappedIds?.has(m.id) ? ' tm-sched-row--just-swapped' : ''}`}
+                  style={categoryColor ? { borderLeft: `4px solid ${categoryColor}` } : undefined}
                   onMouseDown={canReorder ? startFixtureDrag(m) : undefined}
                   title={canReorder ? 'Drag onto another slot to swap which match plays there — that slot\'s count/time stays put' : undefined}
                 >
@@ -3441,7 +3896,7 @@ function SchedulePanel({ tournament, activeCategory, editMode }: {
                         <button className="tm-sched-send-btn" title="Pick this fixture to swap, then click Swap Here on the target" onClick={() => setArmedSwapId(m.id)} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><RefreshCw size={12} strokeWidth={2} /> Swap</button>
                       )
                     ) : (
-                      <ScoreboardSendButton match={m} scoreboards={scoreboards} onSend={id => sendToScoreboard(m, id)} onStop={() => handleStopLive(m)} />
+                      <ScoreboardSendButton match={m} scoreboards={scoreboards} onSend={id => sendToScoreboard(m, id)} onStop={action => handleStopAction(m, action)} />
                     )}
                   </div>
 
@@ -3484,12 +3939,31 @@ function SchedulePanel({ tournament, activeCategory, editMode }: {
       )}
       {stopTarget && (
         <ConfirmModal
-          title="Stop live game?"
-          message="This fixture has a saved result already. Stopping will remove that result and mark the fixture as not sent."
-          confirmLabel="Stop & Remove Result"
+          title="Revert to not started?"
+          message={'This fixture has a saved result already. Reverting to "Game Not Started Yet" will remove that result and mark the fixture as not sent.'}
+          confirmLabel="Revert & Remove Result"
           danger
           onConfirm={() => { deleteResult(stopTarget.resultId!); unmarkSent(stopTarget.matchId); setStopTarget(null); }}
           onCancel={() => setStopTarget(null)}
+        />
+      )}
+      {pendingGenerate && (
+        <ConfirmModal
+          title="Replace existing schedule?"
+          message={`This category already has ${pendingGenerate.existingIds.length} fixture${pendingGenerate.existingIds.length === 1 ? '' : 's'} — generating a new schedule will remove ${pendingGenerate.existingIds.length === 1 ? 'it' : 'all of them'} and replace with the newly generated ${pendingGenerate.fixtures.length} fixture${pendingGenerate.fixtures.length === 1 ? '' : 's'}.${pendingGenerate.existingWithResults > 0 ? ` ${pendingGenerate.existingWithResults} of the existing fixture${pendingGenerate.existingWithResults === 1 ? '' : 's'} already ${pendingGenerate.existingWithResults === 1 ? 'has' : 'have'} a saved result — the result${pendingGenerate.existingWithResults === 1 ? '' : 's'} will be kept, just no longer linked to a fixture on the schedule.` : ''} This can be undone right after with Undo.`}
+          confirmLabel="Replace Schedule"
+          danger
+          onConfirm={() => { clearMatches(pendingGenerate.existingIds); applyGeneratedFixtures(pendingGenerate.fixtures); setPendingGenerate(null); }}
+          onCancel={() => setPendingGenerate(null)}
+        />
+      )}
+      {confirmingRepairRounds && (
+        <ConfirmModal
+          title="Fix round order?"
+          message={'Relabels every round-robin group\'s "Round N" to match its teams\' actual running order — the fixture that genuinely runs first becomes Round 1, and so on. For fixing a schedule scrambled by a swap/drag from before that was prevented. Knockout stage labels (Quarterfinal, Semifinal, Final, placement rounds) are left alone — only plain round-robin rounds are safe to recompute this way.'}
+          confirmLabel="Fix"
+          onConfirm={() => { repairRoundOrder(); setConfirmingRepairRounds(false); }}
+          onCancel={() => setConfirmingRepairRounds(false)}
         />
       )}
       {deleteFixtureTarget && (
@@ -3500,15 +3974,6 @@ function SchedulePanel({ tournament, activeCategory, editMode }: {
           danger
           onConfirm={() => { deleteMatch(deleteFixtureTarget.id); setDeleteFixtureTarget(null); }}
           onCancel={() => setDeleteFixtureTarget(null)}
-        />
-      )}
-      {pendingRoundSwap && (
-        <ConfirmModal
-          title="Swap fixtures?"
-          message={`"${pendingRoundSwap.fromRound ?? '(no round)'}" and "${pendingRoundSwap.toRound ?? '(no round)'}" will also relabel to match each match's new slot, so round numbering stays in running order — this can shift each fixture's Match # too.`}
-          confirmLabel="Swap"
-          onConfirm={() => { applyFixtureSwap(pendingRoundSwap.fromId, pendingRoundSwap.toId, true); setPendingRoundSwap(null); }}
-          onCancel={() => setPendingRoundSwap(null)}
         />
       )}
     </div>
@@ -4362,9 +4827,26 @@ export interface StandingRow {
   teamId: string; name: string; shortName?: string; logo?: string; color: string;
   played: number; won: number; drawn: number; lost: number;
   pf: number; pa: number; pts: number;
+  /** Sepaktakraw only — total RALLY points scored/conceded across every set
+   *  (SavedMatchResult.racketPointsA/B), distinct from pf/pa above which for
+   *  sepaktakraw hold SETS won/lost. The official standings table's "PW"/"PL"
+   *  columns — see computeStandingsCore's own tiebreak comment for where this
+   *  slots into the sort order. Always 0 for every other sport (the field is
+   *  never populated on their results). */
+  racketPtsFor: number; racketPtsAgainst: number;
+  /** How many places this team's rank moved because of the single most
+   *  recently saved result in this scope (SavedMatchResult.savedAt) —
+   *  positive = moved up that many places, negative = moved down, 0 = no
+   *  change (including before any result exists in scope yet). Computed by
+   *  re-running standings with that one result excluded and diffing rank
+   *  order against the full computation — stateless, nothing to persist or
+   *  go stale, and it naturally moves on to the NEXT result the moment one
+   *  comes in. See resolveStandingsRoleValue's 'rankChange' case for the
+   *  ▲/▼/– text this renders as, including on a pushed vMix field. */
+  rankChange: number;
 }
 
-export function computeStandings(teams: SavedTeam[], results: SavedMatchResult[], settings: TournamentSettings): StandingRow[] {
+function computeStandingsCore(teams: SavedTeam[], results: SavedMatchResult[], settings: TournamentSettings, sport: SportType | undefined): { rows: Omit<StandingRow, 'rankChange'>[]; relevantResults: SavedMatchResult[] } {
   // Seeded in Draw order (groupPosition, same convention the Schedule
   // generator's own groupMembers() uses) rather than whatever order the
   // Team Database happens to list them in — the final sort below is stable,
@@ -4372,9 +4854,9 @@ export function computeStandings(teams: SavedTeam[], results: SavedMatchResult[]
   // is what the table actually shows; once real results come in, points
   // take over and decide the order for real, same as always.
   const seeded = [...teams].sort((a, b) => (a.groupPosition ?? Infinity) - (b.groupPosition ?? Infinity) || a.name.localeCompare(b.name));
-  const rows = new Map<string, StandingRow>();
+  const rows = new Map<string, Omit<StandingRow, 'rankChange'>>();
   for (const t of seeded) {
-    rows.set(t.id, { teamId: t.id, name: t.name, shortName: t.shortName, logo: t.logo, color: t.color, played: 0, won: 0, drawn: 0, lost: 0, pf: 0, pa: 0, pts: 0 });
+    rows.set(t.id, { teamId: t.id, name: t.name, shortName: t.shortName, logo: t.logo, color: t.color, played: 0, won: 0, drawn: 0, lost: 0, pf: 0, pa: 0, pts: 0, racketPtsFor: 0, racketPtsAgainst: 0 });
   }
   // Matched by id when the result carries one (unambiguous — see
   // ScheduledMatch.teamAId/SavedMatchResult.teamAId), else by name AND
@@ -4396,14 +4878,23 @@ export function computeStandings(teams: SavedTeam[], results: SavedMatchResult[]
     );
     return t ? rows.get(t.id) : undefined;
   };
+  const relevantResults: SavedMatchResult[] = [];
   for (const r of results) {
     if (r.matchType === 'bye') continue; // nothing was actually played
     const rowA = findRow(r.teamAId, r.teamAName, r.teamAShortName, r.category);
     const rowB = findRow(r.teamBId, r.teamBName, r.teamBShortName, r.category);
     if (!rowA || !rowB) continue; // team isn't part of this group/tournament
+    relevantResults.push(r);
     rowA.played++; rowB.played++;
     rowA.pf += r.scoreA; rowA.pa += r.scoreB;
     rowB.pf += r.scoreB; rowB.pa += r.scoreA;
+    // Only sepaktakraw's standings ever consult racketPtsFor/Against (see
+    // the comparator below) — skip the accumulation entirely for every
+    // other sport rather than running it just to add harmless zeros.
+    if (sport === 'sepaktakraw') {
+      rowA.racketPtsFor += r.racketPointsA ?? 0; rowA.racketPtsAgainst += r.racketPointsB ?? 0;
+      rowB.racketPtsFor += r.racketPointsB ?? 0; rowB.racketPtsAgainst += r.racketPointsA ?? 0;
+    }
     if (r.scoreA > r.scoreB) {
       rowA.won++; rowA.pts += settings.pointsWin;
       rowB.lost++; rowB.pts += settings.pointsLoss;
@@ -4421,9 +4912,94 @@ export function computeStandings(teams: SavedTeam[], results: SavedMatchResult[]
       rowA.pts += settings.pointsDraw; rowB.pts += settings.pointsDraw;
     }
   }
-  return Array.from(rows.values()).sort((a, b) =>
-    b.pts - a.pts || (b.pf - b.pa) - (a.pf - a.pa) || b.pf - a.pf
+  const setRatio = (r: Omit<StandingRow, 'rankChange'>) => r.pa === 0 ? (r.pf === 0 ? 0 : Infinity) : r.pf / r.pa;
+  const teamById = new Map(teams.map(t => [t.id, t]));
+  const sortedRows = Array.from(rows.values()).sort((a, b) => {
+    if (b.pts !== a.pts) return b.pts - a.pts;
+    const diff = (b.pf - b.pa) - (a.pf - a.pa);
+    if (diff !== 0) return diff;
+    if (sport === 'sepaktakraw') {
+      // Set difference tied — next, RALLY POINT difference (PW-PL, the
+      // official standings table's own next column after SW/SL), THEN set
+      // ratio, confirmed against a real tournament's published standings
+      // (ISTAF/BEBF World Cup 2026 Group Stage) rather than inferred.
+      const ptsDiff = (b.racketPtsFor - b.racketPtsAgainst) - (a.racketPtsFor - a.racketPtsAgainst);
+      if (ptsDiff !== 0) return ptsDiff;
+      const ratioDiff = setRatio(b) - setRatio(a);
+      if (ratioDiff !== 0) return ratioDiff;
+    }
+    if (b.pf !== a.pf) return b.pf - a.pf;
+    // Every real criterion above is exactly equal — a genuine tie (see
+    // findTiedGroups). Only an explicitly operator-confirmed
+    // tieBreakPriority breaks it from here; until one's set, this falls
+    // through to Array.from's stable insertion order (the `seeded`
+    // groupPosition/name order above), same as always.
+    const aPriority = teamById.get(a.teamId)?.tieBreakPriority;
+    const bPriority = teamById.get(b.teamId)?.tieBreakPriority;
+    if (aPriority !== undefined || bPriority !== undefined) {
+      return (aPriority ?? Infinity) - (bPriority ?? Infinity);
+    }
+    return 0;
+  });
+  return { rows: sortedRows, relevantResults };
+}
+
+// `sport` is optional and only changes behavior for 'sepaktakraw' — every
+// other sport sorts exactly as before (match points, then for/against
+// difference, then raw for). Sepaktakraw standings (set-based: `pf`/`pa`
+// here are SETS won/lost, not rally points — see RacketScoreboardWidget's
+// own "Save Result" comment) insert TWO extra steps between those: rally
+// POINT difference (racketPtsFor/Against — pf/pa for SETS tied first),
+// then set RATIO — matching a real published tournament standings table
+// (ISTAF/BEBF World Cup 2026) column order: Pts, then SW/SL diff, then
+// PW/PL diff. A team that hasn't conceded a set at all (pa === 0) ranks as
+// having an effectively infinite ratio rather than dividing by zero,
+// unless it also hasn't WON one either (0 played), which can't actually
+// reach this tiebreak since `played` would be 0 for both sides there.
+//
+// rankChange (see StandingRow's own doc comment): re-runs the same
+// computation with just the single most recently saved result EXCLUDED
+// (picked from `relevantResults`, not the raw `results` passed in, so a
+// more-recently-touched result belonging to some OTHER group/category
+// entirely never gets picked as "latest" here — see computeStandingsCore's
+// own matching). Every team always has a row in both computations (the
+// team list, not the result list, decides which rows exist), so there's
+// no "team not found in previous standings" case to handle.
+export function computeStandings(teams: SavedTeam[], results: SavedMatchResult[], settings: TournamentSettings, sport?: SportType): StandingRow[] {
+  const { rows: current, relevantResults } = computeStandingsCore(teams, results, settings, sport);
+  const latest = relevantResults.reduce<SavedMatchResult | undefined>(
+    (latestSoFar, r) => (!latestSoFar || r.savedAt > latestSoFar.savedAt) ? r : latestSoFar,
+    undefined,
   );
+  if (!latest) return current.map(r => ({ ...r, rankChange: 0 }));
+  const { rows: previous } = computeStandingsCore(teams, results.filter(r => r !== latest), settings, sport);
+  const prevRankById = new Map(previous.map((r, i) => [r.teamId, i]));
+  return current.map((r, i) => ({ ...r, rankChange: prevRankById.get(r.teamId)! - i }));
+}
+
+// Clusters of StandingRow (length >= 2) that are genuinely tied — same
+// points, same for/against difference, same sepaktakraw set ratio (where
+// applicable), same raw for — i.e. every criterion computeStandingsCore's
+// comparator checks BEFORE tieBreakPriority agrees exactly, so the only
+// thing deciding their current order is either an already-confirmed
+// tieBreakPriority or pure insertion-order luck. The caller (StandingsPanel)
+// only surfaces these once the group's fixtures are all finished — a
+// mid-tournament tie (every team still at 0 pts) is normal and not what this
+// is for. Rows must already be in computeStandings' own sorted order.
+export function findTiedGroups(rows: StandingRow[], sport: SportType | undefined): StandingRow[][] {
+  const setRatio = (r: StandingRow) => r.pa === 0 ? (r.pf === 0 ? 0 : Infinity) : r.pf / r.pa;
+  const key = (r: StandingRow) => `${r.pts}|${r.pf - r.pa}|${sport === 'sepaktakraw' ? r.racketPtsFor - r.racketPtsAgainst : 0}|${sport === 'sepaktakraw' ? setRatio(r) : 0}|${r.pf}`;
+  const clusters: StandingRow[][] = [];
+  let current: StandingRow[] = [];
+  for (let i = 0; i < rows.length; i++) {
+    if (i > 0 && key(rows[i]) === key(rows[i - 1])) current.push(rows[i]);
+    else {
+      if (current.length > 1) clusters.push(current);
+      current = [rows[i]];
+    }
+  }
+  if (current.length > 1) clusters.push(current);
+  return clusters;
 }
 
 // A result whose originating fixture was a knockout-stage/bracket match
@@ -4443,23 +5019,54 @@ export function isPoolStageResult(r: SavedMatchResult): boolean {
   return !extractKnockoutStage(r) && r.group !== '3rd Place';
 }
 
-export function StandingsTable({ title, rows, onTeamClick }: { title: string; rows: StandingRow[]; onTeamClick?: (name: string) => void }) {
+// ▲1 / ▼2 / – text for a StandingRow's own rankChange — shared by this
+// table, the 'standings' CG template role (resolveStandingsRoleValue in
+// standingsRow.ts, so a vMix-pushed graphic shows the identical text), and
+// GroupStandingsWidget's own merge-field option. One function so all three
+// can never drift apart on the exact arrow/format used.
+export function formatRankChange(change: number): string {
+  if (change > 0) return `▲${change}`;
+  if (change < 0) return `▼${Math.abs(change)}`;
+  return '–';
+}
+function rankChangeClass(change: number): string {
+  return change > 0 ? 'tm-standings-rc--up' : change < 0 ? 'tm-standings-rc--down' : 'tm-standings-rc--same';
+}
+
+export function StandingsTable({ title, rows, onTeamClick, sport }: { title: string; rows: StandingRow[]; onTeamClick?: (name: string) => void; sport?: SportType }) {
   // Teams re-sort by points/diff/PF as results come in — animate that
   // reorder (slide from the row's old rank to its new one) instead of
   // letting rows just snap to their new spot. See useReorderAnimation.
   const bodyRef = useReorderAnimation<HTMLDivElement>();
+  // Sepaktakraw's pf/pa are SETS won/lost (see computeStandings' own doc
+  // comment), not goals/points — "SF"/"SA" (Sets For/Against) is the
+  // sepaktakraw-specific term for that column, same convention real
+  // competition standings tables use. Every other sport keeps the
+  // generic PF/PA (points/goals for-against) label unchanged.
+  const forLabel = sport === 'sepaktakraw' ? 'SF' : 'PF';
+  const againstLabel = sport === 'sepaktakraw' ? 'SA' : 'PA';
+  // Sepaktakraw also shows PW/PL (rally points for/against — SF/SA above are
+  // SETS, a separate tally) and drops D (Drawn) entirely — the sport has no
+  // draws, every match is decided — matching a real published tournament's
+  // own standings table column layout (P/W/L/SW/SL/PW/PL/Pts, no D).
+  const isSepaktakraw = sport === 'sepaktakraw';
+  const rowClass = `tm-standings-row${isSepaktakraw ? ' tm-standings-row--sepaktakraw' : ''}`;
   return (
     <div className="tm-standings-table">
       <div className="tm-standings-title">{title}</div>
-      <div className="tm-standings-row tm-standings-row--head">
+      <div className={`${rowClass} tm-standings-row--head`}>
         <span>#</span>
         <span className="tm-standings-team">Team</span>
-        <span>P</span><span>W</span><span>D</span><span>L</span>
-        <span>PF</span><span>PA</span><span>+/-</span><span>Pts</span>
+        <span>P</span><span>W</span>
+        {!isSepaktakraw && <span>D</span>}
+        <span>L</span>
+        <span>{forLabel}</span><span>{againstLabel}</span><span>+/-</span>
+        {isSepaktakraw && <><span>PW</span><span>PL</span></>}
+        <span>Pts</span><span>RC</span>
       </div>
       <div ref={bodyRef}>
         {rows.map((r, i) => (
-          <div key={r.teamId} data-flip-key={r.teamId} className={`tm-standings-row${i < 2 ? ' tm-standings-row--top' : ''}`}>
+          <div key={r.teamId} data-flip-key={r.teamId} className={`${rowClass}${i < 2 ? ' tm-standings-row--top' : ''}`}>
             <span className="tm-standings-pos">{i + 1}</span>
             <span
               className={`tm-standings-team${onTeamClick ? ' tm-standings-team--clickable' : ''}`}
@@ -4469,9 +5076,15 @@ export function StandingsTable({ title, rows, onTeamClick }: { title: string; ro
               <div style={{ width: 22, height: 22, flexShrink: 0 }}><ScheduleBadge logo={r.logo} color={r.color} /></div>
               {r.shortName || r.name}
             </span>
-            <span>{r.played}</span><span>{r.won}</span><span>{r.drawn}</span><span>{r.lost}</span>
+            <span>{r.played}</span><span>{r.won}</span>
+            {!isSepaktakraw && <span>{r.drawn}</span>}
+            <span>{r.lost}</span>
             <span>{r.pf}</span><span>{r.pa}</span><span>{r.pf - r.pa > 0 ? '+' : ''}{r.pf - r.pa}</span>
+            {isSepaktakraw && <><span>{r.racketPtsFor}</span><span>{r.racketPtsAgainst}</span></>}
             <span className="tm-standings-pts">{r.pts}</span>
+            <span className={`tm-standings-rc ${rankChangeClass(r.rankChange)}`} title={r.rankChange > 0 ? `Up ${r.rankChange} since the last result` : r.rankChange < 0 ? `Down ${Math.abs(r.rankChange)} since the last result` : 'No change since the last result'}>
+              {formatRankChange(r.rankChange)}
+            </span>
           </div>
         ))}
       </div>
@@ -4535,7 +5148,7 @@ function TeamInfoModal({ tournament, teamName, category, onClose }: { tournament
       (team.group ? t.group === team.group : true) &&
       (team.category ? t.category === team.category : true));
     // Only pool-stage results count toward this team's standing row — see isPoolStageResult.
-    return computeStandings(scopeTeams, results.filter(isPoolStageResult), settings).find(row => row.teamId === team.id) ?? null;
+    return computeStandings(scopeTeams, results.filter(isPoolStageResult), settings, tournament.sport).find(row => row.teamId === team.id) ?? null;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [team, allTeams, tournament.id, tournament.settings, tournament.sport, results]);
 
@@ -4788,6 +5401,7 @@ export function computeBracketCenters(stageCounts: number[]): number[][] {
 function BracketPanel({ tournament, activeCategory }: { tournament: Tournament; activeCategory: string }) {
   const { matches: allMatches, addMatch, updateMatch } = useMatchScheduleStore();
   const { results: allResults } = useMatchResultsStore();
+  const { teams: allTeams } = useTeamDbStore();
   const categories = tournament.categories ?? [];
   const category = activeCategory;
   const [selectedTeamName, setSelectedTeamName] = useState<string | null>(null);
@@ -4863,6 +5477,15 @@ function BracketPanel({ tournament, activeCategory }: { tournament: Tournament; 
     [allMatches, tournament.id, category, categories.length, tiers.length, activeTier]
   );
 
+  // Candidate teams for a manual winner/runner-up pick (see
+  // ScheduledMatch.knockoutManualFill) — every real team currently sitting
+  // in the Draw group a Round 1 placeholder references, category-scoped the
+  // same way every other lookup in this panel is.
+  const resolveGroupTeams = (groupName: string): ScheduleTeamRef[] =>
+    allTeams
+      .filter(t => t.tournamentId === tournament.id && t.group === groupName && (categories.length === 0 || t.category === category))
+      .map(t => ({ id: t.id, name: t.name, shortName: t.shortName, color: t.color, logo: t.logo }));
+
   // Retro-fit for a bracket generated without "Play 3rd/4th place" checked —
   // adds the same fixture the generator would have, scheduled alongside the
   // Final, using Semifinal-loser placeholders the bracket auto-advance
@@ -4920,6 +5543,7 @@ function BracketPanel({ tournament, activeCategory }: { tournament: Tournament; 
           editable
           onSelectTeam={setSelectedTeamName}
           onAddThirdPlace={addThirdPlacePlayoff}
+          resolveGroupTeams={resolveGroupTeams}
         />
       )}
       {selectedTeamName && (
@@ -4935,8 +5559,9 @@ function BracketPanel({ tournament, activeCategory }: { tournament: Tournament; 
 }
 
 function StandingsPanel({ tournament, activeCategory }: { tournament: Tournament; activeCategory: string }) {
-  const { teams: allTeams } = useTeamDbStore();
+  const { teams: allTeams, updateTeam } = useTeamDbStore();
   const { results: allResults } = useMatchResultsStore();
+  const { matches: allMatches } = useMatchScheduleStore();
   const settings = tournament.settings ?? SPORT_DEFAULTS[tournament.sport];
   const teams = useMemo(() => allTeams.filter(t => t.tournamentId === tournament.id), [allTeams, tournament.id]);
   const allTournamentResults = useMemo(() => allResults.filter(r => r.tournamentId === tournament.id), [allResults, tournament.id]);
@@ -4956,6 +5581,63 @@ function StandingsPanel({ tournament, activeCategory }: { tournament: Tournament
     );
   }
 
+  // A group/scope is "finished" once every one of its pool-stage fixtures
+  // has a saved result — only then is a leftover tie actually meaningful
+  // (every team still at 0 pts mid-tournament would otherwise "tie" too).
+  // `groupName` undefined matches the flat-round-robin case (no Draw groups
+  // set up at all), same convention isGroupStageFixture/generateForCategory
+  // already use.
+  const isScopeFinished = (groupName: string | undefined, categoryValue: string | undefined) => {
+    const ms = allMatches.filter(m =>
+      m.tournamentId === tournament.id && m.group === groupName &&
+      (!categoryValue || m.category === categoryValue) && !extractKnockoutStage(m)
+    );
+    return ms.length > 0 && ms.every(m => !!m.completedAt);
+  };
+
+  // Rewrites every tied team's tieBreakPriority to its new position in
+  // `cluster` (always all N, not just the two that moved) — simplest way to
+  // get a consistent 1..N ranking regardless of whatever priority values
+  // (if any) existed before this move.
+  const moveTieBreak = (cluster: StandingRow[], index: number, dir: -1 | 1) => {
+    const target = index + dir;
+    if (target < 0 || target >= cluster.length) return;
+    const order = cluster.map(r => r.teamId);
+    [order[index], order[target]] = [order[target], order[index]];
+    order.forEach((id, i) => updateTeam(id, { tieBreakPriority: i + 1 }));
+  };
+
+  // Shown right under a StandingsTable whenever its scope is finished and
+  // still has teams the automatic criteria couldn't separate — lets the
+  // operator pick who actually ranks above whom instead of leaving it to
+  // arbitrary insertion order (which could otherwise silently send the
+  // "wrong" team into the knockout stage as "1st Group A").
+  const renderTieBreaks = (rows: StandingRow[], finished: boolean) => {
+    if (!finished) return null;
+    const clusters = findTiedGroups(rows, tournament.sport);
+    if (clusters.length === 0) return null;
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {clusters.map((cluster, ci) => (
+          <div key={ci} className="tm-gen-warn" style={{ marginTop: 0 }}>
+            <div style={{ marginBottom: 4 }}>
+              Tied on every criterion ({cluster[0].pts} pts, {cluster[0].pf - cluster[0].pa >= 0 ? '+' : ''}{cluster[0].pf - cluster[0].pa} diff) — confirm who ranks above whom:
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {cluster.map((r, i) => (
+                <div key={r.teamId} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ flex: 1 }}>{i + 1}. {r.name}</span>
+                  <button type="button" className="tm-io-btn" disabled={i === 0} onClick={() => moveTieBreak(cluster, i, -1)} title={`Move ${r.name} up`}>↑</button>
+                  <button type="button" className="tm-io-btn" disabled={i === cluster.length - 1} onClick={() => moveTieBreak(cluster, i, 1)} title={`Move ${r.name} down`}>↓</button>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
   // Groups/tables for one scope (a category, or the whole tournament when no
   // categories are defined) — untagged groups stay visible in every scope.
   // `categoryValue` is the ACTUAL category to tag a team click with (distinct
@@ -4964,15 +5646,27 @@ function StandingsPanel({ tournament, activeCategory }: { tournament: Tournament
   const renderScope = (scopeTeams: SavedTeam[], scopeGroups: TournamentGroup[], label: string | null, categoryValue: string | undefined) => (
     <div key={label ?? '__all__'} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       {label && <div className="tm-draw-section-title">{label}</div>}
-      {scopeGroups.length === 0 ? (
-        <StandingsTable title={label ?? tournament.name} rows={computeStandings(scopeTeams, results, settings)} onTeamClick={name => setSelectedTeam({ name, category: categoryValue })} />
-      ) : (
+      {scopeGroups.length === 0 ? (() => {
+        const rows = computeStandings(scopeTeams, results, settings, tournament.sport);
+        return (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <StandingsTable title={label ?? tournament.name} rows={rows} onTeamClick={name => setSelectedTeam({ name, category: categoryValue })} sport={tournament.sport} />
+            {renderTieBreaks(rows, isScopeFinished(undefined, categoryValue))}
+          </div>
+        );
+      })() : (
         <>
-          {scopeGroups.map(g => (
-            <StandingsTable key={g.name} title={g.name} rows={computeStandings(scopeTeams.filter(t => t.group === g.name), results, settings)} onTeamClick={name => setSelectedTeam({ name, category: categoryValue })} />
-          ))}
+          {scopeGroups.map(g => {
+            const rows = computeStandings(scopeTeams.filter(t => t.group === g.name), results, settings, tournament.sport);
+            return (
+              <div key={g.name} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <StandingsTable title={g.name} rows={rows} onTeamClick={name => setSelectedTeam({ name, category: categoryValue })} sport={tournament.sport} />
+                {renderTieBreaks(rows, isScopeFinished(g.name, categoryValue))}
+              </div>
+            );
+          })}
           {scopeTeams.some(t => !t.group) && (
-            <StandingsTable title="Unassigned" rows={computeStandings(scopeTeams.filter(t => !t.group), results, settings)} onTeamClick={name => setSelectedTeam({ name, category: categoryValue })} />
+            <StandingsTable title="Unassigned" rows={computeStandings(scopeTeams.filter(t => !t.group), results, settings, tournament.sport)} onTeamClick={name => setSelectedTeam({ name, category: categoryValue })} sport={tournament.sport} />
           )}
         </>
       )}
@@ -5023,7 +5717,13 @@ interface LastDrawn { team: SavedTeam; pot: string; group: string; }
 // A team armed by clicking its card, awaiting a slot click to complete
 // the pairing (or vice versa — see `armedSlot`).
 interface ArmedTeam { team: SavedTeam; pot: string; }
-interface ArmedSlot { group: string; position: number; }
+// `category` is the GROUP's own category (undefined for an uncategorized
+// group) at the moment it was armed — carried alongside `group`'s bare name
+// so every lookup below can disambiguate two different categories' groups
+// that happen to share the exact same name (e.g. "Kumpulan A" in both Men
+// and Women) instead of re-resolving by name alone and risking matching
+// the WRONG one.
+interface ArmedSlot { group: string; category: string | undefined; position: number; }
 
 function DrawPanel({ tournament, activeCategory }: { tournament: Tournament; activeCategory: string }) {
   const { teams: allTeams, updateTeam } = useTeamDbStore();
@@ -5134,15 +5834,37 @@ function DrawPanel({ tournament, activeCategory }: { tournament: Tournament; act
   // Group/pot names are static text by default (renaming needs to cascade
   // to every team + vMix target referencing them) — Edit unlocks renaming.
   const [setupEditMode, setSetupEditMode] = useState(false);
+  // Two groups/pots in DIFFERENT categories are now allowed to share the
+  // exact same name (see sameCategoryScope's own doc comment on the
+  // duplicate-name checks below) — every mutation here therefore has to
+  // identify its target by (name, category) TOGETHER, never by bare name
+  // alone. Exact equality (not sameCategoryScope's "untagged matches
+  // everything" leniency, which exists only to let a brand-new duplicate
+  // get flagged as a conflict) — editing/removing/renaming one specific
+  // group must never also touch a same-named group in another category.
+  // Category is normalized through `|| undefined` on both sides so '' and
+  // undefined compare equal, matching how it's stored everywhere else.
+  const sameGroupIdentity = (g: TournamentGroup, name: string, category: string | undefined) =>
+    g.name === name && (g.category || undefined) === (category || undefined);
+  const samePotIdentity = (p: TournamentPot, name: string, category: string | undefined) =>
+    p.name === name && (p.category || undefined) === (category || undefined);
+  const sameTeamCategory = (teamCategory: string | undefined, category: string | undefined) =>
+    (teamCategory || undefined) === (category || undefined);
+
   // Drag a group chip/card onto another to reorder — reordered within the
   // full unfiltered list so groups from other categories keep their spot.
+  // Dragged/target identity is the SAME (name, category) composite key as
+  // every other mutation below (see sameGroupIdentity), not a bare name —
+  // otherwise dragging a group in one category could silently reorder a
+  // same-named group in a completely different one instead.
+  const groupDragKey = (g: TournamentGroup) => `${g.category ?? ''}\u0000${g.name}`;
   const [draggedGroup, setDraggedGroup] = useState<string | null>(null);
   const [dragOverGroup, setDragOverGroup] = useState<string | null>(null);
-  const reorderGroups = (draggedName: string, targetName: string) => {
-    if (draggedName === targetName) return;
+  const reorderGroups = (draggedKey: string, targetKey: string) => {
+    if (draggedKey === targetKey) return;
     const next = [...allGroups];
-    const from = next.findIndex(g => g.name === draggedName);
-    const to = next.findIndex(g => g.name === targetName);
+    const from = next.findIndex(g => groupDragKey(g) === draggedKey);
+    const to = next.findIndex(g => groupDragKey(g) === targetKey);
     if (from < 0 || to < 0) return;
     const [moved] = next.splice(from, 1);
     next.splice(to, 0, moved);
@@ -5163,30 +5885,34 @@ function DrawPanel({ tournament, activeCategory }: { tournament: Tournament; act
     setNewGroupCategory('');
   };
 
-  const updateGroupDef = (name: string, patch: Partial<TournamentGroup>) => {
-    updateTournament(tournament.id, { groups: allGroups.map(g => g.name === name ? { ...g, ...patch } : g) });
+  const updateGroupDef = (target: TournamentGroup, patch: Partial<TournamentGroup>) => {
+    updateTournament(tournament.id, { groups: allGroups.map(g => sameGroupIdentity(g, target.name, target.category) ? { ...g, ...patch } : g) });
   };
 
-  const removeGroup = (name: string) => {
-    updateTournament(tournament.id, { groups: allGroups.filter(g => g.name !== name) });
-    for (const t of teams) {
-      if (t.group === name) updateTeam(t.id, { group: undefined });
+  const removeGroup = (target: TournamentGroup) => {
+    updateTournament(tournament.id, { groups: allGroups.filter(g => !sameGroupIdentity(g, target.name, target.category)) });
+    for (const t of allTeams) {
+      if (t.tournamentId === tournament.id && t.group === target.name && sameTeamCategory(t.category, target.category)) updateTeam(t.id, { group: undefined });
     }
   };
 
   // Renames a group and cascades the new name to every team's `group` field
-  // and any "Group List → vMix" targets pointing at it — both store the
-  // group by name, so a plain field edit would silently break those links.
-  const renameGroup = (oldName: string, newName: string) => {
+  // pointing at it — both store the group by name, so a plain field edit
+  // would silently break that link. The "Group List → vMix" cascade below
+  // still matches by bare name only (GroupListVmixTarget has no category
+  // field of its own yet) — a pre-existing, separate ambiguity if two
+  // categories ever share a group name AND both have a vMix target for it;
+  // not something this fix (scoping the group/team data itself) changes
+  // either way.
+  const renameGroup = (target: TournamentGroup, newName: string) => {
     const name = newName.trim();
-    const currentCategory = allGroups.find(g => g.name === oldName)?.category;
-    if (!name || name === oldName || allGroups.some(g => g.name === name && sameCategoryScope(g.category, currentCategory))) return;
+    if (!name || name === target.name || allGroups.some(g => g.name === name && sameCategoryScope(g.category, target.category))) return;
     updateTournament(tournament.id, {
-      groups: allGroups.map(g => g.name === oldName ? { ...g, name } : g),
-      groupListVmix: groupListTargets.map(t => t.group === oldName ? { ...t, group: name } : t),
+      groups: allGroups.map(g => sameGroupIdentity(g, target.name, target.category) ? { ...g, name } : g),
+      groupListVmix: groupListTargets.map(t => t.group === target.name ? { ...t, group: name } : t),
     });
     for (const t of allTeams) {
-      if (t.tournamentId === tournament.id && t.group === oldName) updateTeam(t.id, { group: name });
+      if (t.tournamentId === tournament.id && t.group === target.name && sameTeamCategory(t.category, target.category)) updateTeam(t.id, { group: name });
     }
   };
 
@@ -5198,24 +5924,24 @@ function DrawPanel({ tournament, activeCategory }: { tournament: Tournament; act
     setNewPotName('');
   };
 
-  const removePot = (name: string) => {
-    updateTournament(tournament.id, { pots: allPots.filter(p => p.name !== name) });
-    for (const t of teams) {
-      if (t.pot === name) updateTeam(t.id, { pot: undefined });
+  const removePot = (target: TournamentPot) => {
+    updateTournament(tournament.id, { pots: allPots.filter(p => !samePotIdentity(p, target.name, target.category)) });
+    for (const t of allTeams) {
+      if (t.tournamentId === tournament.id && t.pot === target.name && sameTeamCategory(t.category, target.category)) updateTeam(t.id, { pot: undefined });
     }
   };
 
-  // Renames a pot and cascades the new name to every team's `pot` field.
-  const renamePot = (oldName: string, newName: string) => {
+  // Renames a pot and cascades the new name to every team's `pot` field —
+  // same bare-name caveat on the potListVmix cascade as renameGroup above.
+  const renamePot = (target: TournamentPot, newName: string) => {
     const name = newName.trim();
-    const currentCategory = allPots.find(p => p.name === oldName)?.category;
-    if (!name || name === oldName || allPots.some(p => p.name === name && sameCategoryScope(p.category, currentCategory))) return;
+    if (!name || name === target.name || allPots.some(p => p.name === name && sameCategoryScope(p.category, target.category))) return;
     updateTournament(tournament.id, {
-      pots: allPots.map(p => p.name === oldName ? { ...p, name } : p),
-      potListVmix: potListTargets.map(t => t.pot === oldName ? { ...t, pot: name } : t),
+      pots: allPots.map(p => samePotIdentity(p, target.name, target.category) ? { ...p, name } : p),
+      potListVmix: potListTargets.map(t => t.pot === target.name ? { ...t, pot: name } : t),
     });
     for (const t of allTeams) {
-      if (t.tournamentId === tournament.id && t.pot === oldName) updateTeam(t.id, { pot: name });
+      if (t.tournamentId === tournament.id && t.pot === target.name && sameTeamCategory(t.category, target.category)) updateTeam(t.id, { pot: name });
     }
   };
 
@@ -5465,7 +6191,7 @@ function DrawPanel({ tournament, activeCategory }: { tournament: Tournament; act
   // only used to target the random "Draw Next" button, not to restrict
   // manual clicking (any team/group can be picked or repicked any time).
   const currentPot = pots.find(p => teams.some(t => t.pot === p.name && !t.group))?.name;
-  const groupIsFull = (g: TournamentGroup) => g.capacity != null && teams.filter(t => t.group === g.name).length >= g.capacity;
+  const groupIsFull = (g: TournamentGroup) => g.capacity != null && teams.filter(t => t.group === g.name && sameTeamCategory(t.category, g.category)).length >= g.capacity;
   const hasOpenGroup = groups.some(g => !groupIsFull(g));
   const canDraw = !!currentPot && groups.length > 0 && hasOpenGroup;
 
@@ -5473,14 +6199,20 @@ function DrawPanel({ tournament, activeCategory }: { tournament: Tournament; act
 
   // A team can only land in a group that's untagged (shared) or tagged for
   // that team's own category — never a group belonging to a DIFFERENT
-  // category, even when viewing "All".
-  const categoryMismatch = (team: SavedTeam, group: string) => {
-    const g = allGroups.find(gr => gr.name === group);
-    return !!(g?.category && team.category && g.category !== team.category);
-  };
+  // category, even when viewing "All". `groupCategory` is passed in
+  // EXPLICITLY by the caller (the actual group/slot the operator clicked),
+  // never re-resolved here by bare name via `allGroups.find` — two
+  // categories can legitimately have a group with the exact same name
+  // (e.g. "Kumpulan A" in both Men and Women), and re-resolving by name
+  // alone risked silently matching the WRONG category's group, rejecting a
+  // perfectly valid assignment as a false "mismatch" (or worse, allowing a
+  // real one through) purely because of which one happened to come first
+  // in the array.
+  const categoryMismatch = (team: SavedTeam, groupCategory: string | undefined) =>
+    !!(groupCategory && team.category && groupCategory !== team.category);
 
-  const finalizeAssignment = (team: SavedTeam, pot: string, group: string, position: number) => {
-    if (categoryMismatch(team, group)) { setArmedTeam(null); setArmedSlot(null); return; }
+  const finalizeAssignment = (team: SavedTeam, pot: string, group: string, groupCategory: string | undefined, position: number) => {
+    if (categoryMismatch(team, groupCategory)) { setArmedTeam(null); setArmedSlot(null); return; }
     updateTeam(team.id, { group, groupPosition: position });
     setLastDrawn({ team, pot, group });
     pushDrawToVmix(team, pot, group);
@@ -5497,8 +6229,8 @@ function DrawPanel({ tournament, activeCategory }: { tournament: Tournament; act
   // freed first (Edit mode / Assignments) rather than silently re-picked.
   const handleTeamClick = (team: SavedTeam, pot: string) => {
     if (armedSlot) {
-      if (team.group || categoryMismatch(team, armedSlot.group)) return;
-      finalizeAssignment(team, pot, armedSlot.group, armedSlot.position);
+      if (team.group || categoryMismatch(team, armedSlot.category)) return;
+      finalizeAssignment(team, pot, armedSlot.group, armedSlot.category, armedSlot.position);
       return;
     }
     if (armedTeam?.team.id === team.id) { setArmedTeam(null); pushDrawState('inactive'); return; }
@@ -5510,12 +6242,13 @@ function DrawPanel({ tournament, activeCategory }: { tournament: Tournament; act
   // Clicking an empty slot card inside a group — works whether or not a
   // team is armed yet, so the slot can be picked first. Either way, one
   // click on an empty slot both assigns the group AND the position.
-  const handleSlotClick = (group: string, position: number) => {
+  const handleSlotClick = (group: TournamentGroup, position: number) => {
     if (armedTeam) {
-      finalizeAssignment(armedTeam.team, armedTeam.pot, group, position);
+      finalizeAssignment(armedTeam.team, armedTeam.pot, group.name, group.category, position);
       return;
     }
-    setArmedSlot(prev => (prev && prev.group === group && prev.position === position) ? null : { group, position });
+    setArmedSlot(prev => (prev && prev.group === group.name && prev.category === group.category && prev.position === position)
+      ? null : { group: group.name, category: group.category, position });
   };
 
   const drawNext = () => {
@@ -5523,7 +6256,7 @@ function DrawPanel({ tournament, activeCategory }: { tournament: Tournament; act
     const undrawn = teams.filter(t => t.pot === currentPot && !t.group);
     if (undrawn.length === 0 || groups.length === 0) return;
     const team = undrawn[Math.floor(Math.random() * undrawn.length)];
-    if (armedSlot) finalizeAssignment(team, currentPot, armedSlot.group, armedSlot.position);
+    if (armedSlot) finalizeAssignment(team, currentPot, armedSlot.group, armedSlot.category, armedSlot.position);
     else { setArmedTeam({ team, pot: currentPot }); pushDrawToVmix(team, currentPot); pushDrawState('active'); }
   };
 
@@ -5535,6 +6268,25 @@ function DrawPanel({ tournament, activeCategory }: { tournament: Tournament; act
     setArmedTeam(null);
     setArmedSlot(null);
     pushDrawState('inactive');
+  };
+
+  // Explicit, operator-declared completion — separate from `canDraw`/
+  // "Draw Complete" above (which just means every open slot happens to be
+  // full right now). An operator may want to declare the draw final with
+  // slots intentionally left empty (a bye, a withdrawn team), and the
+  // website uses this specifically to show a "Draw Finalized" state and a
+  // better empty-state message on Fixtures before fixtures exist yet.
+  // '__all__' is the sentinel for a tournament with no category scoping
+  // (activeCategory stays '' the whole time there).
+  const drawCompletedCategories = tournament.drawCompletedCategories ?? [];
+  const drawCompletedKey = activeCategory || '__all__';
+  const isDrawCompleted = drawCompletedCategories.includes(drawCompletedKey);
+  const toggleDrawCompleted = () => {
+    updateTournament(tournament.id, {
+      drawCompletedCategories: isDrawCompleted
+        ? drawCompletedCategories.filter(c => c !== drawCompletedKey)
+        : [...drawCompletedCategories, drawCompletedKey],
+    });
   };
 
   return (
@@ -5581,17 +6333,18 @@ function DrawPanel({ tournament, activeCategory }: { tournament: Tournament; act
       <div className="tm-groups-bar">
         <span className="tm-groups-label">Pools/Groups:</span>
         {groups.map(g => {
-          const count = teams.filter(t => t.group === g.name).length;
+          const count = teams.filter(t => t.group === g.name && sameTeamCategory(t.category, g.category)).length;
+          const dragKey = groupDragKey(g);
           return (
             <span
-              key={g.name}
-              className={`tm-group-chip tm-group-chip--editable${dragOverGroup === g.name ? ' tm-draw-group-card--drag-over' : ''}`}
+              key={dragKey}
+              className={`tm-group-chip tm-group-chip--editable${dragOverGroup === dragKey ? ' tm-draw-group-card--drag-over' : ''}`}
               draggable={!setupEditMode}
               title={setupEditMode ? undefined : 'Drag to reorder'}
-              onDragStart={() => setDraggedGroup(g.name)}
-              onDragOver={e => { e.preventDefault(); setDragOverGroup(g.name); }}
-              onDragLeave={() => setDragOverGroup(prev => prev === g.name ? null : prev)}
-              onDrop={e => { e.preventDefault(); if (draggedGroup) reorderGroups(draggedGroup, g.name); setDraggedGroup(null); setDragOverGroup(null); }}
+              onDragStart={() => setDraggedGroup(dragKey)}
+              onDragOver={e => { e.preventDefault(); setDragOverGroup(dragKey); }}
+              onDragLeave={() => setDragOverGroup(prev => prev === dragKey ? null : prev)}
+              onDrop={e => { e.preventDefault(); if (draggedGroup) reorderGroups(draggedGroup, dragKey); setDraggedGroup(null); setDragOverGroup(null); }}
               onDragEnd={() => { setDraggedGroup(null); setDragOverGroup(null); }}
               style={{ cursor: setupEditMode ? 'default' : 'grab' }}
             >
@@ -5602,7 +6355,7 @@ function DrawPanel({ tournament, activeCategory }: { tournament: Tournament; act
                   style={{ width: 90, fontWeight: 700 }}
                   title="Rename group"
                   onClick={e => e.stopPropagation()}
-                  onBlur={e => renameGroup(g.name, e.target.value)}
+                  onBlur={e => renameGroup(g, e.target.value)}
                   onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
                 />
               ) : g.name}
@@ -5611,7 +6364,7 @@ function DrawPanel({ tournament, activeCategory }: { tournament: Tournament; act
                 value={g.prefix ?? ''}
                 placeholder="Px"
                 title="Prefix used for each team's position label in this group (e.g. A → A1, A2…)"
-                onChange={e => updateGroupDef(g.name, { prefix: e.target.value })}
+                onChange={e => updateGroupDef(g, { prefix: e.target.value })}
               />
               <input
                 className="tm-group-chip-input"
@@ -5620,10 +6373,10 @@ function DrawPanel({ tournament, activeCategory }: { tournament: Tournament; act
                 value={g.capacity ?? ''}
                 placeholder="Max"
                 title="Max teams allowed in this group (blank = unlimited)"
-                onChange={e => updateGroupDef(g.name, { capacity: e.target.value ? Number(e.target.value) : undefined })}
+                onChange={e => updateGroupDef(g, { capacity: e.target.value ? Number(e.target.value) : undefined })}
               />
               {g.capacity != null && <span className="tm-group-chip-count">{count}/{g.capacity}</span>}
-              <button onClick={() => removeGroup(g.name)} title={`Remove ${g.name} (unassigns any teams in it)`}>×</button>
+              <button onClick={() => removeGroup(g)} title={`Remove ${g.name} (unassigns any teams in it)`}>×</button>
             </span>
           );
         })}
@@ -5672,18 +6425,18 @@ function DrawPanel({ tournament, activeCategory }: { tournament: Tournament; act
       <div className="tm-groups-bar" style={{ marginTop: -6 }}>
         <span className="tm-groups-label">Draw Pots:</span>
         {pots.map(p => (
-          <span key={p.name} className="tm-group-chip tm-group-chip--pot">
+          <span key={`${p.category ?? ''}\u0000${p.name}`} className="tm-group-chip tm-group-chip--pot">
             {setupEditMode ? (
               <input
                 className="tm-group-chip-input"
                 defaultValue={p.name}
                 style={{ width: 90, fontWeight: 700 }}
                 title="Rename pot"
-                onBlur={e => renamePot(p.name, e.target.value)}
+                onBlur={e => renamePot(p, e.target.value)}
                 onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
               />
             ) : p.name}
-            <button onClick={() => removePot(p.name)} title={`Remove ${p.name} (unassigns any teams in it)`}>×</button>
+            <button onClick={() => removePot(p)} title={`Remove ${p.name} (unassigns any teams in it)`}>×</button>
           </span>
         ))}
         <input
@@ -5810,20 +6563,21 @@ function DrawPanel({ tournament, activeCategory }: { tournament: Tournament; act
               {section.label && <div className="tm-groups-label" style={{ display: 'block', marginBottom: 6 }}>{section.label}</div>}
               <div className="tm-draw-group-cards">
                 {section.items.map(g => {
-                  const members = teams.filter(t => t.group === g.name);
+                  const members = teams.filter(t => t.group === g.name && sameTeamCategory(t.category, g.category));
                   const slotCount = g.capacity ?? Math.max(members.length + 3, 8);
                   const { slots } = resolveGroupSlots(members, g.capacity);
                   const prefix = g.prefix || g.name.charAt(0).toUpperCase();
+                  const dragKey = groupDragKey(g);
                   return (
                     <div
-                      key={g.name}
-                      className={`tm-draw-pot-card${dragOverGroup === g.name ? ' tm-draw-group-card--drag-over' : ''}`}
+                      key={dragKey}
+                      className={`tm-draw-pot-card${dragOverGroup === dragKey ? ' tm-draw-group-card--drag-over' : ''}`}
                       draggable
                       title="Drag the card to reorder groups"
-                      onDragStart={() => setDraggedGroup(g.name)}
-                      onDragOver={e => { e.preventDefault(); setDragOverGroup(g.name); }}
-                      onDragLeave={() => setDragOverGroup(prev => prev === g.name ? null : prev)}
-                      onDrop={e => { e.preventDefault(); if (draggedGroup) reorderGroups(draggedGroup, g.name); setDraggedGroup(null); setDragOverGroup(null); }}
+                      onDragStart={() => setDraggedGroup(dragKey)}
+                      onDragOver={e => { e.preventDefault(); setDragOverGroup(dragKey); }}
+                      onDragLeave={() => setDragOverGroup(prev => prev === dragKey ? null : prev)}
+                      onDrop={e => { e.preventDefault(); if (draggedGroup) reorderGroups(draggedGroup, dragKey); setDraggedGroup(null); setDragOverGroup(null); }}
                       onDragEnd={() => { setDraggedGroup(null); setDragOverGroup(null); }}
                       style={{ cursor: 'grab' }}
                     >
@@ -5883,7 +6637,7 @@ function DrawPanel({ tournament, activeCategory }: { tournament: Tournament; act
           </>
         ) : armedSlot ? (
           <div className="tm-draw-hero-info">
-            <span className="tm-draw-hero-name">{armedSlot.group} — {(groups.find(g => g.name === armedSlot.group)?.prefix || armedSlot.group.charAt(0).toUpperCase())}{armedSlot.position}</span>
+            <span className="tm-draw-hero-name">{armedSlot.group} — {(groups.find(g => g.name === armedSlot.group && g.category === armedSlot.category)?.prefix || armedSlot.group.charAt(0).toUpperCase())}{armedSlot.position}</span>
             <span className="tm-draw-hero-detail" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><Hourglass size={12} strokeWidth={2} /> Pick a team below…</span>
           </div>
         ) : lastDrawn ? (
@@ -5931,6 +6685,14 @@ function DrawPanel({ tournament, activeCategory }: { tournament: Tournament; act
           message="Clear every team's group assignment from this draw?"
           onConfirm={resetDraw}
         />
+        <button
+          className={`tm-io-btn${isDrawCompleted ? ' tm-io-btn--active' : ''}`}
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
+          title={isDrawCompleted
+            ? `Draw marked complete for ${activeCategory || 'this tournament'} — click to unmark`
+            : `Declare the draw final for ${activeCategory || 'this tournament'} — shows as finalized on the public scoring page, even if some slots are intentionally left empty`}
+          onClick={toggleDrawCompleted}
+        >{isDrawCompleted ? <><PartyPopper size={14} strokeWidth={2} /> Draw Completed</> : <><Check size={14} strokeWidth={2} /> Mark Draw Completed</>}</button>
       </div>
 
       {(categories.length > 0
@@ -5941,21 +6703,22 @@ function DrawPanel({ tournament, activeCategory }: { tournament: Tournament; act
           {section.label && <div className="tm-groups-label" style={{ display: 'block', marginBottom: 6 }}>{section.label}</div>}
           <div className="tm-draw-group-cards">
             {section.items.map(g => {
-              const members = teams.filter(t => t.group === g.name);
+              const members = teams.filter(t => t.group === g.name && sameTeamCategory(t.category, g.category));
               const full = groupIsFull(g);
               const slotCount = g.capacity ?? Math.max(members.length + 3, 8);
               const { slots } = resolveGroupSlots(members, g.capacity);
               const prefix = g.prefix || g.name.charAt(0).toUpperCase();
+              const dragKey = groupDragKey(g);
               return (
                 <div
-                  key={g.name}
-                  className={`tm-draw-group-card${full ? ' tm-draw-group-card--full' : ''}${dragOverGroup === g.name ? ' tm-draw-group-card--drag-over' : ''}`}
+                  key={dragKey}
+                  className={`tm-draw-group-card${full ? ' tm-draw-group-card--full' : ''}${dragOverGroup === dragKey ? ' tm-draw-group-card--drag-over' : ''}`}
                   draggable
                   title="Drag the card to reorder groups"
-                  onDragStart={() => setDraggedGroup(g.name)}
-                  onDragOver={e => { e.preventDefault(); setDragOverGroup(g.name); }}
-                  onDragLeave={() => setDragOverGroup(prev => prev === g.name ? null : prev)}
-                  onDrop={e => { e.preventDefault(); if (draggedGroup) reorderGroups(draggedGroup, g.name); setDraggedGroup(null); setDragOverGroup(null); }}
+                  onDragStart={() => setDraggedGroup(dragKey)}
+                  onDragOver={e => { e.preventDefault(); setDragOverGroup(dragKey); }}
+                  onDragLeave={() => setDragOverGroup(prev => prev === dragKey ? null : prev)}
+                  onDrop={e => { e.preventDefault(); if (draggedGroup) reorderGroups(draggedGroup, dragKey); setDraggedGroup(null); setDragOverGroup(null); }}
                   onDragEnd={() => { setDraggedGroup(null); setDragOverGroup(null); }}
                   style={{ cursor: 'grab' }}
                 >
@@ -5965,17 +6728,17 @@ function DrawPanel({ tournament, activeCategory }: { tournament: Tournament; act
                   <div className="tm-draw-slot-grid">
                     {Array.from({ length: slotCount }, (_, i) => i + 1).map(n => {
                       const occupant = slots[n - 1];
-                      const armed = armedSlot?.group === g.name && armedSlot.position === n;
+                      const armed = armedSlot?.group === g.name && armedSlot.category === g.category && armedSlot.position === n;
                       // An armed team can't drop into a slot whose group belongs
                       // to a different category.
-                      const blocked = !occupant && !!armedTeam && categoryMismatch(armedTeam.team, g.name);
+                      const blocked = !occupant && !!armedTeam && categoryMismatch(armedTeam.team, g.category);
                       const clickable = (!occupant && !blocked) || editMode;
                       return (
                         <div
                           key={n}
                           className={`tm-draw-slot-card${occupant ? ' tm-draw-slot-card--filled' : blocked ? ' tm-draw-slot-card--filled' : ' tm-draw-slot-card--pickable'}${armed ? ' tm-draw-slot-card--armed' : ''}${occupant && editMode ? ' tm-draw-slot-card--editable' : ''}`}
                           title={occupant ? (editMode ? `Click to remove ${occupant.name}` : occupant.category ? `Category: ${occupant.category}` : undefined) : blocked ? 'Not pickable for the armed team’s category' : undefined}
-                          onClick={clickable ? () => (occupant ? updateTeam(occupant.id, { group: undefined, groupPosition: undefined }) : handleSlotClick(g.name, n)) : undefined}
+                          onClick={clickable ? () => (occupant ? updateTeam(occupant.id, { group: undefined, groupPosition: undefined }) : handleSlotClick(g, n)) : undefined}
                         >
                           <span className="tm-draw-slot-card-label">{prefix}{n}</span>
                           {occupant && <div style={{ width: 26, height: 26, flexShrink: 0 }}><ScheduleBadge logo={occupant.logo} color={occupant.color} /></div>}
@@ -6006,7 +6769,7 @@ function DrawPanel({ tournament, activeCategory }: { tournament: Tournament; act
                 const armed = armedTeam?.team.id === t.id;
                 // Once a slot is armed, only an undrawn, category-matching
                 // team can fill it via this tile.
-                const blocked = !!armedSlot && (!!t.group || categoryMismatch(t, armedSlot.group));
+                const blocked = !!armedSlot && (!!t.group || categoryMismatch(t, armedSlot.category));
                 return (
                   <div
                     key={t.id}

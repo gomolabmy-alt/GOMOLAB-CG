@@ -1,29 +1,204 @@
-import { Fragment, useContext, useEffect, useState } from 'react';
-import { Settings, X, Undo2, Save, Check, RotateCcw, Radio, Users, ChevronDown, ChevronUp, Repeat, ClipboardList, Play, Timer, Pencil } from 'lucide-react';
+import { Fragment, useContext, useEffect, useRef, useState } from 'react';
+import { Settings, X, Undo2, Save, Check, RotateCcw, Radio, Users, ChevronDown, ChevronUp, Repeat, ClipboardList, Play, Timer, Pencil, ArrowRight, ArrowLeftRight } from 'lucide-react';
 import { useCanvasStore } from '../../stores/canvasStore';
 import { CanvasActionContext } from '../../lib/canvasContext';
 import { useVmixStore } from '../../stores/vmixStore';
 import { useMatchResultsStore } from '../../stores/matchResultsStore';
+import { useMatchScheduleStore } from '../../stores/matchScheduleStore';
 import { useTournamentStore } from '../../stores/tournamentStore';
 import { useTeamDbStore } from '../../stores/teamDbStore';
-import { resolveImageUrl } from '../../lib/imageUrl';
+import { resolveImageUrl, transparentLogoUrl } from '../../lib/imageUrl';
 import { TeamPicker } from '../TeamPicker';
 import { LogoUrlPicker } from '../LogoUrlPicker';
 import { SPORT_LABELS, SPORT_DEFAULTS, type SportType, type RacketSportSettings } from '../../types/tournament';
-import { computeMatchSignature, buildResultFromConfig, guardScoreboardOverwrite, findDuplicateResult } from '../../utils/scoreboardSnapshot';
+import { computeMatchSignature, buildResultFromConfig, buildLoadMatchPatchRacket, guardScoreboardOverwrite, findDuplicateResult } from '../../utils/scoreboardSnapshot';
+import { extractKnockoutStage } from '../TournamentManager';
+import { runActions, type ActionItem } from '../../lib/buttonActions';
 import {
   type RacketSide, type RallyMatchState, type TennisMatchState, type RacketPlayerEntry,
   initRallyMatch, scoreRallyPoint, advanceRallyGame, isRallyGameOver, rallyGamesWon, adjustRallyPoint,
   initTennisMatch, scoreTennisPoint, tennisPointLabel, isTennisDeuce, formatGameResult, adjustTennisPoint,
   normalizePlayerEntry, formatPlayerEntry, formatDuration,
 } from '../../lib/racketScoring';
-import { CardSelect, ToggleCard, CustomBox } from '../WidgetConfigPanel';
+import { CardSelect, ToggleCard, CustomBox, InputPickerDropdown, FieldPickerDropdown } from '../WidgetConfigPanel';
 
 interface Props {
   widgetId: string;
   config: Record<string, any>;
   w: number;
   h: number;
+}
+
+// Substitutes a per-set field NAME TEMPLATE's `{n}` placeholder with the
+// 1-based set number — e.g. "team-a-score-s{n}.Text" + 3 → "team-a-score-
+// s3.Text". `{n}` can sit anywhere in the string (any separator, any
+// position relative to a team letter), unlike the older fixed "{prefix}
+// {n}A.Text" shape — see RacketVmixTarget.setScoreTemplateA/B's own doc
+// comment for why that mattered.
+function expandSetTemplate(template: string, setNumber: number): string {
+  return template.replace(/\{n\}/g, String(setNumber));
+}
+
+// '#RRGGBB' (an <input type="color"> value) -> 'FFRRGGBB', the ARGB hex
+// vMix's SetColor function expects for its Value parameter — same
+// convention TeamFormWidget.tsx's own toArgbHex already uses.
+function toArgbHex(hex: string): string {
+  return 'FF' + hex.replace('#', '').toUpperCase();
+}
+
+// Turns a picked REAL field name (assumed to represent Set 1 — pickers
+// always show/search with n=1 substituted in) into a reusable {n} template
+// by replacing the LAST run of digits in it, same convention
+// WidgetConfigPanel.tsx's own racket-scoreboard case uses for this exact
+// picker (duplicated rather than shared, same as RacketVmixTarget's own
+// precedent) — e.g. "team-a-score-s1.Text" -> "team-a-score-s{n}.Text".
+function deriveSetTemplate(fieldName: string): string {
+  return /\d/.test(fieldName) ? fieldName.replace(/(\d+)(?!.*\d)/, '{n}') : `${fieldName}{n}`;
+}
+
+// Builds a regex matching any field name this template could have produced
+// for SOME set number — used to find and clear stale fields beyond the
+// current match's max set count (e.g. a best-of-7 template's "…s6/s7"
+// fields left over after loading a best-of-3 match). Splits on the first
+// literal "{n}" and escapes each side separately so the placeholder itself
+// becomes a `(\d+)` capture rather than being escaped as literal text; a
+// template with no "{n}" at all (operator typo) just matches itself exactly
+// — degrades to "always the same field", never throws.
+function setTemplateStaleRegex(template: string): RegExp {
+  const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const idx = template.indexOf('{n}');
+  if (idx === -1) return new RegExp(`^${esc(template)}$`, 'i');
+  const before = template.slice(0, idx);
+  const after = template.slice(idx + 3);
+  return new RegExp(`^${esc(before)}(\\d+)${esc(after)}$`, 'i');
+}
+
+// One vMix input's worth of field mappings for this board — multiple of
+// these can run side by side (config.racketVmixTargets), same "+ Add vMix
+// Input" convention MatchScheduleWidget's own FixtureVmixTarget[] already
+// uses. `id: 'legacy'` is synthesized from the OLD flat config fields
+// (config.vmixInputKey/fieldScoreA/etc, from before this was an array) when
+// config.racketVmixTargets itself is still empty — see vmixTargets below —
+// so an existing widget keeps pushing exactly what it always did with zero
+// migration step.
+interface RacketVmixTarget {
+  id: string;
+  inputKey: string;
+  inputTitle?: string;
+  fieldScoreA?: string;
+  fieldScoreB?: string;
+  fieldTeamA?: string;
+  fieldTeamB?: string;
+  /** Short name ONLY (config.teamAShortName/teamBShortName) — unlike
+   *  fieldTeamA/B above (always the full name), a dedicated field for
+   *  templates that want the short form specifically, pushed to its own
+   *  separate field rather than substituted in place of the full one. */
+  fieldTeamAShort?: string;
+  fieldTeamBShort?: string;
+  /** Pushes the team's OWN logo (config.teamALogo/teamBLogo) to a Source
+   *  field — distinct from serverIconA/B, which is a dedicated serving
+   *  indicator icon, not the team badge. */
+  fieldTeamALogo?: string;
+  fieldTeamBLogo?: string;
+  fieldGamesWonA?: string;
+  fieldGamesWonB?: string;
+  fieldSetLabel?: string;
+  /** Legacy — a plain prefix assuming the fixed shape "{prefix}{n}A.Text" /
+   *  "{prefix}{n}B.Text" (e.g. "Set" → Set1A.Text/Set1B.Text). Still read as
+   *  a fallback when neither template below is set, for whatever was
+   *  configured before those existed. */
+  setScorePrefix?: string;
+  /** Per-set score field NAME TEMPLATES — one per side, `{n}` standing in
+   *  for the 1-based set number, substituted literally wherever it appears
+   *  (any position, any separator) — e.g. "team-a-score-s{n}.Text" for a
+   *  field literally named "team-a-score-s1.Text". Takes over from
+   *  setScorePrefix above whenever either is set, since not every naming
+   *  convention has the team letter trailing right before the set number
+   *  the way that fixed shape assumed. */
+  setScoreTemplateA?: string;
+  setScoreTemplateB?: string;
+  /** Field name TEMPLATE (same {n} convention as setScoreTemplateA/B) for an
+   *  OVERRIDE target — only needed if you want something OTHER than the set
+   *  score's own Text field recolored (vMix's SetTextColour, which this
+   *  board uses by default, colors a Text field's own font color directly
+   *  by that field's own name — setScoreTemplateA/B above already is that
+   *  name, no separate element required). Leave blank to just recolor the
+   *  score number itself, which is what almost everyone wants. */
+  setScoreColorFieldA?: string;
+  setScoreColorFieldB?: string;
+  /** '#RRGGBB' (an <input type="color"> value — converted to vMix's own
+   *  ARGB hex at push time, see toArgbHex) — when set, the JUST-DECIDED
+   *  set's own winner-side color field (setScoreColorFieldA/B above, or
+   *  setScoreTemplateA/B itself as a fallback) is colored this the instant
+   *  that set ends; setScoreLoseColor does the same for the loser's side. A
+   *  simpler, built-in alternative to configuring a full Set Result Trigger
+   *  action list just to recolor a field this board already knows how to
+   *  address. Either/both optional — unset means no color change happens
+   *  automatically. */
+  setScoreWinColor?: string;
+  setScoreLoseColor?: string;
+  /** Applied to every NOT-YET-DECIDED set's score field — the one still
+   *  being played right now, and any slot not reached yet (completed sets
+   *  keep whatever win/lose color they already got the instant they
+   *  concluded; this never touches those). Lets the whole per-set row have
+   *  a consistent, app-controlled neutral color instead of whatever the
+   *  vMix title itself happens to default a Text field to. Optional —
+   *  unset leaves undecided sets at the title's own default color. */
+  setScoreDefaultColor?: string;
+  // 'text' (default) pushes the serving team's NAME to fieldServerName,
+  // same as before this existed. 'image' pushes a SERVER ICON (serverIconA/B
+  // below — an operator-picked image, e.g. a shuttle/ball icon or arrow,
+  // NOT the team's own logo) to fieldServerImage instead, swapping between
+  // the two images as serve changes side. 'trigger' pushes nothing at all —
+  // it instead fires one of 4 action lists (any vMix function, e.g. Overlay
+  // In/Out on a "Team A serving" graphic) the moment the server actually
+  // CHANGES — see the dedicated effect below for exactly when each fires.
+  serverMode?: 'text' | 'image' | 'trigger';
+  fieldServerName?: string;
+  fieldServerImage?: string;
+  /** Icon image pushed to fieldServerImage while that side is serving —
+   *  independent of the team's own logo (config.teamALogo/teamBLogo),
+   *  since the "who's serving" indicator is usually its own dedicated icon
+   *  (a shuttle, a dot, an arrow…), not a second copy of the team badge. */
+  serverIconA?: string;
+  serverIconB?: string;
+  /** 'simple' (default) — pick an input + a text/image field per side
+   *  (serverVisible*A/B below) and this just calls vMix's own
+   *  SetTextVisibleOn/Off or SetImageVisibleOn/Off directly — the common
+   *  case (show one side's "serving" graphic, hide the other's) with
+   *  nothing to build. 'advanced' is the full ActionListEditor 4-list setup
+   *  (serverShowActionsA/B etc) for anything a plain show/hide can't do —
+   *  a different function entirely, multiple actions, a different input
+   *  per team, etc. */
+  serverTriggerMode?: 'simple' | 'advanced';
+  /** Lives on this same target's own inputKey above — no separate Input
+   *  picker for these, since it's always the same vMix input every other
+   *  field on this target already uses. */
+  serverVisibleFieldA?: string;
+  serverVisibleTypeA?: 'text' | 'image';
+  serverVisibleFieldB?: string;
+  serverVisibleTypeB?: 'text' | 'image';
+  serverShowActionsA?: ActionItem[];
+  serverHideActionsA?: ActionItem[];
+  serverShowActionsB?: ActionItem[];
+  serverHideActionsB?: ActionItem[];
+  /** Starting-lineup push — one Name/Jersey/Position field TRIPLE per
+   *  side, same {n}-template convention as setScoreTemplateA/B above
+   *  (`{n}` is the 1-based starter SLOT number, e.g.
+   *  "PlayerA{n}Name.Text" → "PlayerA1Name.Text" for the first starter).
+   *  Reserves a slot for every one of config.playerCount's slots, not just
+   *  however many are actually filled in — same "fixed-size GT template
+   *  needs somewhere to bind an empty slot" reasoning the per-set score
+   *  fields already follow. Any of the three is independently optional. */
+  playerNameTemplateA?: string;
+  playerJerseyTemplateA?: string;
+  playerPositionTemplateA?: string;
+  playerNameTemplateB?: string;
+  playerJerseyTemplateB?: string;
+  playerPositionTemplateB?: string;
+  /** UI-only (WidgetConfigPanel.tsx's Player tab) — picker vs manual entry
+   *  for the 6 templates above, same convention setScoreTemplateMode uses. */
+  playerTemplateMode?: 'picker' | 'manual';
 }
 
 // Racket/net-sport (badminton, table tennis, tennis, sepaktakraw) match
@@ -57,7 +232,10 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
   // interactive client. getClient() proxies through to the host's real
   // connection in that case.
   const client = useVmixStore((s) => s.getClient());
+  const vmixState = useVmixStore((s) => s.vmixState);
+  const allVmixInputs = vmixState?.inputs ?? [];
   const { addResult, updateResult, results: savedResults } = useMatchResultsStore();
+  const { matches: scheduleMatches, markSent: markFixtureSent, markCompleted: markFixtureCompleted } = useMatchScheduleStore();
   const { tournaments } = useTournamentStore();
   const { teams: teamDbTeams } = useTeamDbStore();
 
@@ -148,6 +326,11 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
   // layouts' sizing together, just respecting each element's own shape.
   const logoScale = logoSize / 54;
   const scoreScale = scoreFontSize / 36;
+  // Starters/Subs/Roster footer — its own independent multiplier (not tied
+  // to logoScale/scoreScale above) since the Players tab's own "Player
+  // Area Size" setting is about making a cramped 8-9px lineup list easier
+  // to read, a separate concern from the main score card's sizing.
+  const playerAreaScale = config.playerAreaScale ?? 1;
   // "Require Start to score" — entirely optional (off unless explicitly
   // turned on in Settings): while on, scoring (+1/-1) and changing serve
   // are both locked out until the operator presses Start for the CURRENT
@@ -292,6 +475,54 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
   // within that same call — reading "after" would lose exactly the winning
   // point's own score. Capped the same generous way pointHistory is, so a
   // very long match can't grow this without bound.
+  // Fires the instant a set is decided — Set Result Triggers in Settings →
+  // vMix Output (config.setWinActionsA/B, setLoseActionsA/B), same ActionItem
+  // list/picker a Quick Button uses, so it can drive literally any vMix
+  // function (color change, text/image set, overlay, etc.), not just a fixed
+  // field push. Fire-and-forget (runActions is async; nothing here waits on
+  // it) — a slow/failed vMix call must never hold up live scoring.
+  //
+  // ALSO — a simpler built-in alternative to a manual trigger, for the
+  // common case of just wanting the set's own score field to change color:
+  // each vMix target's Per-Set Score Fields (setScoreTemplateA/B) can carry
+  // a Win/Lose color (setScoreWinColor/setScoreLoseColor); if set, this
+  // colors THAT set's own already-configured field directly — no separate
+  // action list to build.
+  const fireSetResultActions = (setWinner: RacketSide, setNumber: number) => {
+    const winnerActions = setWinner === 'A' ? config.setWinActionsA : config.setWinActionsB;
+    const loserActions = setWinner === 'A' ? config.setLoseActionsB : config.setLoseActionsA;
+    if (winnerActions?.length) runActions(winnerActions);
+    if (loserActions?.length) runActions(loserActions);
+    if (client) {
+      for (const t of vmixTargets) {
+        if (!t.inputKey || (!t.setScoreWinColor && !t.setScoreLoseColor)) continue;
+        // Colors the set's own score TEXT field directly (vMix's
+        // SetTextColour — a real Text field's own font color, targeted by
+        // that field's own name, same as SetText uses) — no separate
+        // Colour-type GT element has to exist in the title for this to
+        // work. setScoreColorFieldA/B is only an OVERRIDE for the rare case
+        // of wanting a genuinely different element recolored instead (e.g.
+        // a background shape) — leave it blank and this just colors the
+        // score number itself.
+        const colorFieldA = t.setScoreColorFieldA || t.setScoreTemplateA || (t.setScorePrefix ? `${t.setScorePrefix}{n}A.Text` : '');
+        const colorFieldB = t.setScoreColorFieldB || t.setScoreTemplateB || (t.setScorePrefix ? `${t.setScorePrefix}{n}B.Text` : '');
+        const winnerField = setWinner === 'A' ? colorFieldA : colorFieldB;
+        const loserField = setWinner === 'A' ? colorFieldB : colorFieldA;
+        // Fall back to the SAME default swatch the color pickers themselves
+        // show (#2ecc71/#e74c3c) when only ONE side was ever explicitly
+        // picked — otherwise the un-picked side's color stayed undefined
+        // forever (the swatch default is cosmetic only, never saved until
+        // touched), so e.g. a Win color alone left every LOSING set's field
+        // completely uncolored instead of the red the picker appeared to
+        // promise.
+        const winColor = t.setScoreWinColor || '#2ecc71';
+        const loseColor = t.setScoreLoseColor || '#e74c3c';
+        if (winnerField) client.setTextColor(t.inputKey, expandSetTemplate(winnerField, setNumber), toArgbHex(winColor));
+        if (loserField) client.setTextColor(t.inputKey, expandSetTemplate(loserField, setNumber), toArgbHex(loseColor));
+      }
+    }
+  };
+
   const scorePoint = (side: RacketSide) => {
     if (scoringLocked) return; // Require Start to score — see scoringLocked's own doc comment
     const history = pushHistory();
@@ -315,6 +546,10 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
         patch.gameEndedAt = undefined;
       }
       updateWidgetConfig(widgetId, patch);
+      if (next.sets.length > tennisState.sets.length) {
+        const justCompleted = next.sets[next.sets.length - 1];
+        fireSetResultActions(justCompleted.a > justCompleted.b ? 'A' : 'B', next.sets.length);
+      }
     } else {
       const next = scoreRallyPoint(rallyState, side, rallySettings);
       const patch: Record<string, unknown> = { rallyState: next, pointHistory: history, pointLog };
@@ -324,10 +559,18 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
       // just FROZEN at the exact instant the game itself ended (this point),
       // so the display stops ticking immediately rather than keeping to run
       // until the operator gets around to clicking confirm.
-      if (config.gameStartedAt && !config.gameEndedAt && isRallyGameOver(next.pointsA, next.pointsB, rallySettings)) {
+      const justEnded = isRallyGameOver(next.pointsA, next.pointsB, rallySettings);
+      if (config.gameStartedAt && !config.gameEndedAt && justEnded) {
         patch.gameEndedAt = Date.now();
       }
       updateWidgetConfig(widgetId, patch);
+      // Only fire the MOMENT the set actually ends (not on every point of an
+      // already-decided, still-unconfirmed set — isRallyGameOver would keep
+      // returning the same winner for every point after it, since rally
+      // sports don't reset pointsA/B until Start Next Game is confirmed).
+      if (justEnded && !isRallyGameOver(rallyState.pointsA, rallyState.pointsB, rallySettings)) {
+        fireSetResultActions(next.pointsA > next.pointsB ? 'A' : 'B', rallyState.games.length + 1);
+      }
     }
   };
 
@@ -344,6 +587,58 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
     // that, after this undo, never actually happened.
     if (config.gameEndedAt) patch.gameEndedAt = undefined;
     updateWidgetConfig(widgetId, patch);
+  };
+
+  // "Swap Last Point" — corrects a point scored for the wrong side by
+  // mistake, without the operator having to Undo and re-score by hand.
+  // Rather than flipping a flag on the CURRENT (already-wrong) state —
+  // which would need to re-derive every rule scoreRallyPoint/
+  // scoreTennisPoint already handles (deuce, tiebreak entry/exit, game/set
+  // boundaries) — this recomputes from the exact PRE-POINT snapshot (the
+  // same one Undo restores, top of pointHistory) as if the CORRECT side had
+  // been scored in the first place. pointHistory itself is left untouched
+  // (still ends at that same pre-point snapshot), so Undo after a Swap
+  // still correctly reverts the whole point, exactly as it would have
+  // before the swap. Same limitation Undo already has: can't reach back
+  // past a confirmed game/set boundary (pointHistory resets there) — the
+  // button is disabled alongside Undo for that same reason.
+  const swapLastPoint = () => {
+    const history = config.pointHistory ?? [];
+    const prev = history[history.length - 1];
+    const log: { game: number; a: number; b: number; scorer: RacketSide }[] = config.pointLog ?? [];
+    const lastEntry = log[log.length - 1];
+    if (!prev || !lastEntry) return;
+    const correctSide: RacketSide = lastEntry.scorer === 'A' ? 'B' : 'A';
+    if (scoringMode === 'tennis') {
+      const prevTennis = prev as TennisMatchState;
+      const preA = prevTennis.inTiebreak ? prevTennis.tiebreakA : prevTennis.pointsA;
+      const preB = prevTennis.inTiebreak ? prevTennis.tiebreakB : prevTennis.pointsB;
+      const next = scoreTennisPoint(prevTennis, correctSide, tennisSettings);
+      const pointLog = [...log.slice(0, -1), { game: lastEntry.game, a: preA + (correctSide === 'A' ? 1 : 0), b: preB + (correctSide === 'B' ? 1 : 0), scorer: correctSide }];
+      const patch: Record<string, unknown> = { tennisState: next, pointLog };
+      // Re-derive the game timer freeze from scratch against the corrected
+      // outcome — the wrong point may have ended the set when the right one
+      // doesn't (or vice versa), so any existing freeze can't just be kept.
+      if (config.gameStartedAt) {
+        const justEnded = next.sets.length > prevTennis.sets.length;
+        patch.gameEndedAt = justEnded ? Date.now() : undefined;
+        if (justEnded) {
+          const durations = [...(config.gameDurationsMs ?? []), Date.now() - config.gameStartedAt];
+          patch.gameDurationsMs = durations;
+          patch.gameStartedAt = undefined;
+        }
+      }
+      updateWidgetConfig(widgetId, patch);
+    } else {
+      const prevRally = prev as RallyMatchState;
+      const next = scoreRallyPoint(prevRally, correctSide, rallySettings);
+      const pointLog = [...log.slice(0, -1), { game: lastEntry.game, a: prevRally.pointsA + (correctSide === 'A' ? 1 : 0), b: prevRally.pointsB + (correctSide === 'B' ? 1 : 0), scorer: correctSide }];
+      const patch: Record<string, unknown> = { rallyState: next, pointLog };
+      if (config.gameStartedAt) {
+        patch.gameEndedAt = isRallyGameOver(next.pointsA, next.pointsB, rallySettings) ? Date.now() : undefined;
+      }
+      updateWidgetConfig(widgetId, patch);
+    }
   };
 
   // Quick manual correction — a "-1" button, or typing a number straight
@@ -407,30 +702,55 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
     updateWidgetConfig(widgetId, patch);
   };
 
+  // Shared by both "New Match" (replay the SAME two teams from 0-0) and the
+  // header's own Reset (which goes further, see fullReset below) — every
+  // bit of MATCH state: score, sets, Team Event tally, game timer.
+  const matchStateResetPatch = () => ({
+    rallyState: initRallyMatch(), tennisState: initTennisMatch(), pointHistory: [], pointLog: [],
+    // Reset wipes the WHOLE scoreboard, including any Team Event tally in
+    // progress — a fresh start shouldn't leave stale regu wins behind.
+    regusWonA: 0, regusWonB: 0, reguHistory: [], reguDraftsA: {}, reguDraftsB: {},
+    gameStartedAt: undefined, gameEndedAt: undefined, gameDurationsMs: [],
+  });
+
   const newMatch = () => {
+    updateWidgetConfig(widgetId, matchStateResetPatch());
+  };
+
+  // Header Reset goes further than "New Match" above — that one deliberately
+  // keeps the SAME two teams (a quick "replay this matchup" action), but a
+  // genuinely blank "start over" also needs to clear who's even playing:
+  // name, short name, logo, color, any linked team-database id, and the
+  // roster (starters/subs) — otherwise "Reset" looked like it left the old
+  // opponents' names/logos behind.
+  const fullReset = () => {
     updateWidgetConfig(widgetId, {
-      rallyState: initRallyMatch(), tennisState: initTennisMatch(), pointHistory: [], pointLog: [],
-      // Reset wipes the WHOLE scoreboard, including any Team Event tally in
-      // progress — a fresh start shouldn't leave stale regu wins behind.
-      regusWonA: 0, regusWonB: 0, reguHistory: [], reguDraftsA: {}, reguDraftsB: {},
-      gameStartedAt: undefined, gameEndedAt: undefined, gameDurationsMs: [],
+      ...matchStateResetPatch(),
+      teamAId: undefined, teamAName: '', teamAShortName: '', teamALogo: '', teamAColor: undefined,
+      teamBId: undefined, teamBName: '', teamBShortName: '', teamBLogo: '', teamBColor: undefined,
+      startersA: [], startersB: [], subsA: [], subsB: [],
     });
   };
 
-  // Header's own always-available Reset — same reset newMatch() above does
-  // (points/games/sets/server, all back to a fresh 0-0), just reachable at
-  // ANY point in the match, not only once it's already over. Two-click
-  // "arm, then confirm" (same pattern Save's own duplicate-result
-  // "Overwrite?" already uses) rather than a native confirm() dialog or a
-  // separate modal, since this can wipe real in-progress score — a single
-  // misclick shouldn't be able to.
+  // Header's own always-available Reset — goes further than "New Match"
+  // (see fullReset's own doc comment: clears team identity/roster too, not
+  // just score/sets/timer), reachable at ANY point in the match, not only
+  // once it's already over. Two-click "arm, then confirm" (same pattern
+  // Save's own duplicate-result "Overwrite?" uses — see duplicateResultId
+  // above, which also stays armed indefinitely) rather than a native
+  // confirm() dialog or a separate modal, since this can wipe real
+  // in-progress score (and now team info too) — a single misclick shouldn't
+  // be able to. Deliberately does NOT auto-expire the armed state on a
+  // timer — an earlier version did (3s), which silently turned a slightly-
+  // delayed second click back into a fresh "arm" instead of a confirm,
+  // making Reset look unresponsive. Stays armed until actually confirmed,
+  // exactly like Overwrite? does.
   const handleResetClick = () => {
     if (!resetArmed) {
       setResetArmed(true);
-      setTimeout(() => setResetArmed(false), 3000);
       return;
     }
-    newMatch();
+    fullReset();
     setResetArmed(false);
   };
 
@@ -628,28 +948,269 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
     updateWidgetConfig(widgetId, scoringMode === 'tennis' ? { tennisState: { ...tennisState, server: side } } : { rallyState: { ...rallyState, server: side } });
   };
 
-  // ── vMix push (basic — name + current point display per side) ──────────
-  useEffect(() => {
-    if (!config.vmixInputKey || !client) return;
-    const label = scoringMode === 'tennis'
-      ? (tennisState.inTiebreak ? String(tennisState.tiebreakA) : tennisPointLabel(tennisState.pointsA, tennisState.pointsB).a)
-      : String(rallyState.pointsA);
-    const labelB = scoringMode === 'tennis'
-      ? (tennisState.inTiebreak ? String(tennisState.tiebreakB) : tennisPointLabel(tennisState.pointsA, tennisState.pointsB).b)
-      : String(rallyState.pointsB);
-    if (config.fieldScoreA) client.setTextField(config.vmixInputKey, config.fieldScoreA, label);
-    if (config.fieldScoreB) client.setTextField(config.vmixInputKey, config.fieldScoreB, labelB);
-    if (config.fieldTeamA && config.teamAName != null) client.setTextField(config.vmixInputKey, config.fieldTeamA, config.teamAName);
-    if (config.fieldTeamB && config.teamBName != null) client.setTextField(config.vmixInputKey, config.fieldTeamB, config.teamBName);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config.vmixInputKey, config.fieldScoreA, config.fieldScoreB, config.fieldTeamA, config.fieldTeamB, config.teamAName, config.teamBName, rallyState.pointsA, rallyState.pointsB, tennisState.pointsA, tennisState.pointsB, tennisState.tiebreakA, tennisState.tiebreakB, tennisState.inTiebreak]);
-
   // Every completed game/set so far, oldest first — kept as the full
   // RacketGameScore/TennisSetScore objects (not just {a,b}) so
   // formatGameResult can add tennis's own "(4)" tiebreak-loser suffix where
   // it applies. Used both by the on-widget results list below AND Save
   // Result's own scoreLog entries just below that.
   const completedGames = scoringMode === 'tennis' ? tennisState.sets : rallyState.games;
+
+  // Every configured vMix target — config.racketVmixTargets (the "+ Add
+  // vMix Input" list) when set, else a single synthesized entry from the
+  // OLD flat fields (config.vmixInputKey/fieldScoreA/etc) so a widget saved
+  // before multi-target existed keeps pushing exactly what it always did.
+  const vmixTargets: RacketVmixTarget[] = config.racketVmixTargets?.length
+    ? config.racketVmixTargets
+    : config.vmixInputKey
+      ? [{
+          id: 'legacy', inputKey: config.vmixInputKey, inputTitle: config.vmixInputTitle,
+          fieldScoreA: config.fieldScoreA, fieldScoreB: config.fieldScoreB,
+          fieldTeamA: config.fieldTeamA, fieldTeamB: config.fieldTeamB,
+          fieldGamesWonA: config.fieldGamesWonA, fieldGamesWonB: config.fieldGamesWonB,
+          fieldTeamAShort: config.fieldTeamAShort, fieldTeamBShort: config.fieldTeamBShort,
+          fieldTeamALogo: config.fieldTeamALogo, fieldTeamBLogo: config.fieldTeamBLogo,
+          fieldSetLabel: config.fieldSetLabel, setScorePrefix: config.setScorePrefix,
+          setScoreTemplateA: config.setScoreTemplateA, setScoreTemplateB: config.setScoreTemplateB,
+          setScoreColorFieldA: config.setScoreColorFieldA, setScoreColorFieldB: config.setScoreColorFieldB,
+          setScoreWinColor: config.setScoreWinColor, setScoreLoseColor: config.setScoreLoseColor,
+          setScoreDefaultColor: config.setScoreDefaultColor,
+          serverMode: 'text', fieldServerName: config.fieldServerName,
+        }]
+      : [];
+
+  // Reuses the SAME Set Won Color from Settings → vMix Output for the
+  // widget's own on-screen completed-set chips, not just the vMix push —
+  // every chip here already represents a DECIDED set (by definition, it's
+  // in completedGames), so this just shows every one of them in that same
+  // "won" color instead of the winning team's own identity color. Falls
+  // back to the team's own color when no Set Won Color is configured, same
+  // as before this existed.
+  const setColorTarget = vmixTargets.find(t => t.setScoreWinColor);
+  const setResultColor = (g: { a: number; b: number }) =>
+    setColorTarget?.setScoreWinColor || (g.a > g.b ? teamAColor : teamBColor);
+
+  // ── vMix push — everything this widget tracks, not just the bare running
+  // score: team names, current point display, sets/games won tally, who's
+  // serving (text name or team logo — see RacketVmixTarget.serverMode), the
+  // current set/game label, AND a separate A/B score pair for EVERY set
+  // (every completed one, plus the one still being played live) — the
+  // operator's own request, so a vMix graphic can show the full set-by-set
+  // breakdown, not just the current score. Every field here is optional
+  // (only pushed when its own vMix field name is actually configured), and
+  // runs once per configured target (see vmixTargets above) — a 'trigger'
+  // serverMode target pushes nothing here at all (see the dedicated effect
+  // right below instead).
+  useEffect(() => {
+    if (!client || vmixTargets.length === 0) return;
+    const label = scoringMode === 'tennis'
+      ? (tennisState.inTiebreak ? String(tennisState.tiebreakA) : tennisPointLabel(tennisState.pointsA, tennisState.pointsB).a)
+      : String(rallyState.pointsA);
+    const labelB = scoringMode === 'tennis'
+      ? (tennisState.inTiebreak ? String(tennisState.tiebreakB) : tennisPointLabel(tennisState.pointsA, tennisState.pointsB).b)
+      : String(rallyState.pointsB);
+    const matchOver = !!matchWinnerSide || !!teamTieWinner;
+    const currentSet = scoringMode === 'tennis' ? { a: tennisState.gamesA, b: tennisState.gamesB } : { a: rallyState.pointsA, b: rallyState.pointsB };
+    const allSets = matchOver ? completedGames : [...completedGames, currentSet];
+    for (const t of vmixTargets) {
+      if (!t.inputKey) continue;
+      if (t.fieldScoreA) client.setTextField(t.inputKey, t.fieldScoreA, label);
+      if (t.fieldScoreB) client.setTextField(t.inputKey, t.fieldScoreB, labelB);
+      if (t.fieldTeamA && config.teamAName != null) client.setTextField(t.inputKey, t.fieldTeamA, config.teamAName);
+      if (t.fieldTeamB && config.teamBName != null) client.setTextField(t.inputKey, t.fieldTeamB, config.teamBName);
+      if (t.fieldTeamAShort) client.setTextField(t.inputKey, t.fieldTeamAShort, config.teamAShortName ?? '');
+      if (t.fieldTeamBShort) client.setTextField(t.inputKey, t.fieldTeamBShort, config.teamBShortName ?? '');
+      if (t.fieldTeamALogo) client.setImageField(t.inputKey, t.fieldTeamALogo, config.teamALogo || transparentLogoUrl());
+      if (t.fieldTeamBLogo) client.setImageField(t.inputKey, t.fieldTeamBLogo, config.teamBLogo || transparentLogoUrl());
+      if (t.fieldGamesWonA) client.setTextField(t.inputKey, t.fieldGamesWonA, String(gamesWonA));
+      if (t.fieldGamesWonB) client.setTextField(t.inputKey, t.fieldGamesWonB, String(gamesWonB));
+      if (t.serverMode === 'image') {
+        if (t.fieldServerImage) {
+          const icon = server === 'A' ? t.serverIconA : t.serverIconB;
+          client.setImageField(t.inputKey, t.fieldServerImage, icon || transparentLogoUrl());
+        }
+      } else if (t.serverMode !== 'trigger' && t.fieldServerName) {
+        client.setTextField(t.inputKey, t.fieldServerName, (server === 'A' ? config.teamAName : config.teamBName) ?? '');
+      }
+      if (t.fieldSetLabel) {
+        const unit = scoringMode === 'tennis' || sport === 'sepaktakraw' ? 'Set' : 'Game';
+        client.setTextField(t.inputKey, t.fieldSetLabel, matchOver ? 'Final' : `${unit} ${completedGames.length + 1}`);
+      }
+      // Per-set score — one A/B pair per set, oldest first. Reserves a slot
+      // for EVERY set this match could possibly reach (gamesToWin*2-1 — a
+      // best-of-3 always gets 3, a best-of-5 always gets 5), not just
+      // however many have been played so far — a GT template built with a
+      // fixed number of set boxes would otherwise have no field at all to
+      // bind box 3 to until the 3rd set actually started, and no clean way
+      // to tell "not reached yet" apart from simply unconfigured. A set not
+      // yet reached pushes blank. The one still being played right now
+      // (already in allSets, not yet in completedGames) uses the current
+      // running score (points for a rally sport, games-within-the-set for
+      // tennis), so it shows live instead of only once it's over.
+      // Templates (setScoreTemplateA/B) take over from the legacy fixed-
+      // shape prefix whenever either is set — see RacketVmixTarget's own
+      // doc comment on why "{prefix}{n}A.Text" couldn't cover every real
+      // naming convention (team letter isn't always right before the set
+      // number). Falls back to the old prefix convention when neither
+      // template is set, for a target still configured the old way.
+      const templateA = t.setScoreTemplateA || t.setScoreTemplateB
+        ? (t.setScoreTemplateA ?? '')
+        : (t.setScorePrefix ? `${t.setScorePrefix}{n}A.Text` : '');
+      const templateB = t.setScoreTemplateA || t.setScoreTemplateB
+        ? (t.setScoreTemplateB ?? '')
+        : (t.setScorePrefix ? `${t.setScorePrefix}{n}B.Text` : '');
+      if (templateA || templateB) {
+        const maxSets = Math.max(allSets.length, (config.gamesToWin ?? 2) * 2 - 1);
+        // Same Color Field override fireSetResultActions uses — blank means
+        // "color the score Text field itself" (SetTextColour, no separate
+        // Colour-type GT element required).
+        const colorFieldA = t.setScoreColorFieldA || templateA;
+        const colorFieldB = t.setScoreColorFieldB || templateB;
+        for (let i = 0; i < maxSets; i++) {
+          const g = allSets[i];
+          if (templateA) client.setTextField(t.inputKey, expandSetTemplate(templateA, i + 1), g ? String(g.a) : '');
+          if (templateB) client.setTextField(t.inputKey, expandSetTemplate(templateB, i + 1), g ? String(g.b) : '');
+          // Default color for every NOT-YET-DECIDED slot (the set still
+          // being played right now, and any slot not reached yet) —
+          // completed sets are never touched here, they keep whatever
+          // win/lose color fireSetResultActions already gave them the
+          // instant they concluded. Resets a freshly loaded/reset match's
+          // boxes back to neutral instead of leaving a PREVIOUS match's
+          // win/lose colors behind on them.
+          if (t.setScoreDefaultColor && i >= completedGames.length) {
+            if (colorFieldA) client.setTextColor(t.inputKey, expandSetTemplate(colorFieldA, i + 1), toArgbHex(t.setScoreDefaultColor));
+            if (colorFieldB) client.setTextColor(t.inputKey, expandSetTemplate(colorFieldB, i + 1), toArgbHex(t.setScoreDefaultColor));
+          }
+        }
+        // Clear any leftover set fields beyond maxSets — e.g. a best-of-5
+        // match loaded after a previous best-of-7 one left stale "…s6/s7"
+        // fields behind otherwise. Never touches any of this target's OTHER
+        // explicitly-configured fields (Sets Won, Team, Server, Set Label,
+        // …) even if one happens to also match the per-set pattern (e.g. a
+        // "SetsWonA" field could coincidentally look like a numbered set
+        // field to the regex) — those are never "stale", they're always
+        // meant to hold whatever they currently do, including a real "0".
+        const ownFieldNames = new Set([
+          t.fieldScoreA, t.fieldScoreB, t.fieldTeamA, t.fieldTeamB, t.fieldTeamAShort, t.fieldTeamBShort,
+          t.fieldGamesWonA, t.fieldGamesWonB, t.fieldSetLabel, t.fieldServerName,
+        ].filter((n): n is string => !!n));
+        const vmixInput = vmixState?.inputs?.find(inp => inp.key === t.inputKey);
+        if (vmixInput) {
+          const reA = templateA ? setTemplateStaleRegex(templateA) : null;
+          const reB = templateB ? setTemplateStaleRegex(templateB) : null;
+          for (const field of vmixInput.textFields) {
+            if (ownFieldNames.has(field.name)) continue;
+            const mA = reA?.exec(field.name);
+            const mB = reB?.exec(field.name);
+            const n = mA ? parseInt(mA[1], 10) : mB ? parseInt(mB[1], 10) : NaN;
+            if (!isNaN(n) && n > maxSets) client.setTextField(t.inputKey, field.name, '');
+          }
+        }
+      }
+      // Starting lineup — one Name/Jersey/Position triple per starter slot
+      // (1-based), same template + stale-clear approach as the per-set
+      // score block above, just reserving config.playerCount slots instead
+      // of a max-sets count. Any slot past the actual roster count (or
+      // simply never filled in) pushes blank, same "not reached yet" reasoning.
+      const playerTemplates = [
+        t.playerNameTemplateA, t.playerJerseyTemplateA, t.playerPositionTemplateA,
+        t.playerNameTemplateB, t.playerJerseyTemplateB, t.playerPositionTemplateB,
+      ].filter((s): s is string => !!s);
+      if (playerTemplates.length) {
+        const maxPlayers = Math.max(config.playerCount ?? 1, 1);
+        const startersA = startersFor('A');
+        const startersB = startersFor('B');
+        for (let i = 0; i < maxPlayers; i++) {
+          const pa = startersA[i];
+          const pb = startersB[i];
+          if (t.playerNameTemplateA) client.setTextField(t.inputKey, expandSetTemplate(t.playerNameTemplateA, i + 1), pa?.name ?? '');
+          if (t.playerJerseyTemplateA) client.setTextField(t.inputKey, expandSetTemplate(t.playerJerseyTemplateA, i + 1), pa?.jerseyNo ?? '');
+          if (t.playerPositionTemplateA) client.setTextField(t.inputKey, expandSetTemplate(t.playerPositionTemplateA, i + 1), pa?.position ?? '');
+          if (t.playerNameTemplateB) client.setTextField(t.inputKey, expandSetTemplate(t.playerNameTemplateB, i + 1), pb?.name ?? '');
+          if (t.playerJerseyTemplateB) client.setTextField(t.inputKey, expandSetTemplate(t.playerJerseyTemplateB, i + 1), pb?.jerseyNo ?? '');
+          if (t.playerPositionTemplateB) client.setTextField(t.inputKey, expandSetTemplate(t.playerPositionTemplateB, i + 1), pb?.position ?? '');
+        }
+        const playerOwnFieldNames = new Set([
+          t.fieldScoreA, t.fieldScoreB, t.fieldTeamA, t.fieldTeamB, t.fieldTeamAShort, t.fieldTeamBShort,
+          t.fieldGamesWonA, t.fieldGamesWonB, t.fieldSetLabel, t.fieldServerName,
+        ].filter((n): n is string => !!n));
+        const playerVmixInput = vmixState?.inputs?.find(inp => inp.key === t.inputKey);
+        if (playerVmixInput) {
+          for (const template of playerTemplates) {
+            const re = setTemplateStaleRegex(template);
+            for (const field of playerVmixInput.textFields) {
+              if (playerOwnFieldNames.has(field.name)) continue;
+              const m = re.exec(field.name);
+              const n = m ? parseInt(m[1], 10) : NaN;
+              if (!isNaN(n) && n > maxPlayers) client.setTextField(t.inputKey, field.name, '');
+            }
+          }
+        }
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    config.racketVmixTargets, config.vmixInputKey, config.fieldScoreA, config.fieldScoreB, config.fieldTeamA, config.fieldTeamB,
+    config.fieldGamesWonA, config.fieldGamesWonB, config.fieldServerName, config.fieldSetLabel, config.setScorePrefix, config.gamesToWin,
+    config.teamAName, config.teamBName, config.teamAShortName, config.teamBShortName, config.teamALogo, config.teamBLogo, rallyState.pointsA, rallyState.pointsB, rallyState.games,
+    tennisState.pointsA, tennisState.pointsB, tennisState.tiebreakA, tennisState.tiebreakB, tennisState.inTiebreak,
+    tennisState.gamesA, tennisState.gamesB, tennisState.sets, gamesWonA, gamesWonB, server, matchWinnerSide, teamTieWinner,
+    config.startersA, config.startersB, config.playerCount,
+  ]);
+
+  // ── Server triggers — any target with serverMode 'trigger' fires the
+  // instant the server actually CHANGES to/from a side, rather than pushing
+  // a field. 'simple' (default, serverTriggerMode) just calls vMix's own
+  // SetTextVisibleOn/Off or SetImageVisibleOn/Off directly on each side's
+  // own picked input+field (serverVisible*A/B) — show whoever just started
+  // serving, hide whoever just stopped. 'advanced' instead fires one of 4
+  // full ActionListEditor action lists (serverShowActionsA/B etc, any vMix
+  // or App function) for anything beyond a plain visibility toggle.
+  // lastServerByTarget tracks what was last fired per target id so this
+  // only ever fires on a genuine transition (including the very first
+  // evaluation after load, so the graphic matches reality immediately
+  // instead of waiting for the NEXT change) — never repeatedly for the same
+  // server value across unrelated re-renders.
+  const lastServerByTarget = useRef<Record<string, RacketSide | undefined>>({});
+  useEffect(() => {
+    if (!client) return;
+    // Debounced — a quick Undo/Swap Last Point correction, or simply this
+    // widget being rendered in more than one window at once (editor canvas
+    // + a separate CG output window, both watching the same match), can
+    // produce a rapid, transient flip of `server` before it settles on its
+    // real value. Firing a vMix call for every one of those looked like the
+    // visibility trigger toggling on/off "randomly" instead of cleanly
+    // switching once per actual serve change — waiting a beat and only
+    // acting on whatever `server` settled on collapses that into one call.
+    const timer = setTimeout(() => {
+      for (const t of vmixTargets) {
+        if (t.serverMode !== 'trigger') continue;
+        if (lastServerByTarget.current[t.id] === server) continue;
+        lastServerByTarget.current[t.id] = server;
+        if ((t.serverTriggerMode ?? 'simple') === 'simple') {
+          const visFn = (type: 'text' | 'image' | undefined, on: boolean) =>
+            type === 'image' ? (on ? 'SetImageVisibleOn' : 'SetImageVisibleOff') : (on ? 'SetTextVisibleOn' : 'SetTextVisibleOff');
+          const setVisible = (field: string | undefined, type: 'text' | 'image' | undefined, on: boolean) => {
+            if (!field) return;
+            client.sendFunction(visFn(type, on), { Input: t.inputKey, SelectedName: field });
+          };
+          if (server === 'A') {
+            setVisible(t.serverVisibleFieldA, t.serverVisibleTypeA, true);
+            setVisible(t.serverVisibleFieldB, t.serverVisibleTypeB, false);
+          } else {
+            setVisible(t.serverVisibleFieldB, t.serverVisibleTypeB, true);
+            setVisible(t.serverVisibleFieldA, t.serverVisibleTypeA, false);
+          }
+        } else {
+          const showActions = server === 'A' ? t.serverShowActionsA : t.serverShowActionsB;
+          const hideActions = server === 'A' ? t.serverHideActionsB : t.serverHideActionsA;
+          if (showActions?.length) runActions(showActions);
+          if (hideActions?.length) runActions(hideActions);
+        }
+      }
+    }, 200);
+    return () => clearTimeout(timer);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [server, config.racketVmixTargets, client]);
 
   // Match Report — config.pointLog (see scorePoint's own doc comment)
   // grouped by game number, oldest game and oldest point within it first,
@@ -722,6 +1283,16 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
       action: `Game ${i + 1}`, points: 1, period: i + 1,
       timeStr: formatGameResult(g),
     })),
+    // Total RALLY points across every set — distinct from scoreA/scoreB
+    // (sets won) — see SavedMatchResult.racketPointsA/B's own doc comment,
+    // e.g. sepaktakraw's official standings PW/PL columns. Only sepaktakraw
+    // standings ever read this back (computeStandingsCore in
+    // TournamentManager.tsx) — skipped for badminton/table tennis/tennis so
+    // their results don't carry an unused field.
+    ...(sport === 'sepaktakraw' ? {
+      racketPointsA: completedGames.reduce((sum, g) => sum + g.a, 0),
+      racketPointsB: completedGames.reduce((sum, g) => sum + g.b, 0),
+    } : {}),
   };
 
   const commitSaveResult = (existingId?: string) => {
@@ -748,6 +1319,79 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
     guardScoreboardOverwrite(resultConfig, addResult);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [matchWinnerSide]);
+
+  // ── Next Fixture — "Regu" format only (teamEventOn off). A Team Regu tie
+  // already has its own "next" step (Confirm Regu Win advances to the next
+  // regu ON THIS SAME BOARD), but a plain single-regu match has nowhere to
+  // go once it's over except back to the Schedule tab — this lets the
+  // operator advance straight to whatever's scheduled next without leaving
+  // the board. Found by walking the SAME tournament's schedule (already
+  // kept in sortMatches order by the store) to the entry right after this
+  // board's own currently-loaded fixture — scoped to the SAME venue/court
+  // as that fixture, when one's set, so a multi-court tournament's board
+  // only ever queues up its own court's matches, never jumps to a
+  // different court's. No venue on the current fixture (single-court, or
+  // venues aren't in use for this tournament) = no filtering, same as before.
+  const nextFixture = (() => {
+    // Mid-tie (teamEventOn with the tie not yet decided) has its own "next"
+    // step — Confirm/Next Regu advances to the next regu ON THIS SAME
+    // board, same opponents — so this is never relevant there. Once the
+    // WHOLE tie is decided (teamTieWinner set) it's exactly as relevant as
+    // a plain Regu match being over, so it's still computed in that case.
+    if ((teamEventOn && !teamTieWinner) || !config.linkedScheduleMatchId || !effTournamentId) return undefined;
+    const currentFixture = scheduleMatches.find(m => m.id === config.linkedScheduleMatchId);
+    let tournamentFixtures = scheduleMatches.filter(m => m.tournamentId === effTournamentId);
+    if (currentFixture?.venue) tournamentFixtures = tournamentFixtures.filter(m => m.venue === currentFixture.venue);
+    const idx = tournamentFixtures.findIndex(m => m.id === config.linkedScheduleMatchId);
+    return idx >= 0 ? tournamentFixtures[idx + 1] : undefined;
+  })();
+  const loadNextFixture = () => {
+    if (!nextFixture) return;
+    // Protects the outgoing match exactly like Send to Scoreboard's own
+    // guard does: auto-saves it if it was never saved.
+    if (!guardScoreboardOverwrite(resultConfig, addResult)) return;
+    if (config.linkedScheduleMatchId) markFixtureCompleted(config.linkedScheduleMatchId);
+    // Same "Play Full Sets in Group Stage" tournament setting Send to
+    // Scoreboard respects (see RacketSportSettings.forceFullSetsInGroupStage)
+    // — a knockout fixture never gets it regardless of the setting.
+    const nextTournament = tournaments.find(t => t.id === nextFixture.tournamentId);
+    const rsGroup = nextTournament ? (nextTournament.settings ?? SPORT_DEFAULTS[nextTournament.sport]).racketScoring ?? SPORT_DEFAULTS[nextTournament.sport].racketScoring : undefined;
+    const isGroupStage = !extractKnockoutStage(nextFixture) && nextFixture.group !== '3rd Place';
+    updateWidgetConfig(widgetId, buildLoadMatchPatchRacket(nextFixture, { forceFullSets: isGroupStage && !!rsGroup?.forceFullSetsInGroupStage, gamesToWin: rsGroup?.gamesToWin }));
+    markFixtureSent(nextFixture.id);
+  };
+
+  // Shortcut tab (WidgetConfigPanel.tsx) dispatch — a hotkey bound to one of
+  // RACKET_SHORTCUT_ACTIONS routes through App.RacketAction (canvasStore.ts)
+  // which just drops { action, nonce } into config.racketPendingCommand;
+  // this is the OTHER end, watching for that and calling the matching LOCAL
+  // function directly — same functions the widget's own on-screen buttons
+  // already call, so a hotkey behaves byte-for-byte like a real click,
+  // including every guard (scoringLocked, no-op when nothing to confirm,
+  // etc.) those functions already have. lastHandledNonce (a ref, not state)
+  // makes sure each command fires exactly once even though the SAME action
+  // fired twice in a row would otherwise look like "no change" to React.
+  const lastRacketCommandNonce = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    const cmd = config.racketPendingCommand as { action?: string; nonce?: string } | undefined;
+    if (!cmd?.nonce || cmd.nonce === lastRacketCommandNonce.current) return;
+    lastRacketCommandNonce.current = cmd.nonce;
+    switch (cmd.action) {
+      case 'scoreA': scorePoint('A'); break;
+      case 'scoreB': scorePoint('B'); break;
+      case 'adjustMinusA': adjustPoint('A', -1); break;
+      case 'adjustMinusB': adjustPoint('B', -1); break;
+      case 'undo': undo(); break;
+      case 'swapLastPoint': swapLastPoint(); break;
+      case 'swapServe': setServerManual(server === 'A' ? 'B' : 'A'); break;
+      case 'startTimer': if (!config.gameStartedAt) startGameTimer(); break;
+      case 'startNextGame': startNextGame(); break;
+      case 'newMatch': newMatch(); break;
+      case 'reset': handleResetClick(); break;
+      case 'nextFixture': loadNextFixture(); break;
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config.racketPendingCommand]);
 
   // Live game-timer tick — see setTimerTick's own doc comment. Only ticks
   // while a timer is actually RUNNING (started, not yet frozen by the game
@@ -1014,21 +1658,38 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
     teamTieWinner ? (
       <div className="wgt-racket-match-over">
         <span>{teamTieWinner === 'A' ? (config.teamAName || 'Team A') : (config.teamBName || 'Team B')} wins the Team Event ({regusWonA}-{regusWonB})</span>
-        <button className="wgt-racket-newmatch-btn" onClick={newMatch}><RotateCcw size={12} strokeWidth={2} /> New Match</button>
+        <div className="wgt-racket-match-over-actions">
+          {/* "New Match" (plain reset, same two teams) stays available
+             regardless of nextFixture — only ADDS "Next Match" alongside it
+             when there's somewhere to advance to, never replaces it, so a
+             genuine reset is never one click away from accidentally loading
+             a different fixture's teams instead. */}
+          <button className="wgt-racket-newmatch-btn" onClick={newMatch}><RotateCcw size={12} strokeWidth={2} /> New Match</button>
+          {nextFixture && (
+            <button className="wgt-racket-newmatch-btn" onClick={loadNextFixture}><ArrowRight size={12} strokeWidth={2} /> Next Match</button>
+          )}
+        </div>
       </div>
     ) : matchWinnerSide ? (
       <div className="wgt-racket-match-over">
         <span>{matchWinnerSide === 'A' ? (config.teamAName || 'Team A') : (config.teamBName || 'Team B')} wins the match</span>
-        {teamEventOn ? (
-          <button className="wgt-racket-newmatch-btn" onClick={confirmReguWin}><RotateCcw size={12} strokeWidth={2} /> Confirm Regu {currentRegu} Win</button>
-        ) : (
-          <button className="wgt-racket-newmatch-btn" onClick={newMatch}><RotateCcw size={12} strokeWidth={2} /> New Match</button>
-        )}
+        <div className="wgt-racket-match-over-actions">
+          {teamEventOn ? (
+            <button className="wgt-racket-newmatch-btn" onClick={confirmReguWin}><RotateCcw size={12} strokeWidth={2} /> Next Regu</button>
+          ) : (
+            <>
+              <button className="wgt-racket-newmatch-btn" onClick={newMatch}><RotateCcw size={12} strokeWidth={2} /> New Match</button>
+              {nextFixture && (
+                <button className="wgt-racket-newmatch-btn" onClick={loadNextFixture}><ArrowRight size={12} strokeWidth={2} /> Next Match</button>
+              )}
+            </>
+          )}
+        </div>
       </div>
     ) : rallyGameOverWinner ? (
       <div className="wgt-racket-match-over">
-        <span>{rallyGameOverWinner === 'A' ? (config.teamAName || 'Team A') : (config.teamBName || 'Team B')} wins the game</span>
-        <button className="wgt-racket-newmatch-btn" onClick={startNextGame}>{rallyWouldWinMatch ? 'Confirm Match Win' : 'Start Next Game'}</button>
+        <span>{rallyGameOverWinner === 'A' ? (config.teamAName || 'Team A') : (config.teamBName || 'Team B')} wins the {sport === 'sepaktakraw' ? 'set' : 'game'}</span>
+        <button className="wgt-racket-newmatch-btn" onClick={startNextGame}>{rallyWouldWinMatch ? 'Confirm Match Win' : `Start Next ${sport === 'sepaktakraw' ? 'Set' : 'Game'}`}</button>
       </div>
     ) : null
   );
@@ -1041,6 +1702,7 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
       <button className="wgt-racket-point-btn wgt-racket-point-btn--minus" style={{ background: teamAColor }} disabled={scoringLocked} onClick={() => adjustPoint('A', -1)} title={scoringLocked ? 'Press Start to begin scoring' : "Correct Team A's score down by 1 (not a real scored point — see Undo for reversing an actual point)"}>-1</button>
       <button className="wgt-racket-point-btn" style={{ background: teamAColor }} disabled={scoringLocked} onClick={() => scorePoint('A')} title={scoringLocked ? 'Press Start to begin scoring' : undefined}>+1</button>
       <button className="wgt-score-undo" onClick={undo} disabled={!(config.pointHistory ?? []).length} title="Undo last point"><Undo2 size={12} strokeWidth={2} /></button>
+      <button className="wgt-score-undo" onClick={swapLastPoint} disabled={!(config.pointHistory ?? []).length} title="Scored for the wrong team? Swap the last point over to the other side"><ArrowLeftRight size={12} strokeWidth={2} /></button>
       <button className="wgt-racket-point-btn" style={{ background: teamBColor }} disabled={scoringLocked} onClick={() => scorePoint('B')} title={scoringLocked ? 'Press Start to begin scoring' : undefined}>+1</button>
       <button className="wgt-racket-point-btn wgt-racket-point-btn--minus" style={{ background: teamBColor }} disabled={scoringLocked} onClick={() => adjustPoint('B', -1)} title={scoringLocked ? 'Press Start to begin scoring' : "Correct Team B's score down by 1 (not a real scored point — see Undo for reversing an actual point)"}>-1</button>
     </div>
@@ -1081,13 +1743,18 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
       </span>
     </div>
   ) : (
-    !teamTieWinner && !matchWinnerSide && !rallyGameOverWinner && (
+    // Only worth showing at all when it's actually REQUIRED (scoring is
+    // locked until pressed) — when Require Start to Score is off, scoring
+    // works regardless of this, so the button existed purely for the
+    // optional "time this game" use case most operators don't need and
+    // found it just cluttered the widget.
+    !!config.requireStartToScore && !teamTieWinner && !matchWinnerSide && !rallyGameOverWinner && (
       <div className="wgt-racket-timer-row">
         <button
           className={`wgt-racket-timer-start-btn wgt-racket-timer-start-btn--${startButtonStyle}`}
           style={{ '--start-btn-color': startButtonColor } as React.CSSProperties}
           onClick={startGameTimer}
-          title={config.requireStartToScore ? 'Start this game — scoring is locked until you do' : 'Start timing this game (optional)'}
+          title="Start this game — scoring is locked until you do"
         >
           <Play size={12} strokeWidth={2.5} fill="currentColor" /> Start Game
         </button>
@@ -1098,6 +1765,18 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
   return (
     <div className="wgt-racket" onClick={e => e.stopPropagation()} style={{ '--score-btn-scale': scoreButtonScale, '--start-btn-scale': startButtonScale } as React.CSSProperties}>
       <div className="wgt-racket-main">
+      {nextFixture && (
+        <div className="wgt-racket-next-fixture">
+          <ArrowRight size={12} strokeWidth={2} />
+          <span className="wgt-racket-next-fixture-text">
+            Next: {nextFixture.teamAShortName || nextFixture.teamAName} vs {nextFixture.teamBShortName || nextFixture.teamBName}
+            {nextFixture.round ? ` · ${nextFixture.round}` : ''}{nextFixture.time ? ` · ${nextFixture.time}` : ''}
+          </span>
+          <button className="wgt-racket-next-fixture-btn" onClick={loadNextFixture} title="Save/close this match and load the next fixture onto this board">
+            Next Match
+          </button>
+        </div>
+      )}
       <div className="wgt-racket-header">
         <span className="wgt-racket-sport">{SPORT_LABELS[sport]}{tennisState.inTiebreak && scoringMode === 'tennis' ? ' — Tiebreak' : ''}</span>
         <div className="wgt-racket-header-actions">
@@ -1232,7 +1911,7 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
         {(config.showCompletedGames ?? true) && (
           <div className="wgt-racket-results">
             {completedGames.map((g, i) => (
-              <span key={i} className="wgt-racket-result-chip" style={{ color: g.a > g.b ? teamAColor : teamBColor, borderColor: g.a > g.b ? teamAColor : teamBColor }}>
+              <span key={i} className="wgt-racket-result-chip" style={{ color: setResultColor(g), borderColor: setResultColor(g) }}>
                 {formatGameResult(g)}
               </span>
             ))}
@@ -1320,13 +1999,17 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
               <button className="wgt-racket-horiz-plus wgt-racket-horiz-plus--minus" style={{ background: teamAColor }} disabled={scoringLocked} onClick={() => adjustPoint('A', -1)} title={scoringLocked ? 'Press Start to begin scoring' : undefined}>-1</button>
               <button className="wgt-racket-horiz-plus" style={{ background: teamAColor }} disabled={scoringLocked} onClick={() => scorePoint('A')} title={scoringLocked ? 'Press Start to begin scoring' : undefined}>+1</button>
               <button className="wgt-score-undo" onClick={undo} disabled={!(config.pointHistory ?? []).length} title="Undo last point"><Undo2 size={12} strokeWidth={2} /></button>
+              <button className="wgt-score-undo" onClick={swapLastPoint} disabled={!(config.pointHistory ?? []).length} title="Scored for the wrong team? Swap the last point over to the other side"><ArrowLeftRight size={12} strokeWidth={2} /></button>
               <button className="wgt-racket-horiz-plus" style={{ background: teamBColor }} disabled={scoringLocked} onClick={() => scorePoint('B')} title={scoringLocked ? 'Press Start to begin scoring' : undefined}>+1</button>
               <button className="wgt-racket-horiz-plus wgt-racket-horiz-plus--minus" style={{ background: teamBColor }} disabled={scoringLocked} onClick={() => adjustPoint('B', -1)} title={scoringLocked ? 'Press Start to begin scoring' : undefined}>-1</button>
             </div>
           )}
           <div className="wgt-racket-horiz-controls">
             {!matchOverBanner && scoreButtonPosition === 'sides' && (
-              <button className="wgt-score-undo" onClick={undo} disabled={!(config.pointHistory ?? []).length} title="Undo last point"><Undo2 size={12} strokeWidth={2} /></button>
+              <>
+                <button className="wgt-score-undo" onClick={undo} disabled={!(config.pointHistory ?? []).length} title="Undo last point"><Undo2 size={12} strokeWidth={2} /></button>
+                <button className="wgt-score-undo" onClick={swapLastPoint} disabled={!(config.pointHistory ?? []).length} title="Scored for the wrong team? Swap the last point over to the other side"><ArrowLeftRight size={12} strokeWidth={2} /></button>
+              </>
             )}
             <button className="wgt-racket-swap-serve-btn" onClick={() => setServerManual(server === 'A' ? 'B' : 'A')} disabled={scoringLocked} title={scoringLocked ? "Press Start to begin scoring first" : "Swap serve to the other side"}>
               <Repeat size={11} strokeWidth={2.5} />
@@ -1394,6 +2077,7 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
               <button className="wgt-racket-lt-plus wgt-racket-lt-plus--minus" style={{ background: teamAColor }} disabled={scoringLocked} onClick={() => adjustPoint('A', -1)} title={scoringLocked ? 'Press Start to begin scoring' : undefined}>-1</button>
               <button className="wgt-racket-lt-plus" style={{ background: teamAColor }} disabled={scoringLocked} onClick={() => scorePoint('A')} title={scoringLocked ? 'Press Start to begin scoring' : undefined}>+1</button>
               <button className="wgt-score-undo" onClick={undo} disabled={!(config.pointHistory ?? []).length} title="Undo last point"><Undo2 size={12} strokeWidth={2} /></button>
+              <button className="wgt-score-undo" onClick={swapLastPoint} disabled={!(config.pointHistory ?? []).length} title="Scored for the wrong team? Swap the last point over to the other side"><ArrowLeftRight size={12} strokeWidth={2} /></button>
               <button className="wgt-racket-lt-plus" style={{ background: teamBColor }} disabled={scoringLocked} onClick={() => scorePoint('B')} title={scoringLocked ? 'Press Start to begin scoring' : undefined}>+1</button>
               <button className="wgt-racket-lt-plus wgt-racket-lt-plus--minus" style={{ background: teamBColor }} disabled={scoringLocked} onClick={() => adjustPoint('B', -1)} title={scoringLocked ? 'Press Start to begin scoring' : undefined}>-1</button>
             </div>
@@ -1401,7 +2085,10 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
           <div className="wgt-racket-lt-controls">
             <div className="wgt-racket-serve-slot" style={{ '--rside-color': teamAColor } as React.CSSProperties}>{serverControl('A')}</div>
             {!matchOverBanner && scoreButtonPosition === 'sides' && (
-              <button className="wgt-score-undo" onClick={undo} disabled={!(config.pointHistory ?? []).length} title="Undo last point"><Undo2 size={12} strokeWidth={2} /></button>
+              <>
+                <button className="wgt-score-undo" onClick={undo} disabled={!(config.pointHistory ?? []).length} title="Undo last point"><Undo2 size={12} strokeWidth={2} /></button>
+                <button className="wgt-score-undo" onClick={swapLastPoint} disabled={!(config.pointHistory ?? []).length} title="Scored for the wrong team? Swap the last point over to the other side"><ArrowLeftRight size={12} strokeWidth={2} /></button>
+              </>
             )}
             <div className="wgt-racket-serve-slot" style={{ '--rside-color': teamBColor } as React.CSSProperties}>{serverControl('B')}</div>
           </div>
@@ -1449,11 +2136,25 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
           <div className="wgt-racket-lc-card">
             <div className="wgt-racket-lc-names">
               <div className="wgt-racket-lc-nameside" onClick={e => e.stopPropagation()}>
-                <input className="wgt-racket-lc-name-input" style={{ color: teamAColor }} value={config.teamAName ?? ''} placeholder="Team A" onChange={e => updateWidgetConfig(widgetId, { teamAName: e.target.value })} />
+                {config.teamALogo && <img className="wgt-racket-lc-logo" style={{ width: 44 * logoScale, height: 44 * logoScale }} src={resolveImageUrl(config.teamALogo)} alt="" />}
+                <div className="wgt-racket-lc-nametext">
+                  <div className="wgt-racket-lc-name-row">
+                    <input className="wgt-racket-lc-name-input" style={{ color: teamAColor }} value={config.teamAName ?? ''} placeholder="Team A" onChange={e => updateWidgetConfig(widgetId, { teamAName: e.target.value })} />
+                    {teamPicker('A')}
+                  </div>
+                  {config.teamAShortName && <span className="wgt-racket-lc-shortname" style={{ color: teamAColor }}>{config.teamAShortName}</span>}
+                </div>
                 <Pencil size={11} strokeWidth={2} style={{ color: teamAColor, opacity: 0.6 }} />
               </div>
               <div className="wgt-racket-lc-nameside wgt-racket-lc-nameside--b" onClick={e => e.stopPropagation()}>
-                <input className="wgt-racket-lc-name-input" style={{ color: teamBColor }} value={config.teamBName ?? ''} placeholder="Team B" onChange={e => updateWidgetConfig(widgetId, { teamBName: e.target.value })} />
+                {config.teamBLogo && <img className="wgt-racket-lc-logo" style={{ width: 44 * logoScale, height: 44 * logoScale }} src={resolveImageUrl(config.teamBLogo)} alt="" />}
+                <div className="wgt-racket-lc-nametext">
+                  <div className="wgt-racket-lc-name-row">
+                    {teamPicker('B')}
+                    <input className="wgt-racket-lc-name-input" style={{ color: teamBColor }} value={config.teamBName ?? ''} placeholder="Team B" onChange={e => updateWidgetConfig(widgetId, { teamBName: e.target.value })} />
+                  </div>
+                  {config.teamBShortName && <span className="wgt-racket-lc-shortname" style={{ color: teamBColor }}>{config.teamBShortName}</span>}
+                </div>
                 <Pencil size={11} strokeWidth={2} style={{ color: teamBColor, opacity: 0.6 }} />
               </div>
             </div>
@@ -1462,6 +2163,13 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
                 {serverControl('A')}
                 {scoreDisplay('A', 'wgt-racket-lc-scorenum', { color: teamAColor, fontSize: scoreFontSize })}
               </div>
+              {/* Bigger, dead-center swap-serve button — same action the
+                 vertical/horizontal layouts' own small colon-button already
+                 does (setServerManual), just sized up to match this layout's
+                 own chunkier, tap-friendly controls. */}
+              <button className="wgt-racket-swap-serve-btn wgt-racket-swap-serve-btn--lg" onClick={() => setServerManual(server === 'A' ? 'B' : 'A')} disabled={scoringLocked} title={scoringLocked ? "Press Start to begin scoring first" : "Swap serve to the other side"}>
+                <Repeat size={18} strokeWidth={2.5} />
+              </button>
               <div className="wgt-racket-lc-scoreside">
                 {scoreDisplay('B', 'wgt-racket-lc-scorenum', { color: teamBColor, fontSize: scoreFontSize })}
                 {serverControl('B')}
@@ -1475,9 +2183,9 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
               <div className="wgt-racket-lc-completed-label">Completed Sets</div>
               <div className="wgt-racket-lc-completed-row">
                 {completedGames.map((g, i) => (
-                  <div key={i} className="wgt-racket-lc-completed-pill" style={{ borderColor: g.a > g.b ? teamAColor : teamBColor }}>
+                  <div key={i} className="wgt-racket-lc-completed-pill" style={{ borderColor: setResultColor(g) }}>
                     <span className="wgt-racket-lc-completed-setn">Set {i + 1}</span>
-                    <span style={{ color: g.a > g.b ? teamAColor : teamBColor }}>{formatGameResult(g)}</span>
+                    <span style={{ color: setResultColor(g) }}>{formatGameResult(g)}</span>
                   </div>
                 ))}
               </div>
@@ -1498,7 +2206,7 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
             <Users size={11} strokeWidth={2} /> Players {playersOpen ? <ChevronUp size={11} strokeWidth={2} /> : <ChevronDown size={11} strokeWidth={2} />}
           </button>
           {playersOpen && (
-            <div className="wgt-racket-players-footer">
+            <div className="wgt-racket-players-footer" style={{ '--rplayer-scale': playerAreaScale } as React.CSSProperties}>
               <div className="wgt-racket-players-col">{playersSection('A', teamAColor)}</div>
               <div className="wgt-racket-players-col">{playersSection('B', teamBColor)}</div>
             </div>
@@ -1791,8 +2499,8 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
             </>
           )}
 
-          <label className="wgt-ctimer-settings-row wgt-ctimer-settings-row--check">
-            <ToggleCard checked={!!config.playAllGames} onChange={v => updateWidgetConfig(widgetId, { playAllGames: v, totalGames: v ? (config.totalGames ?? (config.gamesToWin ?? 2) * 2 - 1) : config.totalGames })} title={`Play out every ${scoringMode === 'tennis' ? 'set' : 'game'} up to Total ${scoringMode === 'tennis' ? 'Sets' : 'Games'} below, even once the match is already decided — e.g. 3 games with 2 needed to win still plays the 3rd game after a 2-0 lead, instead of stopping there`} /> Play all {scoringMode === 'tennis' ? 'sets' : 'games'} (don't stop early)
+          <label className="wgt-ctimer-settings-row wgt-ctimer-settings-row--check" style={{ fontSize: 14, fontWeight: 600 }}>
+            <ToggleCard checked={!!config.playAllGames} className="tm-ms-sport-grid--important" onChange={v => updateWidgetConfig(widgetId, { playAllGames: v, totalGames: v ? (config.totalGames ?? (config.gamesToWin ?? 2) * 2 - 1) : config.totalGames })} title={`Play out every ${scoringMode === 'tennis' ? 'set' : 'game'} up to Total ${scoringMode === 'tennis' ? 'Sets' : 'Games'} below, even once the match is already decided — e.g. 3 games with 2 needed to win still plays the 3rd game after a 2-0 lead, instead of stopping there`} /> Play all {scoringMode === 'tennis' ? 'sets' : 'games'} (don't stop early)
           </label>
           {config.playAllGames && (
             <label className="wgt-ctimer-settings-row">
@@ -1863,10 +2571,126 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
 
           <div className="wgt-ctimer-settings-divider" />
 
+          {/* Quick single-input vMix setup, right here — writes the SAME
+             flat config fields (vmixInputKey/fieldScoreA/etc) the push
+             effect's own legacy fallback already reads (see vmixTargets
+             above), so this alone is enough to get scores flowing to vMix
+             without ever opening the separate widget Settings panel. That
+             panel is still where multiple inputs, Team A/B Short Name,
+             Server Icon/Trigger modes, and Set Result win/lose colors live
+             — genuinely advanced options, not needed for a single board
+             pushing to one input. */}
           <label className="wgt-ctimer-settings-row">
             vMix Input
-            <input className="wgt-ctimer-settings-input" value={config.vmixInputKey ?? ''} placeholder="Input name/number" onChange={e => updateWidgetConfig(widgetId, { vmixInputKey: e.target.value })} />
+            <InputPickerDropdown
+              currentKey={config.vmixInputKey ?? ''}
+              currentTitle={config.vmixInputTitle}
+              allInputs={allVmixInputs}
+              onSelect={(key, title) => updateWidgetConfig(widgetId, { vmixInputKey: key, vmixInputTitle: title })}
+            />
           </label>
+          {config.vmixInputKey && (
+            <>
+              <label className="wgt-ctimer-settings-row">
+                Score A Field
+                <FieldPickerDropdown inputKey={config.vmixInputKey} value={config.fieldScoreA ?? ''} allInputs={allVmixInputs}
+                  onChange={v => updateWidgetConfig(widgetId, { fieldScoreA: v })} placeholder="ScoreA.Text" />
+              </label>
+              <label className="wgt-ctimer-settings-row">
+                Score B Field
+                <FieldPickerDropdown inputKey={config.vmixInputKey} value={config.fieldScoreB ?? ''} allInputs={allVmixInputs}
+                  onChange={v => updateWidgetConfig(widgetId, { fieldScoreB: v })} placeholder="ScoreB.Text" />
+              </label>
+              <label className="wgt-ctimer-settings-row">
+                Team A Field
+                <FieldPickerDropdown inputKey={config.vmixInputKey} value={config.fieldTeamA ?? ''} allInputs={allVmixInputs}
+                  onChange={v => updateWidgetConfig(widgetId, { fieldTeamA: v })} placeholder="TeamA.Text" />
+              </label>
+              <label className="wgt-ctimer-settings-row">
+                Team B Field
+                <FieldPickerDropdown inputKey={config.vmixInputKey} value={config.fieldTeamB ?? ''} allInputs={allVmixInputs}
+                  onChange={v => updateWidgetConfig(widgetId, { fieldTeamB: v })} placeholder="TeamB.Text" />
+              </label>
+              <label className="wgt-ctimer-settings-row">
+                Team A Logo Field
+                <FieldPickerDropdown inputKey={config.vmixInputKey} value={config.fieldTeamALogo ?? ''} allInputs={allVmixInputs}
+                  fieldFilter={(n: string) => n.toLowerCase().endsWith('.source')}
+                  onChange={v => updateWidgetConfig(widgetId, { fieldTeamALogo: v })} placeholder="TeamALogo.Source" />
+              </label>
+              <label className="wgt-ctimer-settings-row">
+                Team B Logo Field
+                <FieldPickerDropdown inputKey={config.vmixInputKey} value={config.fieldTeamBLogo ?? ''} allInputs={allVmixInputs}
+                  fieldFilter={(n: string) => n.toLowerCase().endsWith('.source')}
+                  onChange={v => updateWidgetConfig(widgetId, { fieldTeamBLogo: v })} placeholder="TeamBLogo.Source" />
+              </label>
+              <label className="wgt-ctimer-settings-row">
+                Sets Won A Field
+                <FieldPickerDropdown inputKey={config.vmixInputKey} value={config.fieldGamesWonA ?? ''} allInputs={allVmixInputs}
+                  onChange={v => updateWidgetConfig(widgetId, { fieldGamesWonA: v })} placeholder="SetsWonA.Text" />
+              </label>
+              <label className="wgt-ctimer-settings-row">
+                Sets Won B Field
+                <FieldPickerDropdown inputKey={config.vmixInputKey} value={config.fieldGamesWonB ?? ''} allInputs={allVmixInputs}
+                  onChange={v => updateWidgetConfig(widgetId, { fieldGamesWonB: v })} placeholder="SetsWonB.Text" />
+              </label>
+              <label className="wgt-ctimer-settings-row">
+                Server Name Field
+                <FieldPickerDropdown inputKey={config.vmixInputKey} value={config.fieldServerName ?? ''} allInputs={allVmixInputs}
+                  onChange={v => updateWidgetConfig(widgetId, { fieldServerName: v })} placeholder="Server.Text" />
+              </label>
+              <label className="wgt-ctimer-settings-row">
+                Set/Game Label Field
+                <FieldPickerDropdown inputKey={config.vmixInputKey} value={config.fieldSetLabel ?? ''} allInputs={allVmixInputs}
+                  onChange={v => updateWidgetConfig(widgetId, { fieldSetLabel: v })} placeholder="SetLabel.Text" />
+              </label>
+              <label className="wgt-ctimer-settings-row">
+                Per-Set Score — Team A
+                <FieldPickerDropdown inputKey={config.vmixInputKey}
+                  value={config.setScoreTemplateA ? expandSetTemplate(config.setScoreTemplateA, 1) : ''} allInputs={allVmixInputs}
+                  onChange={v => updateWidgetConfig(widgetId, { setScoreTemplateA: deriveSetTemplate(v) })} placeholder="team-a-score-s1.Text" />
+              </label>
+              <label className="wgt-ctimer-settings-row">
+                Per-Set Score — Team B
+                <FieldPickerDropdown inputKey={config.vmixInputKey}
+                  value={config.setScoreTemplateB ? expandSetTemplate(config.setScoreTemplateB, 1) : ''} allInputs={allVmixInputs}
+                  onChange={v => updateWidgetConfig(widgetId, { setScoreTemplateB: deriveSetTemplate(v) })} placeholder="team-b-score-s1.Text" />
+              </label>
+              <p className="app-settings-hint" style={{ margin: '2px 0 8px' }}>
+                Per-Set Score: pick Set 1's own field — the pattern for every later set is derived from it automatically.
+              </p>
+              <label className="wgt-ctimer-settings-row">
+                Team A Color Field Override (optional)
+                <input className="wgt-ctimer-settings-input" value={config.setScoreColorFieldA ?? ''} placeholder="Leave blank to color Team A's Per-Set field above directly"
+                  onChange={e => updateWidgetConfig(widgetId, { setScoreColorFieldA: e.target.value })} />
+              </label>
+              <label className="wgt-ctimer-settings-row">
+                Team B Color Field Override (optional)
+                <input className="wgt-ctimer-settings-input" value={config.setScoreColorFieldB ?? ''} placeholder="Leave blank to color Team B's Per-Set field above directly"
+                  onChange={e => updateWidgetConfig(widgetId, { setScoreColorFieldB: e.target.value })} />
+              </label>
+              <p className="app-settings-hint" style={{ margin: '2px 0 8px' }}>
+                Leave both blank — the score number's own Text field gets its font color changed directly, no extra setup needed in vMix. Only fill one in if you want a DIFFERENT element recolored instead of the score text itself.
+              </p>
+              <label className="wgt-ctimer-settings-row">
+                Set Won Color
+                <input type="color" value={config.setScoreWinColor ?? '#2ecc71'} onChange={e => updateWidgetConfig(widgetId, { setScoreWinColor: e.target.value })} />
+              </label>
+              <label className="wgt-ctimer-settings-row">
+                Set Lost Color
+                <input type="color" value={config.setScoreLoseColor ?? '#e74c3c'} onChange={e => updateWidgetConfig(widgetId, { setScoreLoseColor: e.target.value })} />
+              </label>
+              <p className="app-settings-hint" style={{ margin: '2px 0 8px' }}>
+                The instant a set's decided, the score number itself changes to this color automatically — winner's score this color, loser's score the other. No separate trigger to set up.
+              </p>
+              <label className="wgt-ctimer-settings-row">
+                Default Color (not yet decided)
+                <input type="color" value={config.setScoreDefaultColor ?? '#ffffff'} onChange={e => updateWidgetConfig(widgetId, { setScoreDefaultColor: e.target.value })} />
+              </label>
+              <p className="app-settings-hint" style={{ margin: '2px 0 8px' }}>
+                Applied to the set currently being played and any set not reached yet — so every box has a consistent, app-controlled color even before it's won or lost, instead of whatever color the vMix title itself defaults to.
+              </p>
+            </>
+          )}
         </div>
       )}
     </div>

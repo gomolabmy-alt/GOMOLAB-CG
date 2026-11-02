@@ -492,3 +492,26 @@ export function adjustTennisPoint(state: TennisMatchState, side: RacketSide, del
   const pointsB = side === 'B' ? Math.max(0, state.pointsB + delta) : state.pointsB;
   return { ...state, pointsA, pointsB };
 }
+
+// Every button on the racket scoreboard widget its own Shortcut tab
+// (WidgetConfigPanel.tsx) can bind a physical key to — see
+// RacketScoreboardWidget.tsx's racketPendingCommand effect, which is what
+// actually dispatches these (routed there via config.racketHotkeys and the
+// generic App.RacketAction function in canvasStore.ts). Lives here, not in
+// the widget file itself, so WidgetConfigPanel.tsx can import it without a
+// circular import (the widget already imports FROM WidgetConfigPanel.tsx
+// for its shared picker components).
+export const RACKET_SHORTCUT_ACTIONS: { value: string; label: string }[] = [
+  { value: 'scoreA', label: 'Team A +1' },
+  { value: 'scoreB', label: 'Team B +1' },
+  { value: 'adjustMinusA', label: 'Team A −1 (correction)' },
+  { value: 'adjustMinusB', label: 'Team B −1 (correction)' },
+  { value: 'undo', label: 'Undo Last Point' },
+  { value: 'swapLastPoint', label: 'Swap Last Point' },
+  { value: 'swapServe', label: 'Swap Serve' },
+  { value: 'startTimer', label: 'Start Game Timer' },
+  { value: 'startNextGame', label: 'Start Next Set / Confirm Match Win' },
+  { value: 'newMatch', label: 'New Match' },
+  { value: 'reset', label: 'Reset (press twice to confirm, same as the button)' },
+  { value: 'nextFixture', label: 'Next Fixture' },
+];

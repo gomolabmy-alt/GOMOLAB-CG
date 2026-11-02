@@ -141,6 +141,20 @@ function roundRobinRounds<T>(teamsIn: T[]): Array<Array<{ a: T; b: T | null }>> 
   return rounds;
 }
 
+// An odd team count pads in one bye slot (see roundRobinRounds), so it
+// always needs exactly ONE MORE time slot than an even count would (every
+// round rotates a different team onto the bye) — but conceptually there are
+// still only `teams.length - 1` "rounds" (that's how many opponents each
+// team plays). Rather than label that extra time slot as its own "Round N"
+// — which reads as one more round than the group actually has — the LAST
+// time slot shares its label with the second-to-last instead. The two
+// fixtures that land on the same label still run at different roundIndex
+// values underneath (different dates/times — see computeFixtureSlot), so
+// nothing actually double-books a team; only the displayed text merges.
+function mergedRoundLabelIndex(i: number, totalRounds: number, isOdd: boolean): number {
+  return isOdd && i === totalRounds - 1 ? totalRounds - 1 : i + 1;
+}
+
 // `round` is deliberately bare ("Round 1") — no group/pool name baked in.
 // Which pool a fixture belongs to is already carried on its own `group`
 // field (see TournamentManager.tsx's generateForCategory), so merging it
@@ -148,9 +162,10 @@ function roundRobinRounds<T>(teamsIn: T[]): Array<Array<{ a: T; b: T | null }>> 
 // public scoring page) had to duplicate that field back out again.
 export function generateRoundRobin(teams: ScheduleTeamRef[]): GeneratedFixture[] {
   const rounds = roundRobinRounds(teams);
+  const isOdd = teams.length % 2 !== 0;
   const out: GeneratedFixture[] = [];
   rounds.forEach((pairs, i) => {
-    const label = `Round ${i + 1}`;
+    const label = `Round ${mergedRoundLabelIndex(i, rounds.length, isOdd)}`;
     for (const p of pairs) out.push({ round: label, roundIndex: i, a: p.a, b: p.b });
   });
   return out;
@@ -159,13 +174,19 @@ export function generateRoundRobin(teams: ScheduleTeamRef[]): GeneratedFixture[]
 export function generateDoubleRoundRobin(teams: ScheduleTeamRef[]): GeneratedFixture[] {
   const rounds = roundRobinRounds(teams);
   const n = rounds.length;
+  const isOdd = teams.length % 2 !== 0;
+  // How many distinct labels the first leg actually uses (n-1 when merged,
+  // same as n otherwise) — the return leg's own labels continue on from
+  // here, so the two legs together stay contiguously numbered (1,2,2,3,4,4
+  // for 3 teams) instead of jumping straight from "2" to "4".
+  const effectiveRounds = isOdd ? n - 1 : n;
   const out: GeneratedFixture[] = [];
   rounds.forEach((pairs, i) => {
-    const label = `Round ${i + 1}`;
+    const label = `Round ${mergedRoundLabelIndex(i, n, isOdd)}`;
     for (const p of pairs) out.push({ round: label, roundIndex: i, a: p.a, b: p.b });
   });
   rounds.forEach((pairs, i) => {
-    const label = `Round ${n + i + 1} (Return)`;
+    const label = `Round ${effectiveRounds + mergedRoundLabelIndex(i, n, isOdd)} (Return)`;
     for (const p of pairs) {
       if (p.b === null) out.push({ round: label, roundIndex: n + i, a: p.a, b: null });
       else out.push({ round: label, roundIndex: n + i, a: p.b, b: p.a });
@@ -221,6 +242,38 @@ function knockoutRoundName(teamsInRound: number): string {
   if (teamsInRound === 4) return 'Semifinal';
   if (teamsInRound === 8) return 'Quarterfinal';
   return `Round of ${teamsInRound}`;
+}
+
+/** Pads `real` out to `nextPow2(real.length)` slots for runBracket/
+ *  placementLadderRounds — every bracket builder in this file used to just
+ *  push all the bye nulls onto the END of the array (`while (slots.length <
+ *  size) slots.push(null)`), which pairs two byes against EACH OTHER
+ *  whenever 2+ byes are needed (always true for a pool/group count that
+ *  isn't itself a power of 2, e.g. 3 pools of 3/4/4 teams advancing 2 each
+ *  = 6 real entrants needing a size-8 bracket = 2 byes landing in the same
+ *  final pair). A bye-vs-bye pair produces NO fixture at all (see
+ *  runBracket's own `else { next.push(null) }` branch) and silently drops
+ *  that entire bracket slot — exactly the "missing matchup / empty slot"
+ *  bug this fixes.
+ *
+ *  Fix: byeCount is always < real.length whenever padding is needed at all
+ *  (size < 2×real.length by definition of nextPow2, except when
+ *  real.length is already a power of 2, where byeCount is simply 0) — so
+ *  it's always possible to give every bye a distinct real opponent with
+ *  real-vs-real pairs left over. The first `real.length - byeCount` entries
+ *  keep their exact original relative order/pairing (preserving whatever
+ *  clash-avoidance the caller already built into that ordering, e.g.
+ *  buildGroupKnockoutSlots' even-pool interleaving) — only the TAIL
+ *  entries, which would otherwise have been forced into a same-tier/same-
+ *  rank pairing anyway, each get spread out one-per-bye instead. */
+function padBracketSlots(real: ScheduleTeamRef[]): (ScheduleTeamRef | null)[] {
+  const size = nextPow2(real.length);
+  const byeCount = size - real.length;
+  if (byeCount === 0) return [...real];
+  const realPairCount = real.length - byeCount; // always even, see doc comment
+  const slots: (ScheduleTeamRef | null)[] = real.slice(0, realPairCount);
+  for (let i = realPairCount; i < real.length; i++) slots.push(real[i], null);
+  return slots;
 }
 
 /** Runs a bracket from an already-positioned slot list (nulls = bye slots),
@@ -281,12 +334,28 @@ export function generateKnockout(teamsInSeedOrder: ScheduleTeamRef[], thirdPlace
   return runBracket(slots, thirdPlace);
 }
 
+/** The full candidate list for a Groups→Knockout stage in plain rank-major
+ *  order ("1st A, 1st B, …, 2nd A, 2nd B, …") — no clash-avoidance, no
+ *  reseeding, just every pool's Nth-place finisher for each rank up to
+ *  advanceCount. A pool smaller than a given rank (e.g. a 3-team pool has
+ *  no "4th") simply contributes no slot at that rank. Used both as
+ *  buildGroupKnockoutSlots' own fallback ordering below, and as the editable
+ *  starting point for a manual knockout-seeding draw (see
+ *  TournamentManager.tsx's knockoutSeeding setting) — the operator reorders
+ *  THESE exact entries into whatever Round 1 pairing order they want. */
+export function buildKnockoutSlotCandidates(pools: PoolInfo[], advanceCount: number): ScheduleTeamRef[] {
+  const list: ScheduleTeamRef[] = [];
+  for (let rank = 1; rank <= advanceCount; rank++) {
+    for (const p of pools) { if (p.size >= rank) list.push(placeholder(`${ordinal(rank)} ${p.name}`)); }
+  }
+  return list;
+}
+
 /** Builds the placeholder entrant list for a Groups→Knockout stage, ordered
  *  as bracket slots directly (no reseeding) so group-mates meet as late as
  *  possible. Handles the common even-group-count case explicitly; falls back
- *  to a simple grouping for uncommon group-count/advance-count combos. A
- *  pool smaller than a given rank (e.g. a 3-team pool has no "4th") simply
- *  contributes no slot at that rank instead of a dead placeholder. */
+ *  to buildKnockoutSlotCandidates' plain rank-major order for uncommon
+ *  group-count/advance-count combos. */
 export function buildGroupKnockoutSlots(pools: PoolInfo[], advanceCount: number): ScheduleTeamRef[] {
   if (advanceCount === 2 && pools.length % 2 === 0 && pools.length >= 2 && pools.every(p => p.size >= advanceCount)) {
     const half = pools.length / 2;
@@ -300,11 +369,31 @@ export function buildGroupKnockoutSlots(pools: PoolInfo[], advanceCount: number)
     }
     return [...firstHalf, ...secondHalf];
   }
-  const list: ScheduleTeamRef[] = [];
-  for (let rank = 1; rank <= advanceCount; rank++) {
-    for (const p of pools) { if (p.size >= rank) list.push(placeholder(`${ordinal(rank)} ${p.name}`)); }
+  return buildKnockoutSlotCandidates(pools, advanceCount);
+}
+
+/** Groups→Knockout seeding where every QF slot's identity is fixed by
+ *  position: the first (top) slot of every pair is always a group WINNER,
+ *  the second (bottom) slot always a group RUNNER-UP (e.g. "QF1: 1st Group A
+ *  vs 2nd Group B, QF2: 1st Group C vs 2nd Group D") — a selectable
+ *  alternative to buildGroupKnockoutSlots' own clash-avoidance pairing, for
+ *  when the operator specifically wants winners seeded to one side and
+ *  runners-up to the other, rather than letting the auto pairing decide.
+ *  Only meaningful for exactly 2 advancing ranks (winner + runner-up); a
+ *  group's own winner is paired with ANOTHER group's runner-up via a
+ *  rotation offset (never its own, so group-mates still can't meet in round
+ *  one), which stays self-pair-free for any pool count, even or odd. */
+export function buildWinnerRunnerUpSlots(pools: PoolInfo[]): ScheduleTeamRef[] {
+  const n = pools.length;
+  if (n === 0) return [];
+  const offset = n > 1 ? Math.floor(n / 2) : 0;
+  const slots: ScheduleTeamRef[] = [];
+  for (let i = 0; i < n; i++) {
+    const winnerGroup = pools[i];
+    const runnerUpGroup = pools[(i + offset) % n];
+    slots.push(placeholder(`1st ${winnerGroup.name}`), placeholder(`2nd ${runnerUpGroup.name}`));
   }
-  return list;
+  return slots;
 }
 
 /** Interleaved entrant list combining two adjacent pool-finishing ranks into
@@ -370,9 +459,7 @@ export function buildBestNthWildcardSlots(
  *  of that tier's bracket. */
 function buildPairedTierQuarterfinal(entrantSlots: ScheduleTeamRef[], upperTier: string, lowerTier: string) {
   const pairLabel = `${upperTier}/${lowerTier}`;
-  const slots: (ScheduleTeamRef | null)[] = [...entrantSlots];
-  const size = nextPow2(slots.length);
-  while (slots.length < size) slots.push(null);
+  const slots = padBracketSlots(entrantSlots);
 
   const qfFixtures: GeneratedFixture[] = [];
   const upperSemiSlots: ScheduleTeamRef[] = [];
@@ -522,10 +609,7 @@ export function buildTieredKnockout(
  *  any schedule row with an empty Team B), so no new bye-handling is
  *  needed here. */
 export function buildPlacementLadder(orderedSlots: ScheduleTeamRef[], startPlace: number): GeneratedFixture[] {
-  const size = nextPow2(orderedSlots.length);
-  const slots: (ScheduleTeamRef | null)[] = [...orderedSlots];
-  while (slots.length < size) slots.push(null);
-  return placementLadderRounds(slots, startPlace);
+  return placementLadderRounds(padBracketSlots(orderedSlots), startPlace);
 }
 
 function placementLadderRounds(slots: (ScheduleTeamRef | null)[], startPlace: number): GeneratedFixture[] {
@@ -720,10 +804,7 @@ export function buildRankedPlacementKnockout(
 /** Runs a bracket from already-ordered slots (used for Groups→Knockout, where
  *  the slot order already encodes group-clash avoidance — no reseeding). */
 export function generateKnockoutFromSlots(orderedSlots: ScheduleTeamRef[], thirdPlace = false): GeneratedFixture[] {
-  const size = nextPow2(orderedSlots.length);
-  const slots: (ScheduleTeamRef | null)[] = [...orderedSlots];
-  while (slots.length < size) slots.push(null);
-  return runBracket(slots, thirdPlace);
+  return runBracket(padBracketSlots(orderedSlots), thirdPlace);
 }
 
 export function shuffle<T>(arr: T[]): T[] {
