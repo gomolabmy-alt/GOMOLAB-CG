@@ -18,10 +18,14 @@ interface Props {
   h: number;
 }
 
-// '#RRGGBB' (what <input type="color"> gives us) -> 'FFRRGGBB', the ARGB hex
-// vMix's SetColor function expects for its Value parameter.
+// '#RRGGBB' (what <input type="color"> gives us) -> '#FFRRGGBB', the ARGB
+// hex vMix's SetColor function expects for its Value parameter — confirmed
+// against vMix's own official Shortcut Function Reference (8 hex digits,
+// "#xxxxxxxx", e.g. Value:="#0033AA22" in vMix's own documented example).
+// This used to build the value with NO leading "#" at all, which is
+// probably why colors pushed via SetColor never visibly changed anything.
 function toArgbHex(hex: string): string {
-  return 'FF' + hex.replace('#', '').toUpperCase();
+  return '#FF' + hex.replace('#', '').toUpperCase();
 }
 
 function upcomingText(row: UpcomingFormRow, side: 'a' | 'b'): string | null {

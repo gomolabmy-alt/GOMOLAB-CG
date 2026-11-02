@@ -39,11 +39,19 @@ function expandSetTemplate(template: string, setNumber: number): string {
   return template.replace(/\{n\}/g, String(setNumber));
 }
 
-// '#RRGGBB' (an <input type="color"> value) -> 'FFRRGGBB', the ARGB hex
-// vMix's SetColor function expects for its Value parameter — same
-// convention TeamFormWidget.tsx's own toArgbHex already uses.
-function toArgbHex(hex: string): string {
-  return 'FF' + hex.replace('#', '').toUpperCase();
+// '#RRGGBB' (an <input type="color"> value) -> '#RRGGBB', normalized for
+// vMix's SetTextColour Value parameter — confirmed against vMix's own
+// official Shortcut Function Reference: SetTextColour takes HTML "#xxxxxx"
+// (6 hex digits, NO alpha channel), unlike SetColor's 8-digit "#xxxxxxxx"
+// ARGB. Every color push on this board uses SetTextColour (see
+// client.setTextColor's own doc comment in vmixApi.ts), so this is the one
+// format needed here — a previous version of this function built an
+// 8-digit value with NO leading "#" at all, which is why recoloring text
+// silently did nothing even with everything else correctly wired: vMix
+// never accepted the value in the first place, wrong digit count AND
+// missing the "#" vMix's own documented examples always include.
+function toTextColorHex(hex: string): string {
+  return '#' + hex.replace('#', '').toUpperCase();
 }
 
 // Turns a picked REAL field name (assumed to represent Set 1 — pickers
@@ -148,8 +156,9 @@ interface RacketVmixTarget {
   setScoreColorFieldA?: string;
   setScoreColorFieldB?: string;
   /** '#RRGGBB' (an <input type="color"> value — converted to vMix's own
-   *  ARGB hex at push time, see toArgbHex) — when set, the JUST-DECIDED
-   *  set's own winner-side color field (setScoreColorFieldA/B above, or
+   *  SetTextColour hex format at push time, see toTextColorHex) — when
+   *  set, the JUST-DECIDED set's own winner-side color field
+   *  (setScoreColorFieldA/B above, or
    *  setScoreTemplateA/B itself as a fallback) is colored this the instant
    *  that set ends; setScoreLoseColor does the same for the loser's side. A
    *  simpler, built-in alternative to configuring a full Set Result Trigger
@@ -554,8 +563,8 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
         // promise.
         const winColor = t.setScoreWinColor || '#2ecc71';
         const loseColor = t.setScoreLoseColor || '#e74c3c';
-        if (winnerField) client.setTextColor(t.inputKey, expandSetTemplate(winnerField, setNumber), toArgbHex(winColor));
-        if (loserField) client.setTextColor(t.inputKey, expandSetTemplate(loserField, setNumber), toArgbHex(loseColor));
+        if (winnerField) client.setTextColor(t.inputKey, expandSetTemplate(winnerField, setNumber), toTextColorHex(winColor));
+        if (loserField) client.setTextColor(t.inputKey, expandSetTemplate(loserField, setNumber), toTextColorHex(loseColor));
       }
     }
   };
@@ -1142,8 +1151,8 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
           // boxes back to neutral instead of leaving a PREVIOUS match's
           // win/lose colors behind on them.
           if (t.setScoreDefaultColor && i >= completedGames.length) {
-            if (colorFieldA) client.setTextColor(t.inputKey, expandSetTemplate(colorFieldA, i + 1), toArgbHex(t.setScoreDefaultColor));
-            if (colorFieldB) client.setTextColor(t.inputKey, expandSetTemplate(colorFieldB, i + 1), toArgbHex(t.setScoreDefaultColor));
+            if (colorFieldA) client.setTextColor(t.inputKey, expandSetTemplate(colorFieldA, i + 1), toTextColorHex(t.setScoreDefaultColor));
+            if (colorFieldB) client.setTextColor(t.inputKey, expandSetTemplate(colorFieldB, i + 1), toTextColorHex(t.setScoreDefaultColor));
           }
         }
         // Clear any leftover set fields beyond maxSets — e.g. a best-of-5
@@ -1196,8 +1205,8 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
         const liveFieldB = t.pointWinColorFieldB || (templateB && expandSetTemplate(templateB, currentSetNumber)) || t.fieldScoreB;
         const winColor = t.pointWinColor || '#f1c40f';
         const defaultColor = t.pointDefaultColor || '#ffffff';
-        if (liveFieldA) client.setTextColor(t.inputKey, liveFieldA, toArgbHex(pointSigA ? winColor : defaultColor));
-        if (liveFieldB) client.setTextColor(t.inputKey, liveFieldB, toArgbHex(pointSigB ? winColor : defaultColor));
+        if (liveFieldA) client.setTextColor(t.inputKey, liveFieldA, toTextColorHex(pointSigA ? winColor : defaultColor));
+        if (liveFieldB) client.setTextColor(t.inputKey, liveFieldB, toTextColorHex(pointSigB ? winColor : defaultColor));
       }
       // Starting lineup — one Name/Jersey/Position triple per starter slot
       // (1-based), same template + stale-clear approach as the per-set

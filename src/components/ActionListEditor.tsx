@@ -25,7 +25,10 @@ function parseArgbHex(v: string | undefined): { hex: string; alphaPct: number } 
 }
 function buildArgbHex(hex: string, alphaPct: number): string {
   const a = Math.round((Math.max(0, Math.min(100, alphaPct)) / 100) * 255);
-  return `${a.toString(16).padStart(2, '0').toUpperCase()}${hex.replace('#', '').toUpperCase()}`;
+  // Leading "#" included — vMix's own documented SetColor examples always
+  // have it (e.g. Value:="#0033AA22"); a value built without one used to
+  // mean this picker's Set Color action silently changed nothing in vMix.
+  return `#${a.toString(16).padStart(2, '0').toUpperCase()}${hex.replace('#', '').toUpperCase()}`;
 }
 
 // Known, documented value ranges for a handful of vMix functions' own
@@ -434,6 +437,19 @@ export function ActionListEditor({ actions, onChange, sectionKey, pages, timerWi
                         <SliderNumberField min={0} max={100} value={alphaPct} onChange={v => setParam(pk, buildArgbHex(hex, v))} />
                       </div>
                     </div>
+                  </Field>
+                );
+              }
+              // SetTextColour's own Value — a plain Text field's font color,
+              // no alpha channel (vMix's own docs: "#xxxxxx", 6 hex digits,
+              // unlike SetColor's 8-digit "#xxxxxxxx" ARGB above) — same
+              // picker, just without the Opacity slider, and always writing
+              // the leading "#" vMix's own documented examples always have.
+              if (fn === 'SetTextColour' && pk === 'Value') {
+                const hex = /^#?[0-9A-Fa-f]{6}$/.test(params[pk] ?? '') ? `#${(params[pk] ?? '').replace('#', '')}` : '#ffffff';
+                return (
+                  <Field key={pk} label="Color">
+                    <ColorPicker value={hex} onChange={v => setParam(pk, `#${v.replace('#', '').toUpperCase()}`)} />
                   </Field>
                 );
               }
