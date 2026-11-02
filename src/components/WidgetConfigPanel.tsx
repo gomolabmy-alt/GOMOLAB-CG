@@ -1905,6 +1905,9 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
         // FixtureVmixTarget's own precedent in this file).
         type RacketVmixTarget = {
           id: string; inputKey: string; inputTitle?: string;
+          /** Custom name for THIS target's own collapse header — wins over
+           *  inputTitle when set, purely cosmetic (never pushed to vMix). */
+          label?: string;
           fieldScoreA?: string; fieldScoreB?: string;
           fieldTeamA?: string; fieldTeamB?: string;
           fieldTeamAShort?: string; fieldTeamBShort?: string;
@@ -2014,7 +2017,10 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
           <CollapsibleSection label="vMix Output" defaultOpen={false}>
             {racketTargets.map((t, idx) => {
               const collapseKey = `racket-vmix-${t.id}`;
-              const isCollapsed = vilCollapsed[collapseKey] ?? false;
+              // Collapsed by default — expanding every target at once made
+              // a 3+ input setup unwieldy to scroll through; manually open
+              // whichever one you actually want to look at.
+              const isCollapsed = vilCollapsed[collapseKey] ?? true;
               return (
                 <div key={t.id} className="vil-cfg-block">
                   <div className="vil-cfg-header">
@@ -2023,11 +2029,18 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
                       title={isCollapsed ? 'Expand' : 'Collapse'}>
                       {isCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
                     </button>
-                    <span className="vil-cfg-label">vMix Input {idx + 1}</span>
+                    {/* Custom Label wins if set; else the picked vMix
+                       input's own title (so e.g. "Court 1 Scoreboard"
+                       reads at a glance instead of a bare index); else
+                       its raw key; else just the index as a last resort. */}
+                    <span className="vil-cfg-label">{t.label || t.inputTitle || t.inputKey || `vMix Input ${idx + 1}`}</span>
                     {racketTargets.length > 1 && <button className="btn btn--ghost btn--small" onClick={() => setRacketTargets(racketTargets.filter((_, i) => i !== idx))}>×</button>}
                   </div>
                   {!isCollapsed && (
                     <>
+                      <Field label="Label (optional)">
+                        <input className="field-input" value={t.label ?? ''} placeholder={t.inputTitle || 'Defaults to the vMix input name'} onChange={e => updateRacketTarget(idx, { label: e.target.value })} />
+                      </Field>
                       {renderInputPicker('Input', t.inputKey, t.inputTitle,
                         (key, title) => updateRacketTarget(idx, { inputKey: key, inputTitle: title }))}
                       {t.inputKey && (

@@ -85,6 +85,9 @@ interface RacketVmixTarget {
   id: string;
   inputKey: string;
   inputTitle?: string;
+  /** Custom name for this target's own collapse header in WidgetConfigPanel
+   *  (Match Info Settings) — cosmetic only, never pushed to vMix. */
+  label?: string;
   fieldScoreA?: string;
   fieldScoreB?: string;
   fieldTeamA?: string;
