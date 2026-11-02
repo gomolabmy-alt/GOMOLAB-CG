@@ -145,6 +145,18 @@ interface RacketVmixTarget {
    *  vMix title itself happens to default a Text field to. Optional —
    *  unset leaves undecided sets at the title's own default color. */
   setScoreDefaultColor?: string;
+  /** Colors the LIVE score field (fieldScoreA/B above by default —
+   *  pointWinColorFieldA/B below override just this, same "blank means use
+   *  the Text field's own name" convention setScoreColorFieldA/B uses) the
+   *  instant that side reaches a point that would win the current game/
+   *  set/match — same pointSigA/B detection the on-screen Game/Set/Match
+   *  Point badge already uses. pointDefaultColor is what it reverts to the
+   *  rest of the time (point lost, new game started, etc.) — without it,
+   *  the win color would only ever apply once and never clear. */
+  pointWinColorFieldA?: string;
+  pointWinColorFieldB?: string;
+  pointWinColor?: string;
+  pointDefaultColor?: string;
   // 'text' (default) pushes the serving team's NAME to fieldServerName,
   // same as before this existed. 'image' pushes a SERVER ICON (serverIconA/B
   // below — an operator-picked image, e.g. a shuttle/ball icon or arrow,
@@ -974,6 +986,8 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
           setScoreColorFieldA: config.setScoreColorFieldA, setScoreColorFieldB: config.setScoreColorFieldB,
           setScoreWinColor: config.setScoreWinColor, setScoreLoseColor: config.setScoreLoseColor,
           setScoreDefaultColor: config.setScoreDefaultColor,
+          pointWinColorFieldA: config.pointWinColorFieldA, pointWinColorFieldB: config.pointWinColorFieldB,
+          pointWinColor: config.pointWinColor, pointDefaultColor: config.pointDefaultColor,
           serverMode: 'text', fieldServerName: config.fieldServerName,
         }]
       : [];
@@ -1015,6 +1029,24 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
       if (!t.inputKey) continue;
       if (t.fieldScoreA) client.setTextField(t.inputKey, t.fieldScoreA, label);
       if (t.fieldScoreB) client.setTextField(t.inputKey, t.fieldScoreB, labelB);
+      // Game/Set/Match Point color — the LIVE score field (fieldScoreA/B
+      // above, or a dedicated override) changes color the instant that
+      // side reaches a point that would WIN the game/set/match, same
+      // detection the on-screen badge (pointSigA/B) already uses, and back
+      // to pointDefaultColor the instant it no longer does (point lost,
+      // next game, etc.) — not just a one-way color change.
+      if (t.pointWinColor || t.pointDefaultColor) {
+        const colorFieldA = t.pointWinColorFieldA || t.fieldScoreA;
+        const colorFieldB = t.pointWinColorFieldB || t.fieldScoreB;
+        if (colorFieldA) {
+          const color = pointSigA ? t.pointWinColor : t.pointDefaultColor;
+          if (color) client.setTextColor(t.inputKey, colorFieldA, toArgbHex(color));
+        }
+        if (colorFieldB) {
+          const color = pointSigB ? t.pointWinColor : t.pointDefaultColor;
+          if (color) client.setTextColor(t.inputKey, colorFieldB, toArgbHex(color));
+        }
+      }
       if (t.fieldTeamA && config.teamAName != null) client.setTextField(t.inputKey, t.fieldTeamA, config.teamAName);
       if (t.fieldTeamB && config.teamBName != null) client.setTextField(t.inputKey, t.fieldTeamB, config.teamBName);
       if (t.fieldTeamAShort) client.setTextField(t.inputKey, t.fieldTeamAShort, config.teamAShortName ?? '');
@@ -1154,7 +1186,7 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
     config.teamAName, config.teamBName, config.teamAShortName, config.teamBShortName, config.teamALogo, config.teamBLogo, rallyState.pointsA, rallyState.pointsB, rallyState.games,
     tennisState.pointsA, tennisState.pointsB, tennisState.tiebreakA, tennisState.tiebreakB, tennisState.inTiebreak,
     tennisState.gamesA, tennisState.gamesB, tennisState.sets, gamesWonA, gamesWonB, server, matchWinnerSide, teamTieWinner,
-    config.startersA, config.startersB, config.playerCount,
+    config.startersA, config.startersB, config.playerCount, pointSigA, pointSigB,
   ]);
 
   // ── Server triggers — any target with serverMode 'trigger' fires the
@@ -2688,6 +2720,17 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
               </label>
               <p className="app-settings-hint" style={{ margin: '2px 0 8px' }}>
                 Applied to the set currently being played and any set not reached yet — so every box has a consistent, app-controlled color even before it's won or lost, instead of whatever color the vMix title itself defaults to.
+              </p>
+              <label className="wgt-ctimer-settings-row">
+                Game/Set/Match Point Color
+                <input type="color" value={config.pointWinColor ?? '#f1c40f'} onChange={e => updateWidgetConfig(widgetId, { pointWinColor: e.target.value })} />
+              </label>
+              <label className="wgt-ctimer-settings-row">
+                Live Score Default Color
+                <input type="color" value={config.pointDefaultColor ?? '#ffffff'} onChange={e => updateWidgetConfig(widgetId, { pointDefaultColor: e.target.value })} />
+              </label>
+              <p className="app-settings-hint" style={{ margin: '2px 0 8px' }}>
+                Colors the LIVE Score A/B Field above the instant that side reaches a point that would win the game/set/match (same moment the on-screen badge shows) — back to Default the rest of the time.
               </p>
             </>
           )}

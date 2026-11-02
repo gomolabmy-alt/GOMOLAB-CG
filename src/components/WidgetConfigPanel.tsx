@@ -1892,6 +1892,7 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
           setScoreTemplateMode?: 'picker' | 'manual';
           setScoreColorFieldA?: string; setScoreColorFieldB?: string;
           setScoreWinColor?: string; setScoreLoseColor?: string; setScoreDefaultColor?: string;
+          pointWinColorFieldA?: string; pointWinColorFieldB?: string; pointWinColor?: string; pointDefaultColor?: string;
           serverMode?: 'text' | 'image' | 'trigger';
           fieldServerName?: string; fieldServerImage?: string;
           serverIconA?: string; serverIconB?: string;
@@ -1924,6 +1925,8 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
                 setScoreColorFieldA: cfg.setScoreColorFieldA, setScoreColorFieldB: cfg.setScoreColorFieldB,
                 setScoreWinColor: cfg.setScoreWinColor, setScoreLoseColor: cfg.setScoreLoseColor,
                 setScoreDefaultColor: cfg.setScoreDefaultColor,
+                pointWinColorFieldA: cfg.pointWinColorFieldA, pointWinColorFieldB: cfg.pointWinColorFieldB,
+                pointWinColor: cfg.pointWinColor, pointDefaultColor: cfg.pointDefaultColor,
                 serverMode: 'text', fieldServerName: cfg.fieldServerName,
               }]
             : [];
@@ -2043,6 +2046,26 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
                             <input type="color" value={t.setScoreDefaultColor ?? '#ffffff'} onChange={e => updateRacketTarget(idx, { setScoreDefaultColor: e.target.value })} />
                             <p className="app-settings-hint" style={{ margin: '4px 0 0' }}>
                               Applied to the set currently being played and any set not reached yet — every box gets a consistent, app-controlled color even before it's won or lost, instead of whatever color the vMix title itself defaults to.
+                            </p>
+                          </Field>
+                          <Field label={`${cfg.teamAName || 'Team A'} — Live Score Color Field Override (optional)`}>
+                            <input className="field-input" value={t.pointWinColorFieldA ?? ''} placeholder="Leave blank to color the Score A Field above directly"
+                              onChange={e => updateRacketTarget(idx, { pointWinColorFieldA: e.target.value })} />
+                          </Field>
+                          <Field label={`${cfg.teamBName || 'Team B'} — Live Score Color Field Override (optional)`}>
+                            <input className="field-input" value={t.pointWinColorFieldB ?? ''} placeholder="Leave blank to color the Score B Field above directly"
+                              onChange={e => updateRacketTarget(idx, { pointWinColorFieldB: e.target.value })} />
+                          </Field>
+                          <Field label="Game/Set/Match Point Color">
+                            <input type="color" value={t.pointWinColor ?? '#f1c40f'} onChange={e => updateRacketTarget(idx, { pointWinColor: e.target.value })} />
+                            <p className="app-settings-hint" style={{ margin: '4px 0 0' }}>
+                              Colors the LIVE Score A/B field the instant that side reaches a point that would win the current game/set/match — the same moment the on-screen Game/Set/Match Point badge appears.
+                            </p>
+                          </Field>
+                          <Field label="Live Score Default Color">
+                            <input type="color" value={t.pointDefaultColor ?? '#ffffff'} onChange={e => updateRacketTarget(idx, { pointDefaultColor: e.target.value })} />
+                            <p className="app-settings-hint" style={{ margin: '4px 0 0' }}>
+                              What the live score reverts to the rest of the time — without this, the Point color above would only ever apply once and never clear.
                             </p>
                           </Field>
                           <Field label="Server">
