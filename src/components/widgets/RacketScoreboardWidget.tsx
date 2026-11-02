@@ -19,6 +19,7 @@ import {
   initRallyMatch, scoreRallyPoint, advanceRallyGame, isRallyGameOver, rallyGamesWon, adjustRallyPoint,
   initTennisMatch, scoreTennisPoint, tennisPointLabel, isTennisDeuce, formatGameResult, adjustTennisPoint,
   normalizePlayerEntry, formatPlayerEntry, formatDuration,
+  formatScheduledDate, formatScheduledTime, RACKET_DATE_FORMAT_DEFAULT, RACKET_TIME_FORMAT_DEFAULT,
 } from '../../lib/racketScoring';
 import { CardSelect, ToggleCard, CustomBox, InputPickerDropdown, FieldPickerDropdown } from '../WidgetConfigPanel';
 
@@ -179,14 +180,16 @@ interface RacketVmixTarget {
    *  default, the CURRENT set's own Per-Set Score field (setScoreTemplateA/
    *  B above, expanded for whichever set is live right now), falling back
    *  to fieldScoreA/B when no per-set template is set. pointWinColorFieldA/
-   *  B below override this with an explicit field instead. Fires the
-   *  instant that side reaches a point that would win the current game/
-   *  set/match — same pointSigA/B detection the on-screen Game/Set/Match
-   *  Point badge already uses — and runs AFTER the per-set score push so it
-   *  wins over that block's own Set Default Color on the live slot.
-   *  pointDefaultColor is what it reverts to the rest of the time (point
-   *  lost, new game started, etc.) — without it, the win color would only
-   *  ever apply once and never clear. */
+   *  B below override this with an explicit field instead. Fires — and
+   *  STAYS on — from the instant that side's live score reaches the real
+   *  winning number (pointsToWin, or the sepaktakraw deuceTarget cap once a
+   *  deadlock raises it), a simpler/stickier check than the on-screen
+   *  Game/Set/Match Point badge's own pointSigA/B (that one can flicker off
+   *  right at a deadlock, since the target itself moves — see
+   *  pointThresholdA/B's own doc comment) — and runs AFTER the per-set
+   *  score push so it wins over that block's own Set Default Color on the
+   *  live slot. pointDefaultColor is what it reverts to the rest of the
+   *  time (this game ends, or the OTHER side is the one closing in). */
   pointWinColorFieldA?: string;
   pointWinColorFieldB?: string;
   pointWinColor?: string;
@@ -973,6 +976,26 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
   const pointSigB = pointSignificanceFor('B');
   const pointSigSide: RacketSide | null = pointSigA ? 'A' : pointSigB ? 'B' : null;
   const pointSigLevel = pointSigA ?? pointSigB;
+  // Simpler, STICKY threshold check used only by the vMix Point Win Color
+  // push below (NOT the on-screen badge above, which stays precise about
+  // the exact instant the next point actually ends the game) — a side's
+  // raw live score has reached the real winning number (15 normally, or
+  // the sepaktakraw deuceTarget cap of 17 once a 14-14 deadlock raises it)
+  // regardless of whether THIS exact point would end the game (win-by-2
+  // still pending, etc.). Once true it STAYS true as the score keeps
+  // climbing (15 -> 16 -> 17, never drops) — unlike pointSigA/B, which can
+  // flicker off e.g. right after a 14-14 deadlock raises the target to 17
+  // (15/16 stop being "game point" even though the score visually passed
+  // them). Tennis is untouched — it has no single "reached the number"
+  // target the way rally sports do, so this just mirrors pointSigA/B there.
+  // Guarded against THIS game already being decided (match/tie included) —
+  // once it is, fireSetResultActions' own Win/Lose Color already took over
+  // that slot; this must stop claiming it, or a loser who'd also climbed
+  // past the threshold during a deuce battle (e.g. lost 17-16) would get
+  // overwritten back to the WIN color on every later push.
+  const rallyGameDecided = !!matchWinnerSide || !!teamTieWinner || !!rallyGameOverWinner;
+  const pointThresholdA = scoringMode === 'tennis' ? !!pointSigA : !rallyGameDecided && rallyState.pointsA >= rallySettings.pointsToWin;
+  const pointThresholdB = scoringMode === 'tennis' ? !!pointSigB : !rallyGameDecided && rallyState.pointsB >= rallySettings.pointsToWin;
   const pointBadgeLabel = (level: 'game' | 'set' | 'match'): string => {
     if (level === 'match') return 'Match Point';
     if (level === 'set') return 'Set Point';
@@ -1086,8 +1109,8 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
         client.setTextField(t.inputKey, t.fieldSetLabel, matchOver ? 'Final' : `${unit} ${completedGames.length + 1}`);
       }
       if (t.fieldVenue) client.setTextField(t.inputKey, t.fieldVenue, config.venue ?? '');
-      if (t.fieldDate) client.setTextField(t.inputKey, t.fieldDate, config.scheduledDate ?? '');
-      if (t.fieldTime) client.setTextField(t.inputKey, t.fieldTime, config.scheduledTime ?? '');
+      if (t.fieldDate) client.setTextField(t.inputKey, t.fieldDate, formatScheduledDate(config.scheduledDate, config.dateFormatPattern || RACKET_DATE_FORMAT_DEFAULT));
+      if (t.fieldTime) client.setTextField(t.inputKey, t.fieldTime, formatScheduledTime(config.scheduledTime, config.timeFormatPattern || RACKET_TIME_FORMAT_DEFAULT));
       if (t.fieldCategory) client.setTextField(t.inputKey, t.fieldCategory, config.category ?? '');
       if (t.fieldGroup) client.setTextField(t.inputKey, t.fieldGroup, config.group ?? '');
       if (t.fieldSport) client.setTextField(t.inputKey, t.fieldSport, SPORT_LABELS[sport] ?? '');
@@ -1100,8 +1123,8 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
             case 'group': return config.group ?? '';
             case 'tier': return config.tier ?? '';
             case 'venue': return config.venue ?? '';
-            case 'date': return config.scheduledDate ?? '';
-            case 'time': return config.scheduledTime ?? '';
+            case 'date': return formatScheduledDate(config.scheduledDate, config.dateFormatPattern || RACKET_DATE_FORMAT_DEFAULT);
+            case 'time': return formatScheduledTime(config.scheduledTime, config.timeFormatPattern || RACKET_TIME_FORMAT_DEFAULT);
             case 'sport': return SPORT_LABELS[sport] ?? '';
             default: return '';
           }
@@ -1180,10 +1203,14 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
           }
         }
       }
-      // Game/Set/Match Point color — the instant that side reaches a point
-      // that would WIN the game/set/match, same detection the on-screen
-      // badge (pointSigA/B) already uses, and back to pointDefaultColor the
-      // instant it no longer does — not just a one-way color change. Runs
+      // Game/Set/Match Point color — the instant that side's live score
+      // reaches the real winning number (pointsToWin, e.g. 15 — or the
+      // sepaktakraw deuceTarget cap, e.g. 17, once a deadlock raises it),
+      // and STAYS that color as the score keeps climbing from there
+      // (scores only go up), unlike the on-screen badge's own pointSigA/B
+      // (which flickers off right at a 14-14 deadlock, since 15 stops
+      // being "the next point wins" the instant the target gets raised to
+      // 17 — see pointThresholdA/B's own doc comment). Runs
       // AFTER the per-set block above (not alongside it) so it wins over
       // that block's own Default Color on the CURRENT slot — a win-point
       // highlight should show even with a Set Default Color also set.
@@ -1205,8 +1232,8 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
         const liveFieldB = t.pointWinColorFieldB || (templateB && expandSetTemplate(templateB, currentSetNumber)) || t.fieldScoreB;
         const winColor = t.pointWinColor || '#f1c40f';
         const defaultColor = t.pointDefaultColor || '#ffffff';
-        if (liveFieldA) client.setTextColor(t.inputKey, liveFieldA, toTextColorHex(pointSigA ? winColor : defaultColor));
-        if (liveFieldB) client.setTextColor(t.inputKey, liveFieldB, toTextColorHex(pointSigB ? winColor : defaultColor));
+        if (liveFieldA) client.setTextColor(t.inputKey, liveFieldA, toTextColorHex(pointThresholdA ? winColor : defaultColor));
+        if (liveFieldB) client.setTextColor(t.inputKey, liveFieldB, toTextColorHex(pointThresholdB ? winColor : defaultColor));
       }
       // Starting lineup — one Name/Jersey/Position triple per starter slot
       // (1-based), same template + stale-clear approach as the per-set
@@ -1256,8 +1283,9 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
     config.teamAName, config.teamBName, config.teamAShortName, config.teamBShortName, config.teamALogo, config.teamBLogo, rallyState.pointsA, rallyState.pointsB, rallyState.games,
     tennisState.pointsA, tennisState.pointsB, tennisState.tiebreakA, tennisState.tiebreakB, tennisState.inTiebreak,
     tennisState.gamesA, tennisState.gamesB, tennisState.sets, gamesWonA, gamesWonB, server, matchWinnerSide, teamTieWinner,
-    config.startersA, config.startersB, config.playerCount, pointSigA, pointSigB,
+    config.startersA, config.startersB, config.playerCount, pointSigA, pointSigB, pointThresholdA, pointThresholdB,
     config.venue, config.scheduledDate, config.scheduledTime, config.category, config.group, config.sport,
+    config.dateFormatPattern, config.timeFormatPattern,
   ]);
 
   // ── Server triggers — any target with serverMode 'trigger' fires the
@@ -2687,6 +2715,29 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
             Time
             <input type="time" className="wgt-ctimer-settings-input" value={config.scheduledTime ?? ''} onChange={e => updateWidgetConfig(widgetId, { scheduledTime: e.target.value })} />
           </label>
+          <label className="wgt-ctimer-settings-row">
+            Date Format (vMix)
+            <input className="wgt-ctimer-settings-input" style={{ fontFamily: 'var(--font-mono)' }} value={config.dateFormatPattern ?? ''} placeholder={RACKET_DATE_FORMAT_DEFAULT}
+              onChange={e => updateWidgetConfig(widgetId, { dateFormatPattern: e.target.value })} />
+          </label>
+          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', margin: '0 0 4px' }}>
+            {['YYYY-MM-DD', 'DD/MM/YYYY', 'MM/DD/YYYY', 'D MMM YYYY', 'D MMMM YYYY', 'dddd, D MMMM YYYY', 'dddd', 'MMMM YYYY', 'MMMM'].map(p => (
+              <button key={p} type="button" className="btn btn--ghost btn--small" style={{ fontSize: 10 }} onClick={() => updateWidgetConfig(widgetId, { dateFormatPattern: p })}>{p}</button>
+            ))}
+          </div>
+          <label className="wgt-ctimer-settings-row">
+            Time Format (vMix)
+            <input className="wgt-ctimer-settings-input" style={{ fontFamily: 'var(--font-mono)' }} value={config.timeFormatPattern ?? ''} placeholder={RACKET_TIME_FORMAT_DEFAULT}
+              onChange={e => updateWidgetConfig(widgetId, { timeFormatPattern: e.target.value })} />
+          </label>
+          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', margin: '0 0 4px' }}>
+            {['HH:mm', 'hh:mm A', 'h:mm a'].map(p => (
+              <button key={p} type="button" className="btn btn--ghost btn--small" style={{ fontSize: 10 }} onClick={() => updateWidgetConfig(widgetId, { timeFormatPattern: p })}>{p}</button>
+            ))}
+          </div>
+          <p className="app-settings-hint" style={{ margin: '2px 0 8px' }}>
+            Only the vMix push is reformatted — the Date/Time fields above stay normal date/time inputs. Year: YYYY/YY · Month: MMMM (August) / MMM (Aug) / MM (08) / M (8) · Day: DD/D · Day name: dddd (Monday) / ddd (Mon). Time tokens: HH/H (24h), hh/h (12h), mm, A/a (AM/PM).
+          </p>
 
           <div className="wgt-ctimer-settings-divider" />
 
@@ -2880,7 +2931,7 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
                 </div>
               </label>
               <p className="app-settings-hint" style={{ margin: '2px 0 8px' }}>
-                Colors the LIVE Score A/B Field above the instant that side reaches a point that would win the game/set/match (same moment the on-screen badge shows) — back to Default the rest of the time.
+                Colors the live score the instant that side's score reaches the winning number (15, or 17 once a deadlock raises it for sepaktakraw) and stays that color as the score keeps climbing — back to Default once this game ends or the other side is the one closing in.
               </p>
             </>
           )}

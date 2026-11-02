@@ -515,3 +515,66 @@ export const RACKET_SHORTCUT_ACTIONS: { value: string; label: string }[] = [
   { value: 'reset', label: 'Reset (press twice to confirm, same as the button)' },
   { value: 'nextFixture', label: 'Next Fixture' },
 ];
+
+// Date/Time pushed to vMix (Match Info's Date/Time Field, and the Match
+// Details merge composer's date/time parts) format however the OPERATOR
+// wants, not just the raw ISO/24h value <input type="date"/"time"> itself
+// stores — a token-based pattern (same DD/MM/YYYY-style convention most
+// broadcast operators already know from Excel/spreadsheet date formats)
+// rather than a fixed preset list, since house style varies by broadcaster/
+// country. Stored config.scheduledDate/scheduledTime stay in their native
+// ISO/24h shape regardless (fixture auto-fill, the <input> elements
+// themselves, and any other consumer all keep working unchanged) — only
+// the vMix PUSH gets reformatted, right before it's sent.
+const MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const MONTHS_FULL = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const DAYS_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const DAYS_FULL = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+export const RACKET_DATE_FORMAT_DEFAULT = 'YYYY-MM-DD';
+export const RACKET_TIME_FORMAT_DEFAULT = 'HH:mm';
+
+/** `iso` is an <input type="date"> value ("2026-08-20"). Tokens (longest
+ *  first so e.g. "MMMM" isn't partly eaten by a "MM" replace first):
+ *  YYYY/YY, MMMM/MMM/MM/M, DD/D, dddd/ddd. Returns '' for no date, and the
+ *  raw string back unparsed rather than throwing on anything malformed. */
+export function formatScheduledDate(iso: string | undefined, pattern: string): string {
+  if (!iso) return '';
+  const [y, m, d] = iso.split('-').map(Number);
+  if (!y || !m || !d) return iso;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const weekday = new Date(y, m - 1, d).getDay();
+  return (pattern || RACKET_DATE_FORMAT_DEFAULT)
+    .replace(/YYYY/g, String(y))
+    .replace(/YY/g, String(y).slice(-2))
+    .replace(/MMMM/g, MONTHS_FULL[m - 1] ?? '')
+    .replace(/MMM/g, MONTHS_SHORT[m - 1] ?? '')
+    .replace(/MM/g, pad(m))
+    .replace(/M/g, String(m))
+    .replace(/DD/g, pad(d))
+    .replace(/D/g, String(d))
+    .replace(/dddd/g, DAYS_FULL[weekday])
+    .replace(/ddd/g, DAYS_SHORT[weekday]);
+}
+
+/** `hm` is an <input type="time"> value ("20:30", 24h). Tokens: HH/H
+ *  (24h), hh/h (12h), mm, A/a (AM/PM upper/lower). Returns '' for no time,
+ *  and the raw string back unparsed rather than throwing on anything
+ *  malformed. */
+export function formatScheduledTime(hm: string | undefined, pattern: string): string {
+  if (!hm) return '';
+  const [hStr, mStr] = hm.split(':');
+  const h24 = Number(hStr);
+  const min = Number(mStr);
+  if (!Number.isFinite(h24) || !Number.isFinite(min)) return hm;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
+  return (pattern || RACKET_TIME_FORMAT_DEFAULT)
+    .replace(/HH/g, pad(h24))
+    .replace(/H/g, String(h24))
+    .replace(/hh/g, pad(h12))
+    .replace(/h/g, String(h12))
+    .replace(/mm/g, pad(min))
+    .replace(/A/g, h24 < 12 ? 'AM' : 'PM')
+    .replace(/a/g, h24 < 12 ? 'am' : 'pm');
+}

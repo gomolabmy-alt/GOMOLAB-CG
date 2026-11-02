@@ -21,7 +21,7 @@ import type { ActionItem } from '../lib/buttonActions';
 import { HotkeyRecorder } from './HotkeyRecorder';
 import { collectHotkeyBindings } from '../lib/hotkeyBindings';
 import { SPORT_DEFAULTS, SPORT_LABELS, type SportType, type RacketSportSettings } from '../types/tournament';
-import { initRallyMatch, initTennisMatch, normalizePlayerEntry, type RacketPlayerEntry, RACKET_SHORTCUT_ACTIONS } from '../lib/racketScoring';
+import { initRallyMatch, initTennisMatch, normalizePlayerEntry, type RacketPlayerEntry, RACKET_SHORTCUT_ACTIONS, formatScheduledDate, formatScheduledTime, RACKET_DATE_FORMAT_DEFAULT, RACKET_TIME_FORMAT_DEFAULT } from '../lib/racketScoring';
 
 // Label for a player-list widget in a picker dropdown — shows the linked
 // saved team's name (teamDbStore), falling back to a short widget id.
@@ -1585,6 +1585,30 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
             <p className="app-settings-hint" style={{ margin: '4px 0 0' }}>
               Competition/Round/Category/Group/Tier/Venue/Date/Time all auto-fill from the fixture when one's loaded (Next Fixture, Send to Scoreboard) — fill them in by hand here only for a standalone board with nothing linked.
             </p>
+            <Field label="Date Format (sent to vMix)">
+              <input className="field-input" style={{ fontFamily: 'var(--font-mono)' }} value={cfg.dateFormatPattern ?? ''} placeholder={RACKET_DATE_FORMAT_DEFAULT}
+                onChange={e => up({ dateFormatPattern: e.target.value })} />
+              <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', margin: '6px 0' }}>
+                {['YYYY-MM-DD', 'DD/MM/YYYY', 'MM/DD/YYYY', 'D MMM YYYY', 'D MMMM YYYY', 'dddd, D MMMM YYYY', 'dddd', 'MMMM YYYY', 'MMMM'].map(p => (
+                  <button key={p} type="button" className="btn btn--ghost btn--small" style={{ fontSize: 10 }} onClick={() => up({ dateFormatPattern: p })}>{p}</button>
+                ))}
+              </div>
+              <p className="app-settings-hint" style={{ margin: 0 }}>
+                Preview: "{formatScheduledDate(cfg.scheduledDate || '2026-08-20', cfg.dateFormatPattern || RACKET_DATE_FORMAT_DEFAULT)}" — Year: YYYY/YY · Month: MMMM (August) / MMM (Aug) / MM (08) / M (8) · Day: DD/D · Day name: dddd (Monday) / ddd (Mon).
+              </p>
+            </Field>
+            <Field label="Time Format (sent to vMix)">
+              <input className="field-input" style={{ fontFamily: 'var(--font-mono)' }} value={cfg.timeFormatPattern ?? ''} placeholder={RACKET_TIME_FORMAT_DEFAULT}
+                onChange={e => up({ timeFormatPattern: e.target.value })} />
+              <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', margin: '6px 0' }}>
+                {['HH:mm', 'hh:mm A', 'h:mm a'].map(p => (
+                  <button key={p} type="button" className="btn btn--ghost btn--small" style={{ fontSize: 10 }} onClick={() => up({ timeFormatPattern: p })}>{p}</button>
+                ))}
+              </div>
+              <p className="app-settings-hint" style={{ margin: 0 }}>
+                Preview: "{formatScheduledTime(cfg.scheduledTime || '20:30', cfg.timeFormatPattern || RACKET_TIME_FORMAT_DEFAULT)}" — tokens: HH/H (24h), hh/h (12h), mm, A/a (AM/PM).
+              </p>
+            </Field>
           </CollapsibleSection>
 
           <CollapsibleSection label="Scoring Rules">
@@ -2122,7 +2146,7 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
                           </p>
                           {colorField('Game/Set/Match Point Color', t.pointWinColor, '#f1c40f', v => updateRacketTarget(idx, { pointWinColor: v }))}
                           <p className="app-settings-hint" style={{ margin: '4px 0 0' }}>
-                            Colors the live score the instant that side reaches a point that would win the current game/set/match — the same moment the on-screen Game/Set/Match Point badge appears.
+                            Colors the live score the instant that side's score reaches the winning number (15, or 17 once a deadlock raises it for sepaktakraw) and stays that color as the score keeps climbing — back to Default once this game ends or the other side is the one closing in.
                           </p>
                           {colorField('Live Score Default Color', t.pointDefaultColor, '#ffffff', v => updateRacketTarget(idx, { pointDefaultColor: v }))}
                           <p className="app-settings-hint" style={{ margin: '4px 0 0' }}>
