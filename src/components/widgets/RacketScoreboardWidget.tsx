@@ -176,15 +176,19 @@ interface RacketVmixTarget {
    *  vMix title itself happens to default a Text field to. Optional —
    *  unset leaves undecided sets at the title's own default color. */
   setScoreDefaultColor?: string;
-  // 'text' (default) pushes the serving team's NAME to fieldServerName,
-  // same as before this existed. 'image' pushes a SERVER ICON (serverIconA/B
-  // below — an operator-picked image, e.g. a shuttle/ball icon or arrow,
-  // NOT the team's own logo) to fieldServerImage instead, swapping between
-  // the two images as serve changes side. 'trigger' pushes nothing at all —
-  // it instead fires one of 4 action lists (any vMix function, e.g. Overlay
-  // In/Out on a "Team A serving" graphic) the moment the server actually
-  // CHANGES — see the dedicated effect below for exactly when each fires.
-  serverMode?: 'text' | 'image' | 'trigger';
+  // 'none' pushes/fires nothing server-related to vMix at all — for a
+  // target that only wants the OTHER fields (score, team, etc.) and no
+  // serve indicator in this vMix input. 'text' (default) pushes the
+  // serving team's NAME to fieldServerName, same as before this existed.
+  // 'image' pushes a SERVER ICON (serverIconA/B below — an operator-picked
+  // image, e.g. a shuttle/ball icon or arrow, NOT the team's own logo) to
+  // fieldServerImage instead, swapping between the two images as serve
+  // changes side. 'trigger' pushes nothing through THIS field at all — it
+  // instead fires one of 4 action lists (any vMix function, e.g. Overlay
+  // In/Out on a "Team A serving" graphic), or the simpler built-in show/
+  // hide below, the moment the server actually CHANGES — see the dedicated
+  // effect below for exactly when each fires.
+  serverMode?: 'none' | 'text' | 'image' | 'trigger';
   fieldServerName?: string;
   fieldServerImage?: string;
   /** Icon image pushed to fieldServerImage while that side is serving —
@@ -209,6 +213,14 @@ interface RacketVmixTarget {
   serverVisibleTypeA?: 'text' | 'image';
   serverVisibleFieldB?: string;
   serverVisibleTypeB?: 'text' | 'image';
+  /** Only used when serverVisibleTypeA/B is 'image' — an operator-picked
+   *  custom icon pushed to serverVisibleFieldA/B the instant that side
+   *  starts serving, same "dedicated serving icon, not the team logo"
+   *  convention serverIconA/B above already follows for the 'image'
+   *  serverMode. Optional: leave blank to just toggle an EXISTING image
+   *  element's visibility without changing what it shows. */
+  serverVisibleIconA?: string;
+  serverVisibleIconB?: string;
   serverShowActionsA?: ActionItem[];
   serverHideActionsA?: ActionItem[];
   serverShowActionsB?: ActionItem[];
@@ -1061,7 +1073,7 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
           const icon = server === 'A' ? t.serverIconA : t.serverIconB;
           client.setImageField(t.inputKey, t.fieldServerImage, icon || transparentLogoUrl());
         }
-      } else if (t.serverMode !== 'trigger' && t.fieldServerName) {
+      } else if (t.serverMode !== 'trigger' && t.serverMode !== 'none' && t.fieldServerName) {
         client.setTextField(t.inputKey, t.fieldServerName, (server === 'A' ? config.teamAName : config.teamBName) ?? '');
       }
       if (t.fieldSetLabel) {
@@ -1262,15 +1274,20 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
       if ((t.serverTriggerMode ?? 'simple') === 'simple') {
         const visFn = (type: 'text' | 'image' | undefined, on: boolean) =>
           type === 'image' ? (on ? 'SetImageVisibleOn' : 'SetImageVisibleOff') : (on ? 'SetTextVisibleOn' : 'SetTextVisibleOff');
-        const setVisible = (field: string | undefined, type: 'text' | 'image' | undefined, on: boolean) => {
+        // icon (serverVisibleIconA/B) is optional — when set and this side
+        // is becoming visible, pushes a custom icon to the field first (so
+        // a bare show/hide toggle can ALSO carry its own dedicated image,
+        // not just reveal whatever's already sitting in that vMix element).
+        const setVisible = (field: string | undefined, type: 'text' | 'image' | undefined, on: boolean, icon?: string) => {
           if (!field) return;
+          if (on && type === 'image' && icon) client.setImageField(t.inputKey, field, icon);
           client.sendFunction(visFn(type, on), { Input: t.inputKey, SelectedName: field });
         };
         if (server === 'A') {
-          setVisible(t.serverVisibleFieldA, t.serverVisibleTypeA, true);
+          setVisible(t.serverVisibleFieldA, t.serverVisibleTypeA, true, t.serverVisibleIconA);
           setVisible(t.serverVisibleFieldB, t.serverVisibleTypeB, false);
         } else {
-          setVisible(t.serverVisibleFieldB, t.serverVisibleTypeB, true);
+          setVisible(t.serverVisibleFieldB, t.serverVisibleTypeB, true, t.serverVisibleIconB);
           setVisible(t.serverVisibleFieldA, t.serverVisibleTypeA, false);
         }
       } else {

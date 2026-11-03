@@ -1950,12 +1950,12 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
           setScoreTemplateMode?: 'picker' | 'manual';
           setScoreColorFieldA?: string; setScoreColorFieldB?: string;
           setScoreWinColor?: string; setScoreLoseColor?: string; setScoreDefaultColor?: string;
-          serverMode?: 'text' | 'image' | 'trigger';
+          serverMode?: 'none' | 'text' | 'image' | 'trigger';
           fieldServerName?: string; fieldServerImage?: string;
           serverIconA?: string; serverIconB?: string;
           serverTriggerMode?: 'simple' | 'advanced';
-          serverVisibleFieldA?: string; serverVisibleTypeA?: 'text' | 'image';
-          serverVisibleFieldB?: string; serverVisibleTypeB?: 'text' | 'image';
+          serverVisibleFieldA?: string; serverVisibleTypeA?: 'text' | 'image'; serverVisibleIconA?: string;
+          serverVisibleFieldB?: string; serverVisibleTypeB?: 'text' | 'image'; serverVisibleIconB?: string;
           serverShowActionsA?: ActionItem[]; serverHideActionsA?: ActionItem[];
           serverShowActionsB?: ActionItem[]; serverHideActionsB?: ActionItem[];
           playerNameTemplateA?: string; playerJerseyTemplateA?: string; playerPositionTemplateA?: string;
@@ -2151,8 +2151,9 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
                             Applied to the set currently being played and any set not reached yet — every box gets a consistent, app-controlled color even before it's won or lost, instead of whatever color the vMix title itself defaults to.
                           </p>
                           <Field label="Server">
-                            <CardSelect value={t.serverMode ?? 'text'} onChange={v => updateRacketTarget(idx, { serverMode: v })} columns={3}
+                            <CardSelect value={t.serverMode ?? 'text'} onChange={v => updateRacketTarget(idx, { serverMode: v })} columns={4}
                               options={[
+                                { value: 'none', label: 'None', sub: 'Don\'t push/fire anything server-related on this input' },
                                 { value: 'text', label: 'Team Name', sub: 'Push the serving team\'s name as text' },
                                 { value: 'image', label: 'Server Icon', sub: 'Push a custom icon (not the team logo) when that side serves' },
                                 { value: 'trigger', label: 'Trigger', sub: 'Fire a vMix function when serve changes' },
@@ -2187,9 +2188,9 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
                               </Field>
                               {(t.serverTriggerMode ?? 'simple') === 'simple' ? (
                                 ([
-                                  ['A', cfg.teamAName || 'Team A', 'serverVisibleFieldA', 'serverVisibleTypeA'],
-                                  ['B', cfg.teamBName || 'Team B', 'serverVisibleFieldB', 'serverVisibleTypeB'],
-                                ] as const).map(([side, name, fieldKey, typeKey]) => {
+                                  ['A', cfg.teamAName || 'Team A', 'serverVisibleFieldA', 'serverVisibleTypeA', 'serverVisibleIconA'],
+                                  ['B', cfg.teamBName || 'Team B', 'serverVisibleFieldB', 'serverVisibleTypeB', 'serverVisibleIconB'],
+                                ] as const).map(([side, name, fieldKey, typeKey, iconKey]) => {
                                   return (
                                     <CollapsibleSection key={side} label={`${name}'s serving indicator`} defaultOpen={false}>
                                       <Field label="Type">
@@ -2205,6 +2206,14 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
                                           (t[typeKey] ?? 'text') === 'image' ? 'Server.Source' : 'Server.Text',
                                           (t[typeKey] ?? 'text') === 'image' ? (n: string) => n.toLowerCase().endsWith('.source') : undefined)}
                                       </Field>
+                                      {(t[typeKey] ?? 'text') === 'image' && (
+                                        <Field label="Icon (optional)">
+                                          <LogoUrlPicker value={(t[iconKey] as string) ?? ''} onChange={url => updateRacketTarget(idx, { [iconKey]: url } as Partial<RacketVmixTarget>)} placeholder="Server icon URL" />
+                                          <p className="app-settings-hint" style={{ margin: '4px 0 0' }}>
+                                            Pushed to the Field above the instant this side starts serving — leave blank to just toggle visibility of whatever image is already sitting there.
+                                          </p>
+                                        </Field>
+                                      )}
                                     </CollapsibleSection>
                                   );
                                 })

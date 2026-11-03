@@ -195,6 +195,23 @@ interface FieldRecord extends FieldStat {
   params: Record<string, string>;
 }
 
+// Named like a "Set*" field (SetText, SetColor, SetVolume, …) but actually a
+// one-shot VISIBILITY TOGGLE, not a persistent value — no Value param at
+// all, just "do this now". fn()'s own tracked/retry path below exists for
+// fields that hold a durable current value (retrying a failed SetText with
+// its last-known Value is still correct, since that value doesn't change
+// until something explicitly sets it again) — but retrying one of THESE
+// with its old params can easily be WRONG by the time the retry fires 3s
+// later: e.g. a stale failed "show Team B's serving icon" getting silently
+// resent long after serve moved back to Team A, intermittently flashing the
+// wrong side's indicator back on with no corresponding call to undo it.
+// Routed into fn()'s own "one-shot, not tracked" branch below instead (same
+// one Cut/Fade/OverlayIn already use) purely by listing them here, since
+// the branch itself keys off the "Set" name prefix.
+const UNTRACKED_TOGGLE_FNS = new Set([
+  'SetTextVisibleOn', 'SetTextVisibleOff', 'SetImageVisibleOn', 'SetImageVisibleOff',
+]);
+
 export class VmixApiClient {
   private baseUrl: string;
   private host: string;
@@ -549,9 +566,12 @@ export class VmixApiClient {
       return;
     }
 
-    // Tracked delivery for all other Set* commands (SetColor, SetVolume, …).
-    // Register first so the field appears in stats even if the send is pending.
-    if (functionName.startsWith('Set')) {
+    // Tracked delivery for all other Set* commands (SetColor, SetVolume, …)
+    // — EXCEPT the visibility toggles in UNTRACKED_TOGGLE_FNS above, which
+    // fall through to the "one-shot, not tracked" branch further down
+    // despite also starting with "Set". Register first so the field
+    // appears in stats even if the send is pending.
+    if (functionName.startsWith('Set') && !UNTRACKED_TOGGLE_FNS.has(functionName)) {
       const key = this._registerField(functionName, params, url, label);
       if (_isTauri && this._tcpActive) {
         const cmd = this._buildTcpCmd(functionName, params);
@@ -584,7 +604,8 @@ export class VmixApiClient {
       return;
     }
 
-    // Non-Set* one-shot commands (Cut, Fade, OverlayIn, StartRecording, …).
+    // One-shot commands: non-Set* ones (Cut, Fade, OverlayIn, StartRecording,
+    // …) plus the UNTRACKED_TOGGLE_FNS visibility toggles excluded above.
     // Not tracked — these are interactive actions, not persistent state.
     if (_isTauri && this._tcpActive) {
       const cmd = this._buildTcpCmd(functionName, params);
