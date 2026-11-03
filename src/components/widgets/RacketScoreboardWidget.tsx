@@ -1247,42 +1247,39 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
   const lastServerByTarget = useRef<Record<string, RacketSide | undefined>>({});
   useEffect(() => {
     if (!client) return;
-    // Debounced — a quick Undo/Swap Last Point correction, or simply this
-    // widget being rendered in more than one window at once (editor canvas
-    // + a separate CG output window, both watching the same match), can
-    // produce a rapid, transient flip of `server` before it settles on its
-    // real value. Firing a vMix call for every one of those looked like the
-    // visibility trigger toggling on/off "randomly" instead of cleanly
-    // switching once per actual serve change — waiting a beat and only
-    // acting on whatever `server` settled on collapses that into one call.
-    const timer = setTimeout(() => {
-      for (const t of vmixTargets) {
-        if (t.serverMode !== 'trigger') continue;
-        if (lastServerByTarget.current[t.id] === server) continue;
-        lastServerByTarget.current[t.id] = server;
-        if ((t.serverTriggerMode ?? 'simple') === 'simple') {
-          const visFn = (type: 'text' | 'image' | undefined, on: boolean) =>
-            type === 'image' ? (on ? 'SetImageVisibleOn' : 'SetImageVisibleOff') : (on ? 'SetTextVisibleOn' : 'SetTextVisibleOff');
-          const setVisible = (field: string | undefined, type: 'text' | 'image' | undefined, on: boolean) => {
-            if (!field) return;
-            client.sendFunction(visFn(type, on), { Input: t.inputKey, SelectedName: field });
-          };
-          if (server === 'A') {
-            setVisible(t.serverVisibleFieldA, t.serverVisibleTypeA, true);
-            setVisible(t.serverVisibleFieldB, t.serverVisibleTypeB, false);
-          } else {
-            setVisible(t.serverVisibleFieldB, t.serverVisibleTypeB, true);
-            setVisible(t.serverVisibleFieldA, t.serverVisibleTypeA, false);
-          }
+    // Fires immediately — this drives a LIVE serve indicator, so a delay
+    // here is felt on every single point (in "winner serves" mode, server
+    // can flip almost every point). lastServerByTarget below already skips
+    // a redundant re-fire for the SAME value, which is all the protection
+    // a genuine transition needs; this used to wait 200ms on EVERY change
+    // to guard against a multi-window race that was never actually
+    // confirmed to be the real cause of any flicker — not worth paying a
+    // real, continuous lag cost for a speculative, possibly nonexistent one.
+    for (const t of vmixTargets) {
+      if (t.serverMode !== 'trigger') continue;
+      if (lastServerByTarget.current[t.id] === server) continue;
+      lastServerByTarget.current[t.id] = server;
+      if ((t.serverTriggerMode ?? 'simple') === 'simple') {
+        const visFn = (type: 'text' | 'image' | undefined, on: boolean) =>
+          type === 'image' ? (on ? 'SetImageVisibleOn' : 'SetImageVisibleOff') : (on ? 'SetTextVisibleOn' : 'SetTextVisibleOff');
+        const setVisible = (field: string | undefined, type: 'text' | 'image' | undefined, on: boolean) => {
+          if (!field) return;
+          client.sendFunction(visFn(type, on), { Input: t.inputKey, SelectedName: field });
+        };
+        if (server === 'A') {
+          setVisible(t.serverVisibleFieldA, t.serverVisibleTypeA, true);
+          setVisible(t.serverVisibleFieldB, t.serverVisibleTypeB, false);
         } else {
-          const showActions = server === 'A' ? t.serverShowActionsA : t.serverShowActionsB;
-          const hideActions = server === 'A' ? t.serverHideActionsB : t.serverHideActionsA;
-          if (showActions?.length) runActions(showActions);
-          if (hideActions?.length) runActions(hideActions);
+          setVisible(t.serverVisibleFieldB, t.serverVisibleTypeB, true);
+          setVisible(t.serverVisibleFieldA, t.serverVisibleTypeA, false);
         }
+      } else {
+        const showActions = server === 'A' ? t.serverShowActionsA : t.serverShowActionsB;
+        const hideActions = server === 'A' ? t.serverHideActionsB : t.serverHideActionsA;
+        if (showActions?.length) runActions(showActions);
+        if (hideActions?.length) runActions(hideActions);
       }
-    }, 200);
-    return () => clearTimeout(timer);
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [server, config.racketVmixTargets, client]);
 
