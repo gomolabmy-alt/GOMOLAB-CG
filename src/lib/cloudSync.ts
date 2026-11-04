@@ -6,6 +6,7 @@ import { useMatchResultsStore, type SavedMatchResult } from '../stores/matchResu
 import { useCanvasStore } from '../stores/canvasStore';
 import { useTeamDbStore, type SavedTeam } from '../stores/teamDbStore';
 import { useCloudSyncStatus } from '../stores/cloudSyncStatusStore';
+import { useSyncNotificationStore } from '../stores/syncNotificationStore';
 import { resolveImageUrl } from './imageUrl';
 import { computeMatchNumbers } from '../utils/matchNumber';
 import { startRosterAutoSync, stopRosterAutoSync } from './externalRoster';
@@ -852,6 +853,13 @@ async function pullAll() {
   const headers = authHeaders();
   if (!headers) return;
 
+  // The very FIRST pull (empty watermark) brings in this device's entire
+  // backlog — every fixture/result/team any venue has ever synced — which
+  // would otherwise flood the toast with one notification per record on
+  // first launch/sign-in. Only pulls AFTER that (a real watermark already
+  // set) represent genuinely new incremental changes worth surfacing.
+  const isInitialSync = !pullWatermark;
+
   pullInFlight = true;
   useCloudSyncStatus.getState().setPulling(true);
   try {
@@ -920,16 +928,30 @@ async function pullAll() {
       // here forever, since completedAt never had a chance to arrive.
       if (liveIds.has(rm.id) && !(rm.data as any)?.completedAt) continue;
       if (pendingDeletedMatchIds.has(rm.id)) continue;
+      const beforeMatch = useMatchScheduleStore.getState().matches.find(m => m.id === rm.id);
       const incoming: ScheduledMatch = { ...rm.data, id: rm.id, tournamentId: rm.tournamentId, venueLabel: rm.venueLabel };
       useMatchScheduleStore.setState(s => ({ matches: upsertById(s.matches, incoming).sort(sortMatches) }));
       lastPushedMatch.set(rm.id, recordKey(rm.venueLabel, rm.data));
+      // Only a GENUINE change (not this device's own edit echoing back —
+      // that case has before/incoming already equal, since the local store
+      // was updated the instant the edit happened) and never on the
+      // initial backlog sync (isInitialSync above).
+      if (!isInitialSync && JSON.stringify(beforeMatch) !== JSON.stringify(incoming)) {
+        const who = rm.venueLabel ? `${rm.venueLabel} ${beforeMatch ? 'updated' : 'added'}` : (beforeMatch ? 'Updated' : 'New');
+        useSyncNotificationStore.getState().pushNotification(`${who} fixture: ${incoming.teamAName} vs ${incoming.teamBName}`);
+      }
     }
 
     for (const rr of body.results ?? []) {
       if (pendingDeletedResultIds.has(rr.id)) continue;
+      const beforeResult = useMatchResultsStore.getState().results.find(r => r.id === rr.id);
       const incoming: SavedMatchResult = { ...rr.data, id: rr.id, tournamentId: rr.tournamentId, venueLabel: rr.venueLabel };
       useMatchResultsStore.setState(s => ({ results: upsertById(s.results, incoming) }));
       lastPushedResult.set(rr.id, recordKey(rr.venueLabel, rr.data));
+      if (!isInitialSync && JSON.stringify(beforeResult) !== JSON.stringify(incoming)) {
+        const who = rr.venueLabel ? `${rr.venueLabel} ${beforeResult ? 'updated' : 'saved'}` : (beforeResult ? 'Updated' : 'New');
+        useSyncNotificationStore.getState().pushNotification(`${who} result: ${incoming.teamAName} vs ${incoming.teamBName} (${incoming.scoreA}–${incoming.scoreB})`);
+      }
     }
     // A venue still on an older build (pre-deterministic result ids) can
     // still push a fresh duplicate under a random id — collapse it back down
@@ -947,11 +969,16 @@ async function pullAll() {
       // those before pushing). This device may separately reference the
       // same team by name in fixtures of its own — never pushed/pulled
       // alongside this particular team update — so cascade here too.
-      if (before && (before.name !== incoming.name || before.shortName !== incoming.shortName ||
-          before.color !== incoming.color || before.logo !== incoming.logo)) {
+      const identityChanged = before && (before.name !== incoming.name || before.shortName !== incoming.shortName ||
+        before.color !== incoming.color || before.logo !== incoming.logo);
+      if (identityChanged) {
         useMatchScheduleStore.getState().syncTeamIdentity(incoming.tournamentId, before.name, before.category, {
           name: incoming.name, shortName: incoming.shortName, color: incoming.color, logo: incoming.logo,
         });
+      }
+      if (!isInitialSync && (identityChanged || !before)) {
+        const who = rtm.venueLabel ? `${rtm.venueLabel} ${before ? 'updated' : 'added'}` : (before ? 'Updated' : 'New');
+        useSyncNotificationStore.getState().pushNotification(`${who} team: ${incoming.name}`);
       }
     }
 

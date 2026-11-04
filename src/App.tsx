@@ -11,6 +11,7 @@ import { SplashScreen } from './components/SplashScreen';
 import { StatusBar } from './components/StatusBar';
 import { SignInGate } from './components/SignInGate';
 import { UndoToast } from './components/UndoToast';
+import { SyncNotificationToast } from './components/SyncNotificationToast';
 import { useAuthStore } from './stores/authStore';
 import { syncClient } from './lib/syncClient';
 import { startCloudSync } from './lib/cloudSync';
@@ -255,6 +256,7 @@ export function App() {
         <Sidebar />
         <div className="app-main">
           <UndoToast />
+          <SyncNotificationToast />
           {isDesktopHost && assetPreload.total > 0 && assetPreload.loaded < assetPreload.total && (
             <div className="cg-asset-preload-toast" title="Every CG template's own images, sequence frames, and playlist/carousel slides — across Main Canvas and the CG Template Library — are being warmed into cache so nothing flashes in blank or stutters the first time it actually plays on air.">
               <span className="cgp-spinner" />

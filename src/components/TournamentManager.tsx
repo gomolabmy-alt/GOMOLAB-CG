@@ -1265,6 +1265,14 @@ function TeamsPanel({ tournament }: { tournament: Tournament }) {
   // alternative to the bulk "Move Selected" button for a single team.
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dragOverSection, setDragOverSection] = useState<string | null>(null);
+  // Confirm before a destructive team delete — same ConfirmModal pattern
+  // Results/Fixtures already use for their own delete buttons. A plain
+  // inline ConfirmButton doesn't fit this narrow icon column without
+  // overflowing, so this follows the "set a target, render a modal"
+  // pattern instead. Still undoable afterward (deleteTeam itself pushes an
+  // Undo entry), but a confirm up front catches the far more common case
+  // of a stray click before the operator even notices.
+  const [deleteTeamTarget, setDeleteTeamTarget] = useState<SavedTeam | null>(null);
 
   const handleAdd = () => {
     addTeam({ name: 'New Team', color: '#3498db', tournamentId });
@@ -1555,7 +1563,7 @@ function TeamsPanel({ tournament }: { tournament: Tournament }) {
                     <button
                       className="btn btn--ghost btn--small"
                       title="Delete team"
-                      onClick={() => deleteTeam(t.id)}
+                      onClick={() => setDeleteTeamTarget(t)}
                       style={{ color: 'var(--text-muted)' }}
                     >×</button>
                   </div>
@@ -1569,6 +1577,16 @@ function TeamsPanel({ tournament }: { tournament: Tournament }) {
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 12 }}>
         <button className="tm-sidebar-new-btn" onClick={handleAdd}>＋ Add Team</button>
       </div>
+      {deleteTeamTarget && (
+        <ConfirmModal
+          title="Delete team?"
+          message={`This removes "${deleteTeamTarget.name}" from the team database, including its logo, short name, and roster. Fixtures/results that already reference it keep their own saved copy of the name/score, but won't link back to this team anymore.`}
+          confirmLabel="Delete"
+          danger
+          onConfirm={() => { deleteTeam(deleteTeamTarget.id); setDeleteTeamTarget(null); }}
+          onCancel={() => setDeleteTeamTarget(null)}
+        />
+      )}
     </div>
   );
 }
