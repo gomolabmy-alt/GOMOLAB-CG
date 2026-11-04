@@ -143,6 +143,23 @@ interface MatchResultsStore {
    *  too. Returns how many duplicate rows were removed. Safe/cheap to call
    *  on every launch — a no-op when there's nothing to collapse. */
   dedupeBySourceSchedule: () => number;
+  /** Cascades a team's new name/shortName/color/logo onto every SAVED
+   *  RESULT that still references it by its OLD name — same "matched by
+   *  previous name + tournament (+ category, when both sides have one)"
+   *  convention matchScheduleStore's own syncTeamIdentity already uses
+   *  (teamDbStore's updateTeam and cloudSync's pull team-merge loop both
+   *  call this one too, right alongside that one). Deliberately does NOT
+   *  exclude already-saved results the way that one excludes completed
+   *  fixtures — a result only ever exists once a match IS complete, so
+   *  skipping those here would mean this cascade never does anything at
+   *  all; a corrected team name/logo is meant to apply to its past results
+   *  too, not just future fixtures. */
+  syncTeamIdentity: (
+    tournamentId: string | undefined,
+    oldName: string,
+    category: string | undefined,
+    identity: { name?: string; shortName?: string; color?: string; logo?: string },
+  ) => void;
 }
 
 export const useMatchResultsStore = create<MatchResultsStore>()(
@@ -177,6 +194,22 @@ export const useMatchResultsStore = create<MatchResultsStore>()(
 
       updateResult: (id, patch) => set(s => ({
         results: s.results.map(r => r.id === id ? { ...r, ...patch } : r),
+      })),
+
+      syncTeamIdentity: (tournamentId, oldName, category, identity) => set(s => ({
+        results: s.results.map(r => {
+          if (r.tournamentId !== tournamentId) return r;
+          if (category && r.category && r.category !== category) return r;
+          if (r.teamAName !== oldName && r.teamBName !== oldName) return r;
+          let next = r;
+          if (r.teamAName === oldName) next = { ...next,
+            teamAName: identity.name ?? next.teamAName, teamAShortName: identity.shortName,
+            teamAColor: identity.color ?? next.teamAColor, teamALogo: identity.logo };
+          if (r.teamBName === oldName) next = { ...next,
+            teamBName: identity.name ?? next.teamBName, teamBShortName: identity.shortName,
+            teamBColor: identity.color ?? next.teamBColor, teamBLogo: identity.logo };
+          return next;
+        }),
       })),
 
       deleteResult: (id) => {

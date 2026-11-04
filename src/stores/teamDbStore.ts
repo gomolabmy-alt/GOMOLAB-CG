@@ -3,6 +3,7 @@ import { persist, createJSONStorage } from 'zustand/middleware';
 import type { Player, StaffMember } from '../types/tournament';
 import { useUndoStore } from './undoStore';
 import { useMatchScheduleStore } from './matchScheduleStore';
+import { useMatchResultsStore } from './matchResultsStore';
 import { useCanvasStore } from './canvasStore';
 
 /** A named alternate kit (e.g. "Home"/"Away") with its own per-player
@@ -133,14 +134,18 @@ export const useTeamDbStore = create<TeamDbStore>()(
         const before = get().teams.find(t => t.id === id);
         set(s => ({ teams: s.teams.map(t => t.id === id ? { ...t, ...patch } : t) }));
         // Cascade an identity change (name/shortName/color/logo) into this
-        // team's own existing fixtures — see matchScheduleStore's
-        // syncTeamIdentity for why a fixture wouldn't otherwise notice —
-        // and into any scoreboard widget that already has this team loaded
-        // (matched by id, not name, since a scoreboard's copied fields
-        // don't otherwise notice an edit made after it was loaded either).
+        // team's own existing fixtures AND already-saved results — see
+        // matchScheduleStore's/matchResultsStore's own syncTeamIdentity for
+        // why neither would otherwise notice — and into any scoreboard
+        // widget that already has this team loaded (matched by id, not
+        // name, since a scoreboard's copied fields don't otherwise notice
+        // an edit made after it was loaded either).
         if (before && (patch.name !== undefined || patch.shortName !== undefined || patch.color !== undefined || patch.logo !== undefined)) {
           const after = { ...before, ...patch };
           useMatchScheduleStore.getState().syncTeamIdentity(before.tournamentId, before.name, before.category, {
+            name: after.name, shortName: after.shortName, color: after.color, logo: after.logo,
+          });
+          useMatchResultsStore.getState().syncTeamIdentity(before.tournamentId, before.name, before.category, {
             name: after.name, shortName: after.shortName, color: after.color, logo: after.logo,
           });
           useCanvasStore.getState().syncScoreboardTeamIdentity(id, {

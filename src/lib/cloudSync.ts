@@ -829,11 +829,23 @@ export async function computePushDiff(tournamentId: string): Promise<PushDiffIte
 // the whole match). Still coalesces bursts into one push, but guarantees
 // one at least every PUSH_DEBOUNCE_MS under continuous activity.
 let lastPushScheduledAt = 0;
+// A local edit that happens to land exactly while a pull is in flight used
+// to just vanish — schedulePush's own pullInFlight guard below returned
+// with nothing queued, and nothing else re-asked once the pull finished, so
+// that edit got NO automatic push at all unless some unrelated later change
+// happened to call schedulePush again itself. Combined with cloud still
+// having the old value, THIS is what "picks up old data again after a
+// while" actually was: the edit was real, genuinely never pushed, and the
+// NEXT 30s pull (now guarded separately by hasUnpushedLocalEdit above) was
+// the first sign anything was wrong. Flag-and-retry instead of dropping it.
+let pushPendingAfterPull = false;
 function schedulePush() {
   // A pull applying incoming changes triggers these same store subscriptions
   // — skip scheduling a push for those, or every pull would immediately
-  // echo the same data straight back to the server.
-  if (pullInFlight) return;
+  // echo the same data straight back to the server. A GENUINE local edit
+  // that lands in this same narrow window gets deferred instead of
+  // dropped — see pushPendingAfterPull's own doc comment above.
+  if (pullInFlight) { pushPendingAfterPull = true; return; }
   const elapsed = Date.now() - lastPushScheduledAt;
   if (elapsed >= PUSH_DEBOUNCE_MS) {
     if (pushDebounceTimer) { clearTimeout(pushDebounceTimer); pushDebounceTimer = null; }
@@ -892,6 +904,30 @@ async function pullAll() {
     const pendingDeletedMatchIds = new Set(useMatchScheduleStore.getState().pendingDeletedIds);
     const pendingDeletedResultIds = new Set(useMatchResultsStore.getState().pendingDeletedIds);
     const pendingDeletedTeamIds = new Set(useTeamDbStore.getState().pendingDeletedIds);
+    // This device's own venue, same value buildPushPayload tags its own
+    // rows with — needed below to reconstruct what "already confirmed
+    // pushed" looks like for a LOCAL record.
+    const ownVenueLabel = useAppSettings.getState().canvasVenue || undefined;
+    // A record this device has EDITED LOCALLY but not yet successfully
+    // pushed (still inside the 2.5s push debounce, mid-retry after a
+    // failed attempt, or simply unlucky timing with this very pull) must
+    // never get silently reverted by this pull bringing back the cloud's
+    // still-stale copy — that was the actual cause of "it picks up old
+    // data again a while later": the edit was real and briefly correct
+    // on-screen, then the NEXT 30s pull tick clobbered it back to
+    // whatever the cloud last had before the push caught up. Detected by
+    // comparing the CURRENT local record against lastPushed*'s own
+    // snapshot of what was last CONFIRMED to have reached the cloud (same
+    // map pushAll's own incremental diff already reads) — a mismatch
+    // means there's a local edit in flight that this pull must not
+    // overwrite; the next push cycle (or this device's own retry) will
+    // send it and reconcile naturally once lastPushed* catches up.
+    const hasUnpushedLocalEdit = (
+      lastPushed: Map<string, string>, id: string, local: unknown,
+    ): boolean => {
+      const confirmed = lastPushed.get(id);
+      return confirmed !== undefined && confirmed !== recordKey(ownVenueLabel, local);
+    };
 
     for (const rt of body.tournaments ?? []) {
       const local = useTournamentStore.getState().tournaments.find(t => t.id === rt.id);
@@ -929,6 +965,7 @@ async function pullAll() {
       if (liveIds.has(rm.id) && !(rm.data as any)?.completedAt) continue;
       if (pendingDeletedMatchIds.has(rm.id)) continue;
       const beforeMatch = useMatchScheduleStore.getState().matches.find(m => m.id === rm.id);
+      if (beforeMatch && hasUnpushedLocalEdit(lastPushedMatch, rm.id, beforeMatch)) continue;
       const incoming: ScheduledMatch = { ...rm.data, id: rm.id, tournamentId: rm.tournamentId, venueLabel: rm.venueLabel };
       useMatchScheduleStore.setState(s => ({ matches: upsertById(s.matches, incoming).sort(sortMatches) }));
       lastPushedMatch.set(rm.id, recordKey(rm.venueLabel, rm.data));
@@ -945,6 +982,7 @@ async function pullAll() {
     for (const rr of body.results ?? []) {
       if (pendingDeletedResultIds.has(rr.id)) continue;
       const beforeResult = useMatchResultsStore.getState().results.find(r => r.id === rr.id);
+      if (beforeResult && hasUnpushedLocalEdit(lastPushedResult, rr.id, beforeResult)) continue;
       const incoming: SavedMatchResult = { ...rr.data, id: rr.id, tournamentId: rr.tournamentId, venueLabel: rr.venueLabel };
       useMatchResultsStore.setState(s => ({ results: upsertById(s.results, incoming) }));
       lastPushedResult.set(rr.id, recordKey(rr.venueLabel, rr.data));
@@ -961,18 +999,23 @@ async function pullAll() {
     for (const rtm of body.teams ?? []) {
       if (pendingDeletedTeamIds.has(rtm.id)) continue;
       const before = useTeamDbStore.getState().teams.find(t => t.id === rtm.id);
+      if (before && hasUnpushedLocalEdit(lastPushedTeam, rtm.id, before)) continue;
       const incoming: SavedTeam = { ...rtm.data, id: rtm.id, tournamentId: rtm.tournamentId };
       useTeamDbStore.setState(s => ({ teams: upsertById(s.teams, incoming) }));
       lastPushedTeam.set(rtm.id, recordKey(rtm.venueLabel, rtm.data));
-      // A team edited on ANOTHER venue only carries its OWN fixtures'
-      // teamALogo/etc. correctly (that venue's local cascade already fixed
-      // those before pushing). This device may separately reference the
-      // same team by name in fixtures of its own — never pushed/pulled
-      // alongside this particular team update — so cascade here too.
+      // A team edited on ANOTHER venue only carries its OWN fixtures'/
+      // results' teamALogo/etc. correctly (that venue's local cascade
+      // already fixed those before pushing). This device may separately
+      // reference the same team by name in fixtures/results of its own —
+      // never pushed/pulled alongside this particular team update — so
+      // cascade here too.
       const identityChanged = before && (before.name !== incoming.name || before.shortName !== incoming.shortName ||
         before.color !== incoming.color || before.logo !== incoming.logo);
       if (identityChanged) {
         useMatchScheduleStore.getState().syncTeamIdentity(incoming.tournamentId, before.name, before.category, {
+          name: incoming.name, shortName: incoming.shortName, color: incoming.color, logo: incoming.logo,
+        });
+        useMatchResultsStore.getState().syncTeamIdentity(incoming.tournamentId, before.name, before.category, {
           name: incoming.name, shortName: incoming.shortName, color: incoming.color, logo: incoming.logo,
         });
       }
@@ -988,6 +1031,17 @@ async function pullAll() {
   } finally {
     pullInFlight = false;
     useCloudSyncStatus.getState().setPulling(false);
+    // See pushPendingAfterPull's own doc comment — fires AFTER pullInFlight
+    // is already false, so this genuinely reaches pushAll this time rather
+    // than deferring again. Harmless when nothing actually needs sending:
+    // pushAll's own diff against lastPushed* (just updated above for every
+    // record THIS pull applied) makes this a no-op network-request-free
+    // call unless a hasUnpushedLocalEdit-protected record above left
+    // something real still waiting.
+    if (pushPendingAfterPull) {
+      pushPendingAfterPull = false;
+      schedulePush();
+    }
   }
 }
 
@@ -999,20 +1053,25 @@ async function pullAll() {
  *  signing out later stops new pushes/pulls without needing to call
  *  stopCloudSync()). */
 // One-time local self-heal, run at launch (see startCloudSync below): a
-// fixture only ever snapshots a team's name/shortName/color/logo, and
-// updateTeam/pullAll's own cascades (syncTeamIdentity) only fire on the NEXT
-// change from here on — they can't retroactively fix a fixture that already
-// went stale before those cascades existed, or from any other bulk path
-// (e.g. an older pulled team update, from before this cascade shipped, that
-// never got followed by a further edit to that same team since). Since this
-// operates purely on local state (no network), it runs unconditionally —
-// re-applying a team's already-current identity to its own fixtures is a
+// fixture or saved result only ever SNAPSHOTS a team's name/shortName/
+// color/logo, and updateTeam/pullAll's own cascades (syncTeamIdentity) only
+// fire on the NEXT change from here on — they can't retroactively fix one
+// that already went stale before those cascades existed (or before results
+// got their own cascade at all), or from any other bulk path (e.g. an older
+// pulled team update, from before this cascade shipped, that never got
+// followed by a further edit to that same team since). Since this operates
+// purely on local state (no network), it runs unconditionally — re-applying
+// a team's already-current identity to its own fixtures/results is a
 // harmless no-op wherever nothing was actually stale.
-function reconcileFixtureTeamIdentities() {
+function reconcileTeamIdentities() {
   const { teams } = useTeamDbStore.getState();
-  const { syncTeamIdentity } = useMatchScheduleStore.getState();
+  const syncFixtureIdentity = useMatchScheduleStore.getState().syncTeamIdentity;
+  const syncResultIdentity = useMatchResultsStore.getState().syncTeamIdentity;
   for (const t of teams) {
-    syncTeamIdentity(t.tournamentId, t.name, t.category, {
+    syncFixtureIdentity(t.tournamentId, t.name, t.category, {
+      name: t.name, shortName: t.shortName, color: t.color, logo: t.logo,
+    });
+    syncResultIdentity(t.tournamentId, t.name, t.category, {
       name: t.name, shortName: t.shortName, color: t.color, logo: t.logo,
     });
   }
@@ -1040,7 +1099,7 @@ export function startCloudSync() {
   if (started) return;
   started = true;
 
-  reconcileFixtureTeamIdentities();
+  reconcileTeamIdentities();
   reconcileScoreboardState();
   // Independent of GOMOLAB's own cloud sync (cloudSyncEnabled) entirely —
   // this refreshes rosters from a THIRD-PARTY public API per Tournament

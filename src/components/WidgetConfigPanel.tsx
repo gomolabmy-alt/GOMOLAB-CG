@@ -2246,9 +2246,65 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
           </CollapsibleSection>
         );
 
+        // Team Logos Only — a deliberately separate, minimal target list
+        // from the full vMix Output section above: Input + the two logo
+        // fields, nothing else. For a logo feed to a SEPARATE vMix input
+        // (a sponsor board, a team-badges bug, anything that only needs the
+        // badges) without wading through every score/server/color field
+        // that target doesn't actually use — and for pushing logos to
+        // MULTIPLE such inputs at once, which the main section's single
+        // fieldTeamALogo/B pair per target can't do on its own.
+        type RacketLogoTarget = { id: string; inputKey: string; inputTitle?: string; fieldTeamALogo?: string; fieldTeamBLogo?: string };
+        const logoTargets: RacketLogoTarget[] = cfg.racketLogoTargets ?? [];
+        const setLogoTargets = (next: RacketLogoTarget[]) => up({ racketLogoTargets: next });
+        const updateLogoTarget = (idx: number, patch: Partial<RacketLogoTarget>) =>
+          setLogoTargets(logoTargets.map((t, i) => i === idx ? { ...t, ...patch } : t));
+        const logoVmixSection = (
+          <CollapsibleSection label="Team Logos Only" defaultOpen={false}>
+            <p className="app-settings-hint" style={{ margin: '0 0 8px' }}>
+              Push just the team logos to a separate vMix input — nothing else from this match. Use this instead of (or alongside) the full vMix Output section above when a target only ever needs the badges.
+            </p>
+            {logoTargets.map((t, idx) => {
+              const collapseKey = `racket-logo-${t.id}`;
+              const isCollapsed = vilCollapsed[collapseKey] ?? true;
+              return (
+                <div key={t.id} className="vil-cfg-block">
+                  <div className="vil-cfg-header">
+                    <button className="btn btn--ghost btn--small tf-collapse-btn"
+                      onClick={() => setVilCollapsed(p => ({ ...p, [collapseKey]: !p[collapseKey] }))}
+                      title={isCollapsed ? 'Expand' : 'Collapse'}>
+                      {isCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+                    </button>
+                    <span className="vil-cfg-label">{t.inputTitle || t.inputKey || `Logo Target ${idx + 1}`}</span>
+                    <button className="btn btn--ghost btn--small" onClick={() => setLogoTargets(logoTargets.filter((_, i) => i !== idx))}>×</button>
+                  </div>
+                  {!isCollapsed && (
+                    <>
+                      {renderInputPicker('Input', t.inputKey, t.inputTitle,
+                        (key, title) => updateLogoTarget(idx, { inputKey: key, inputTitle: title }))}
+                      {t.inputKey && (
+                        <>
+                          <Field label={`${cfg.teamAName || 'Team A'} Logo Field`}>
+                            {renderFieldPicker(t.inputKey, t.fieldTeamALogo ?? '', v => updateLogoTarget(idx, { fieldTeamALogo: v }), 'TeamALogo.Source', (n: string) => n.toLowerCase().endsWith('.source'))}
+                          </Field>
+                          <Field label={`${cfg.teamBName || 'Team B'} Logo Field`}>
+                            {renderFieldPicker(t.inputKey, t.fieldTeamBLogo ?? '', v => updateLogoTarget(idx, { fieldTeamBLogo: v }), 'TeamBLogo.Source', (n: string) => n.toLowerCase().endsWith('.source'))}
+                          </Field>
+                        </>
+                      )}
+                    </>
+                  )}
+                </div>
+              );
+            })}
+            <button className="btn btn--ghost btn--small" onClick={() => setLogoTargets([...logoTargets, { id: crypto.randomUUID(), inputKey: '' }])}>+ Add Logo Target</button>
+          </CollapsibleSection>
+        );
+
         const vmix = (
           <>
           {racketVmixSection}
+          {logoVmixSection}
           <CollapsibleSection label="Set Result Triggers" defaultOpen={false}>
             <p className="app-settings-hint" style={{ margin: '0 0 8px' }}>
               Fires the instant a set is decided — one action list per team per outcome, so each can drive its own vMix function (change a color, set text/image, overlay in/out, or anything else — same picker as a Quick Button).

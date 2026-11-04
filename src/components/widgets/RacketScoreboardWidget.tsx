@@ -1243,6 +1243,23 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
     config.dateFormatPattern, config.timeFormatPattern,
   ]);
 
+  // Team Logos Only — a deliberately SEPARATE effect from the main push
+  // above (not folded into that one's own `for (const t of vmixTargets)`
+  // loop), since it has to keep working even when vmixTargets is EMPTY —
+  // the whole point of WidgetConfigPanel's own "Team Logos Only" section is
+  // letting an operator who doesn't want a full vMix Output target at all
+  // still push just the badges to a separate input (a sponsor board, a
+  // team-badges bug, anything that only needs the logos).
+  useEffect(() => {
+    if (!client) return;
+    for (const lt of (config.racketLogoTargets as { inputKey: string; fieldTeamALogo?: string; fieldTeamBLogo?: string }[] | undefined) ?? []) {
+      if (!lt.inputKey) continue;
+      if (lt.fieldTeamALogo) client.setImageField(lt.inputKey, lt.fieldTeamALogo, config.teamALogo || transparentLogoUrl());
+      if (lt.fieldTeamBLogo) client.setImageField(lt.inputKey, lt.fieldTeamBLogo, config.teamBLogo || transparentLogoUrl());
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config.racketLogoTargets, config.teamALogo, config.teamBLogo, client]);
+
   // ── Server triggers — any target with serverMode 'trigger' fires the
   // instant the server actually CHANGES to/from a side, rather than pushing
   // a field. 'simple' (default, serverTriggerMode) just calls vMix's own

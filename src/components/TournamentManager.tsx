@@ -1273,6 +1273,30 @@ function TeamsPanel({ tournament }: { tournament: Tournament }) {
   // Undo entry), but a confirm up front catches the far more common case
   // of a stray click before the operator even notices.
   const [deleteTeamTarget, setDeleteTeamTarget] = useState<SavedTeam | null>(null);
+  // Explicit "push team changes now" — team edits already sync automatically
+  // (useTeamDbStore is subscribed in startCloudSync, throttled a couple
+  // seconds behind every edit), but that happens silently in the
+  // background. This gives an immediate, visible confirmation right here
+  // in the Teams tab that name/short name/logo/color changes have actually
+  // reached the cloud (so every other venue's running app picks them up on
+  // its own next pull) instead of trusting an invisible timer — same
+  // pushTournamentNow the Cloud Sync tab's own "Push Now" button already
+  // uses, just reachable without leaving Teams.
+  const [teamsPushState, setTeamsPushState] = useState<'idle' | 'pushing' | 'done' | 'error'>('idle');
+  const [teamsPushError, setTeamsPushError] = useState('');
+  const pushTeamsNow = async () => {
+    setTeamsPushState('pushing');
+    setTeamsPushError('');
+    const result = await pushTournamentNow(tournamentId);
+    if (result.ok) {
+      setTeamsPushState('done');
+      setTimeout(() => setTeamsPushState('idle'), 1500);
+    } else {
+      setTeamsPushState('error');
+      setTeamsPushError(result.error ?? 'Push failed');
+      setTimeout(() => setTeamsPushState('idle'), 3000);
+    }
+  };
 
   const handleAdd = () => {
     addTeam({ name: 'New Team', color: '#3498db', tournamentId });
@@ -1438,6 +1462,18 @@ function TeamsPanel({ tournament }: { tournament: Tournament }) {
             onClick={() => setCategoryEditMode(v => !v)}
           >{categoryEditMode ? <><Unlock size={14} strokeWidth={2} /> Editing</> : <><Pencil size={14} strokeWidth={2} /> Edit</>}</button>
         )}
+        <button
+          className="tm-io-btn"
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginLeft: 'auto' }}
+          disabled={teamsPushState === 'pushing'}
+          title={teamsPushState === 'error' ? teamsPushError : 'Push every team\'s current name/short name/logo/color to the cloud right now, so other venues\' running apps pick it up without waiting for the next automatic sync'}
+          onClick={pushTeamsNow}
+        >
+          {teamsPushState === 'pushing' ? <><Hourglass size={14} strokeWidth={2} /> Pushing…</>
+            : teamsPushState === 'done' ? <><Check size={14} strokeWidth={2} /> Pushed</>
+            : teamsPushState === 'error' ? <><AlertTriangle size={14} strokeWidth={2} /> Push Failed</>
+            : <><Cloud size={14} strokeWidth={2} /> Push Teams to Database</>}
+        </button>
       </div>
 
       {categories.length > 0 && selectedIds.size > 0 && (
@@ -4816,6 +4852,24 @@ function ResultsPanel({ tournament }: { tournament: Tournament }) {
               <span className="tm-sched-time-tz">End Time</span>
             </div>
 
+            {editMode && (
+              <button
+                className="tm-io-btn"
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 4, fontWeight: 700,
+                  color: resultsSyncState === 'done' ? '#2ecc71' : resultsSyncState === 'error' ? '#e74c3c' : undefined,
+                  borderColor: resultsSyncState === 'done' ? '#2ecc71' : undefined,
+                }}
+                disabled={resultsSyncState === 'busy'}
+                title="Push this result's current score/cards/lineup to the cloud right now, so other venues' running apps pick it up without waiting for the next automatic sync"
+                onClick={() => runResultsSync('push')}
+              >
+                {resultsSyncState === 'busy' ? <><Hourglass size={14} strokeWidth={2} /> Pushing…</>
+                  : resultsSyncState === 'done' ? <><Check size={14} strokeWidth={2} /> Pushed!</>
+                  : resultsSyncState === 'error' ? <><AlertTriangle size={14} strokeWidth={2} /> Failed</>
+                  : <><Cloud size={14} strokeWidth={2} /> Push</>}
+              </button>
+            )}
             {editMode && <button className="tm-sched-del" title="Delete result" onClick={() => setDeleteResultTarget(r)}>×</button>}
           </div>
           {expandedIds.has(r.id) && <ResultDetail r={r} editMode={editMode} onUpdate={patch => updateResult(r.id, patch)} periodsTotal={periodsTotal} sport={tournament.sport} />}
