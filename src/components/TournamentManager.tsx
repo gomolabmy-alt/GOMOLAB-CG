@@ -4735,9 +4735,16 @@ function ResultsPanel({ tournament }: { tournament: Tournament }) {
   // automatic sync: touches nothing but this tournament's saved results.
   const [resultsSyncState, setResultsSyncState] = useState<'idle' | 'busy' | 'done' | 'error'>('idle');
   const [resultsSyncMsg, setResultsSyncMsg] = useState('');
-  const runResultsSync = async (kind: 'pull' | 'push') => {
+  // Which row's own Push button is mid-flight — 'all' for the tournament-
+  // wide Sync Results button, a specific result id for one row's own push,
+  // or null when idle. Keeps a single row's push from visually lighting up
+  // every OTHER row's button too (resultsSyncState above is shared state,
+  // same request either way) — each button only reacts to ITS OWN id here.
+  const [activePushResultId, setActivePushResultId] = useState<string | 'all' | null>(null);
+  const runResultsSync = async (kind: 'pull' | 'push', resultId?: string) => {
     setResultsSyncState('busy');
-    const result = kind === 'pull' ? await pullResultsOnly(tournament.id) : await pushResultsOnly(tournament.id);
+    setActivePushResultId(resultId ?? 'all');
+    const result = kind === 'pull' ? await pullResultsOnly(tournament.id) : await pushResultsOnly(tournament.id, resultId);
     if (result.ok) {
       setResultsSyncState('done');
       setResultsSyncMsg(kind === 'pull' ? `Pulled ${result.count ?? 0}` : `Pushed ${result.count ?? 0}`);
@@ -4745,7 +4752,7 @@ function ResultsPanel({ tournament }: { tournament: Tournament }) {
       setResultsSyncState('error');
       setResultsSyncMsg(result.error ?? 'Failed');
     }
-    setTimeout(() => setResultsSyncState('idle'), 2500);
+    setTimeout(() => { setResultsSyncState('idle'); setActivePushResultId(null); }, 2500);
   };
 
   return (
@@ -4852,24 +4859,32 @@ function ResultsPanel({ tournament }: { tournament: Tournament }) {
               <span className="tm-sched-time-tz">End Time</span>
             </div>
 
-            {editMode && (
-              <button
-                className="tm-io-btn"
-                style={{
-                  display: 'inline-flex', alignItems: 'center', gap: 4, fontWeight: 700,
-                  color: resultsSyncState === 'done' ? '#2ecc71' : resultsSyncState === 'error' ? '#e74c3c' : undefined,
-                  borderColor: resultsSyncState === 'done' ? '#2ecc71' : undefined,
-                }}
-                disabled={resultsSyncState === 'busy'}
-                title="Push this result's current score/cards/lineup to the cloud right now, so other venues' running apps pick it up without waiting for the next automatic sync"
-                onClick={() => runResultsSync('push')}
-              >
-                {resultsSyncState === 'busy' ? <><Hourglass size={14} strokeWidth={2} /> Pushing…</>
-                  : resultsSyncState === 'done' ? <><Check size={14} strokeWidth={2} /> Pushed!</>
-                  : resultsSyncState === 'error' ? <><AlertTriangle size={14} strokeWidth={2} /> Failed</>
-                  : <><Cloud size={14} strokeWidth={2} /> Push</>}
-              </button>
-            )}
+            {editMode && (() => {
+              // Only THIS row reacts to the shared resultsSyncState — a
+              // push triggered by a DIFFERENT row (or the tournament-wide
+              // Push Results button above) leaves this one showing its
+              // plain idle "Push" state, since activePushResultId won't
+              // match this row's own id either way.
+              const rowState = activePushResultId === r.id ? resultsSyncState : 'idle';
+              return (
+                <button
+                  className="tm-io-btn"
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 4, fontWeight: 700,
+                    color: rowState === 'done' ? '#2ecc71' : rowState === 'error' ? '#e74c3c' : undefined,
+                    borderColor: rowState === 'done' ? '#2ecc71' : undefined,
+                  }}
+                  disabled={resultsSyncState === 'busy'}
+                  title="Push ONLY this result's current score/cards/lineup to the cloud right now, so other venues' running apps pick it up without waiting for the next automatic sync — every other saved result is left untouched"
+                  onClick={() => runResultsSync('push', r.id)}
+                >
+                  {rowState === 'busy' ? <><Hourglass size={14} strokeWidth={2} /> Pushing…</>
+                    : rowState === 'done' ? <><Check size={14} strokeWidth={2} /> Pushed!</>
+                    : rowState === 'error' ? <><AlertTriangle size={14} strokeWidth={2} /> Failed</>
+                    : <><Cloud size={14} strokeWidth={2} /> Push</>}
+                </button>
+              );
+            })()}
             {editMode && <button className="tm-sched-del" title="Delete result" onClick={() => setDeleteResultTarget(r)}>×</button>}
           </div>
           {expandedIds.has(r.id) && <ResultDetail r={r} editMode={editMode} onUpdate={patch => updateResult(r.id, patch)} periodsTotal={periodsTotal} sport={tournament.sport} />}

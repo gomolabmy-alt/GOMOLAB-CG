@@ -559,8 +559,14 @@ export async function pushTournamentNow(tournamentId: string): Promise<{ ok: boo
  *  (with their own logo dedup/match-number labelling), leaving matches,
  *  teams and tournament settings completely untouched either locally or on
  *  the cloud. For when an operator wants results specifically confirmed in
- *  sync without waiting for (or triggering) a full tournament push. */
-export async function pushResultsOnly(tournamentId: string): Promise<{ ok: boolean; error?: string; count?: number }> {
+ *  sync without waiting for (or triggering) a full tournament push.
+ *  `resultId`, when given, scopes this to that ONE result only (the
+ *  per-row "Push" button in the Results tab) — every other saved result in
+ *  the tournament is left untouched by this call, not just unaffected on
+ *  the cloud but never even included in the request. Omit it for the
+ *  tournament-wide "Sync Results" action, unchanged from before this
+ *  parameter existed. */
+export async function pushResultsOnly(tournamentId: string, resultId?: string): Promise<{ ok: boolean; error?: string; count?: number }> {
   const headers = authHeaders();
   if (!headers) return { ok: false, error: 'Not signed in' };
   const tournament = useTournamentStore.getState().tournaments.find(t => t.id === tournamentId);
@@ -570,7 +576,7 @@ export async function pushResultsOnly(tournamentId: string): Promise<{ ok: boole
   useCloudSyncStatus.getState().setPushing(true);
   try {
     const allMatches = useMatchScheduleStore.getState().matches.filter(m => m.tournamentId === tournamentId);
-    const allResults = useMatchResultsStore.getState().results.filter(r => r.tournamentId === tournamentId);
+    const allResults = useMatchResultsStore.getState().results.filter(r => r.tournamentId === tournamentId && (!resultId || r.id === resultId));
     const matchNumbers = new Map(computeMatchNumbers(allMatches, tournament.matchNumberPrefix, tournament.venuePrefixes));
 
     const pendingLogos = new Map<string, PendingLogo>();
