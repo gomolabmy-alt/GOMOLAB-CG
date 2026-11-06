@@ -112,6 +112,18 @@ interface RacketVmixTarget {
    *  indicator icon, not the team badge. */
   fieldTeamALogo?: string;
   fieldTeamBLogo?: string;
+  /** Team staff — Manager/Head Coach name + position (role/title, e.g.
+   *  "Manager" or a freely-typed title), one field each per side, no {n}
+   *  templating needed since each is a single value (config.managerNameA
+   *  etc. below). */
+  fieldManagerNameA?: string;
+  fieldManagerPositionA?: string;
+  fieldManagerNameB?: string;
+  fieldManagerPositionB?: string;
+  fieldHeadCoachNameA?: string;
+  fieldHeadCoachPositionA?: string;
+  fieldHeadCoachNameB?: string;
+  fieldHeadCoachPositionB?: string;
   fieldGamesWonA?: string;
   fieldGamesWonB?: string;
   fieldSetLabel?: string;
@@ -242,6 +254,50 @@ interface RacketVmixTarget {
   /** UI-only (WidgetConfigPanel.tsx's Player tab) — picker vs manual entry
    *  for the 6 templates above, same convention setScoreTemplateMode uses. */
   playerTemplateMode?: 'picker' | 'manual';
+  /** Subs bench push — one Name field per side, same {n}-template
+   *  convention as playerNameTemplateA/B above (`{n}` is the 1-based SUB
+   *  slot number, e.g. "SubA{n}.Text" → "SubA1.Text" for the first sub on
+   *  the bench). Reserves a slot for every one of config.maxSubs's slots
+   *  regardless of how many subs are actually listed — same fixed-size-
+   *  template reasoning. Subs are name-only (no jersey/position) in this
+   *  widget's own data model, so there's nothing else to push per slot. */
+  subNameTemplateA?: string;
+  subNameTemplateB?: string;
+  /** Fires when a side reaches a point that would win the game/set/match —
+   *  same pointSignificanceFor detection (and same "Game/Set Point"/"Match
+   *  Point" labeling) the on-screen badge already uses — and fires the OFF
+   *  side the instant it no longer does (point lost, next game started,
+   *  the OTHER side is now the one closing in, etc.). Independent per side
+   *  (unlike serverMode's A-xor-B shape) — both, one, or neither can be
+   *  "on" at once. Match Point ('match' level) and Set/Game Point ('game'
+   *  or 'set' level) are DELIBERATELY two fully separate trigger slots
+   *  below, not one combined signal — a match point is a much bigger deal
+   *  than a plain set/game point, and operators want it on its own input/
+   *  field or its own action list (e.g. a bigger graphic, a different
+   *  color, a sting) rather than forced to share the set-point one. Same
+   *  'off'/'simple'/'advanced' shape as serverMode/serverTriggerMode:
+   *  'simple' calls vMix's own SetTextVisibleOn/Off or
+   *  SetImageVisibleOn/Off directly per side; 'advanced' fires one of 4
+   *  full ActionListEditor action lists for anything a plain show/hide
+   *  can't do — a color change, an overlay, any vMix or App function. */
+  setPointTriggerMode?: 'off' | 'simple' | 'advanced';
+  setPointVisibleFieldA?: string;
+  setPointVisibleTypeA?: 'text' | 'image';
+  setPointVisibleFieldB?: string;
+  setPointVisibleTypeB?: 'text' | 'image';
+  setPointOnActionsA?: ActionItem[];
+  setPointOffActionsA?: ActionItem[];
+  setPointOnActionsB?: ActionItem[];
+  setPointOffActionsB?: ActionItem[];
+  matchPointTriggerMode?: 'off' | 'simple' | 'advanced';
+  matchPointVisibleFieldA?: string;
+  matchPointVisibleTypeA?: 'text' | 'image';
+  matchPointVisibleFieldB?: string;
+  matchPointVisibleTypeB?: 'text' | 'image';
+  matchPointOnActionsA?: ActionItem[];
+  matchPointOffActionsA?: ActionItem[];
+  matchPointOnActionsB?: ActionItem[];
+  matchPointOffActionsB?: ActionItem[];
 }
 
 // Racket/net-sport (badminton, table tennis, tennis, sepaktakraw) match
@@ -772,6 +828,8 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
       teamAId: undefined, teamAName: '', teamAShortName: '', teamALogo: '', teamAColor: undefined,
       teamBId: undefined, teamBName: '', teamBShortName: '', teamBLogo: '', teamBColor: undefined,
       startersA: [], startersB: [], subsA: [], subsB: [],
+      managerNameA: '', managerPositionA: '', managerNameB: '', managerPositionB: '',
+      headCoachNameA: '', headCoachPositionA: '', headCoachNameB: '', headCoachPositionB: '',
     });
   };
 
@@ -1066,6 +1124,14 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
       if (t.fieldTeamBShort) client.setTextField(t.inputKey, t.fieldTeamBShort, config.teamBShortName ?? '');
       if (t.fieldTeamALogo) client.setImageField(t.inputKey, t.fieldTeamALogo, config.teamALogo || transparentLogoUrl());
       if (t.fieldTeamBLogo) client.setImageField(t.inputKey, t.fieldTeamBLogo, config.teamBLogo || transparentLogoUrl());
+      if (t.fieldManagerNameA) client.setTextField(t.inputKey, t.fieldManagerNameA, config.managerNameA ?? '');
+      if (t.fieldManagerPositionA) client.setTextField(t.inputKey, t.fieldManagerPositionA, config.managerPositionA ?? '');
+      if (t.fieldManagerNameB) client.setTextField(t.inputKey, t.fieldManagerNameB, config.managerNameB ?? '');
+      if (t.fieldManagerPositionB) client.setTextField(t.inputKey, t.fieldManagerPositionB, config.managerPositionB ?? '');
+      if (t.fieldHeadCoachNameA) client.setTextField(t.inputKey, t.fieldHeadCoachNameA, config.headCoachNameA ?? '');
+      if (t.fieldHeadCoachPositionA) client.setTextField(t.inputKey, t.fieldHeadCoachPositionA, config.headCoachPositionA ?? '');
+      if (t.fieldHeadCoachNameB) client.setTextField(t.inputKey, t.fieldHeadCoachNameB, config.headCoachNameB ?? '');
+      if (t.fieldHeadCoachPositionB) client.setTextField(t.inputKey, t.fieldHeadCoachPositionB, config.headCoachPositionB ?? '');
       if (t.fieldGamesWonA) client.setTextField(t.inputKey, t.fieldGamesWonA, String(gamesWonA));
       if (t.fieldGamesWonB) client.setTextField(t.inputKey, t.fieldGamesWonB, String(gamesWonB));
       if (t.serverMode === 'image') {
@@ -1230,15 +1296,48 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
           }
         }
       }
+      // Subs bench — one Name per sub slot (1-based), same template + stale-
+      // clear approach as starters above, just reserving config.maxSubs
+      // slots (not playerCount, and not however many subs are actually
+      // listed — the Subs list itself stays free-length, only the vMix push
+      // is capped to a fixed slot count a GT template can actually bind to).
+      const subTemplates = [t.subNameTemplateA, t.subNameTemplateB].filter((s): s is string => !!s);
+      if (subTemplates.length) {
+        const maxSubs = Math.max(config.maxSubs ?? 5, 1);
+        const subsA = subsFor('A');
+        const subsB = subsFor('B');
+        for (let i = 0; i < maxSubs; i++) {
+          if (t.subNameTemplateA) client.setTextField(t.inputKey, expandSetTemplate(t.subNameTemplateA, i + 1), subsA[i] ?? '');
+          if (t.subNameTemplateB) client.setTextField(t.inputKey, expandSetTemplate(t.subNameTemplateB, i + 1), subsB[i] ?? '');
+        }
+        const subOwnFieldNames = new Set([
+          t.fieldScoreA, t.fieldScoreB, t.fieldTeamA, t.fieldTeamB, t.fieldTeamAShort, t.fieldTeamBShort,
+          t.fieldGamesWonA, t.fieldGamesWonB, t.fieldSetLabel, t.fieldServerName,
+        ].filter((n): n is string => !!n));
+        const subVmixInput = vmixState?.inputs?.find(inp => inp.key === t.inputKey);
+        if (subVmixInput) {
+          for (const template of subTemplates) {
+            const re = setTemplateStaleRegex(template);
+            for (const field of subVmixInput.textFields) {
+              if (subOwnFieldNames.has(field.name)) continue;
+              const m = re.exec(field.name);
+              const n = m ? parseInt(m[1], 10) : NaN;
+              if (!isNaN(n) && n > maxSubs) client.setTextField(t.inputKey, field.name, '');
+            }
+          }
+        }
+      }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     config.racketVmixTargets, config.vmixInputKey, config.fieldScoreA, config.fieldScoreB, config.fieldTeamA, config.fieldTeamB,
     config.fieldGamesWonA, config.fieldGamesWonB, config.fieldServerName, config.fieldSetLabel, config.setScorePrefix, config.gamesToWin,
     config.teamAName, config.teamBName, config.teamAShortName, config.teamBShortName, config.teamALogo, config.teamBLogo, rallyState.pointsA, rallyState.pointsB, rallyState.games,
+    config.managerNameA, config.managerPositionA, config.managerNameB, config.managerPositionB,
+    config.headCoachNameA, config.headCoachPositionA, config.headCoachNameB, config.headCoachPositionB,
     tennisState.pointsA, tennisState.pointsB, tennisState.tiebreakA, tennisState.tiebreakB, tennisState.inTiebreak,
     tennisState.gamesA, tennisState.gamesB, tennisState.sets, gamesWonA, gamesWonB, server, matchWinnerSide, teamTieWinner,
-    config.startersA, config.startersB, config.playerCount, pointSigA, pointSigB,
+    config.startersA, config.startersB, config.playerCount, config.subsA, config.subsB, config.maxSubs, pointSigA, pointSigB,
     config.venue, config.scheduledDate, config.scheduledTime, config.category, config.group, config.sport,
     config.dateFormatPattern, config.timeFormatPattern,
   ]);
@@ -1252,13 +1351,17 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
   // team-badges bug, anything that only needs the logos).
   useEffect(() => {
     if (!client) return;
-    for (const lt of (config.racketLogoTargets as { inputKey: string; fieldTeamALogo?: string; fieldTeamBLogo?: string }[] | undefined) ?? []) {
+    for (const lt of (config.racketLogoTargets as { inputKey: string; fieldTeamALogo?: string; fieldTeamBLogo?: string; fieldTeamAName?: string; fieldTeamBName?: string; fieldTeamAShort?: string; fieldTeamBShort?: string }[] | undefined) ?? []) {
       if (!lt.inputKey) continue;
       if (lt.fieldTeamALogo) client.setImageField(lt.inputKey, lt.fieldTeamALogo, config.teamALogo || transparentLogoUrl());
       if (lt.fieldTeamBLogo) client.setImageField(lt.inputKey, lt.fieldTeamBLogo, config.teamBLogo || transparentLogoUrl());
+      if (lt.fieldTeamAName) client.setTextField(lt.inputKey, lt.fieldTeamAName, config.teamAName ?? '');
+      if (lt.fieldTeamBName) client.setTextField(lt.inputKey, lt.fieldTeamBName, config.teamBName ?? '');
+      if (lt.fieldTeamAShort) client.setTextField(lt.inputKey, lt.fieldTeamAShort, config.teamAShortName ?? '');
+      if (lt.fieldTeamBShort) client.setTextField(lt.inputKey, lt.fieldTeamBShort, config.teamBShortName ?? '');
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config.racketLogoTargets, config.teamALogo, config.teamBLogo, client]);
+  }, [config.racketLogoTargets, config.teamALogo, config.teamBLogo, config.teamAName, config.teamBName, config.teamAShortName, config.teamBShortName, client]);
 
   // ── Server triggers — any target with serverMode 'trigger' fires the
   // instant the server actually CHANGES to/from a side, rather than pushing
@@ -1316,6 +1419,63 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [server, config.racketVmixTargets, client]);
+
+  // ── Set/Match Point triggers — Set Point ('game'/'set' significance
+  // level) and Match Point ('match' level) are deliberately two FULLY
+  // separate triggers, each with its own mode/field/action lists per
+  // target (see the type's own doc comment) — a match point is a much
+  // bigger deal than a plain set/game point, so operators can point it at
+  // a different vMix input/field or fire a different function entirely,
+  // rather than being forced to share one trigger for both. Independent
+  // per side too (both/one/neither can be "on" simultaneously), unlike the
+  // server trigger above which is always exactly one side at a time —
+  // tracked per target as { a, b }, separately for each of the two
+  // triggers since they can be mid-transition independently of each other.
+  const lastSetPointByTarget = useRef<Record<string, { a: boolean; b: boolean }>>({});
+  const lastMatchPointByTarget = useRef<Record<string, { a: boolean; b: boolean }>>({});
+  useEffect(() => {
+    if (!client) return;
+    const curMatchA = pointSigA === 'match';
+    const curMatchB = pointSigB === 'match';
+    const curSetA = pointSigA === 'game' || pointSigA === 'set';
+    const curSetB = pointSigB === 'game' || pointSigB === 'set';
+    const fire = (
+      lastRef: Record<string, { a: boolean; b: boolean }>,
+      id: string, inputKey: string, mode: 'off' | 'simple' | 'advanced' | undefined,
+      curA: boolean, curB: boolean,
+      fieldA: string | undefined, typeA: 'text' | 'image' | undefined,
+      fieldB: string | undefined, typeB: 'text' | 'image' | undefined,
+      onActionsA: ActionItem[] | undefined, offActionsA: ActionItem[] | undefined,
+      onActionsB: ActionItem[] | undefined, offActionsB: ActionItem[] | undefined,
+    ) => {
+      if ((mode ?? 'off') === 'off') return;
+      const last = lastRef[id] ?? { a: false, b: false };
+      if (last.a === curA && last.b === curB) return;
+      lastRef[id] = { a: curA, b: curB };
+      if (mode === 'simple') {
+        const visFn = (type: 'text' | 'image' | undefined, on: boolean) =>
+          type === 'image' ? (on ? 'SetImageVisibleOn' : 'SetImageVisibleOff') : (on ? 'SetTextVisibleOn' : 'SetTextVisibleOff');
+        const setVisible = (field: string | undefined, type: 'text' | 'image' | undefined, on: boolean) => {
+          if (!field) return;
+          client.sendFunction(visFn(type, on), { Input: inputKey, SelectedName: field });
+        };
+        if (last.a !== curA) setVisible(fieldA, typeA, curA);
+        if (last.b !== curB) setVisible(fieldB, typeB, curB);
+      } else {
+        if (last.a !== curA) runActions((curA ? onActionsA : offActionsA) ?? []);
+        if (last.b !== curB) runActions((curB ? onActionsB : offActionsB) ?? []);
+      }
+    };
+    for (const t of vmixTargets) {
+      fire(lastSetPointByTarget.current, t.id, t.inputKey, t.setPointTriggerMode, curSetA, curSetB,
+        t.setPointVisibleFieldA, t.setPointVisibleTypeA, t.setPointVisibleFieldB, t.setPointVisibleTypeB,
+        t.setPointOnActionsA, t.setPointOffActionsA, t.setPointOnActionsB, t.setPointOffActionsB);
+      fire(lastMatchPointByTarget.current, t.id, t.inputKey, t.matchPointTriggerMode, curMatchA, curMatchB,
+        t.matchPointVisibleFieldA, t.matchPointVisibleTypeA, t.matchPointVisibleFieldB, t.matchPointVisibleTypeB,
+        t.matchPointOnActionsA, t.matchPointOffActionsA, t.matchPointOnActionsB, t.matchPointOffActionsB);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pointSigA, pointSigB, config.racketVmixTargets, client]);
 
   // Match Report — config.pointLog (see scorePoint's own doc comment)
   // grouped by game number, oldest game and oldest point within it first,
@@ -1589,6 +1749,33 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
             (e.target as HTMLInputElement).value = '';
           }}
         />
+        {config.showStaff && (
+          <div className="wgt-racket-staff-block">
+            {([
+              ['Manager', side === 'A' ? 'managerNameA' : 'managerNameB', side === 'A' ? 'managerPositionA' : 'managerPositionB'],
+              ['Head Coach', side === 'A' ? 'headCoachNameA' : 'headCoachNameB', side === 'A' ? 'headCoachPositionA' : 'headCoachPositionB'],
+            ] as const).map(([label, nameKey, posKey]) => (
+              <div key={label} className="wgt-racket-staff-row">
+                <input
+                  className="wgt-score-mshort wgt-racket-players-input"
+                  style={{ color }}
+                  value={config[nameKey] ?? ''}
+                  placeholder={label}
+                  title={`${label} name`}
+                  onChange={e => updateWidgetConfig(widgetId, { [nameKey]: e.target.value })}
+                />
+                <input
+                  className="wgt-racket-position-input"
+                  style={{ color }}
+                  value={config[posKey] ?? ''}
+                  placeholder="Position"
+                  title={`${label} position/title`}
+                  onChange={e => updateWidgetConfig(widgetId, { [posKey]: e.target.value })}
+                />
+              </div>
+            ))}
+          </div>
+        )}
         {roster.length > 0 && (
           <>
             <button className="wgt-racket-roster-toggle" onClick={() => setRosterOpen(o => ({ ...o, [side]: !o[side] }))} title="Show roster">
@@ -2532,6 +2719,7 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
           <ToggleCard checked={config.showMatchPointBadge ?? true} onChange={v => updateWidgetConfig(widgetId, { showMatchPointBadge: v })} desc="Show Game/Set/Match Point badge" />
           <ToggleCard checked={config.showCompletedGames ?? true} onChange={v => updateWidgetConfig(widgetId, { showCompletedGames: v })} desc="Show completed sets" />
           <ToggleCard checked={config.showPlayers ?? true} onChange={v => updateWidgetConfig(widgetId, { showPlayers: v })} desc="Show Players section" />
+          <ToggleCard checked={config.showStaff ?? false} onChange={v => updateWidgetConfig(widgetId, { showStaff: v })} desc="Show Manager/Head Coach (name + position)" />
           <ToggleCard checked={config.showMatchReport ?? true} onChange={v => updateWidgetConfig(widgetId, { showMatchReport: v })} desc="Show Match Report / Set History" />
 
           <label className="wgt-ctimer-settings-row">
@@ -2541,6 +2729,15 @@ export function RacketScoreboardWidget({ widgetId, config, w, h }: Props) {
               value={config.playerCount ?? 1}
               title="How many starter slots show per side — 1 for singles, 2 for a doubles pair, 3 for a sepaktakraw regu"
               onChange={e => updateWidgetConfig(widgetId, { playerCount: Math.max(1, Math.min(6, Number(e.target.value) || 1)) })}
+            />
+          </label>
+          <label className="wgt-ctimer-settings-row">
+            Max subs (vMix slots)
+            <input
+              type="number" min={1} max={10} className="wgt-ctimer-settings-input wgt-ctimer-settings-input--num"
+              value={config.maxSubs ?? 5}
+              title="Only affects the vMix push — how many numbered Sub Name slots get reserved. The Subs list itself stays free to add as many as you want."
+              onChange={e => updateWidgetConfig(widgetId, { maxSubs: Math.max(1, Math.min(10, Number(e.target.value) || 5)) })}
             />
           </label>
 

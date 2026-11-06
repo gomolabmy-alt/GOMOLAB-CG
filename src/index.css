@@ -17184,6 +17184,13 @@ input.tm-pl-cell--stat {
 .wgt-racket-jersey-input:hover, .wgt-racket-jersey-input:focus,
 .wgt-racket-position-input:hover, .wgt-racket-position-input:focus { background: color-mix(in srgb, var(--text-primary) 8%, transparent); border-radius: 3px; opacity: 1; }
 .wgt-racket-jersey-input::placeholder, .wgt-racket-position-input::placeholder { color: var(--text-muted); opacity: 0.6; }
+/* Manager/Head Coach — config.showStaff (off by default). Unlike starters,
+   each is a single fixed slot (no list), so name + position sit side by
+   side on one row rather than name-on-its-own-line like a starter. */
+.wgt-racket-staff-block { display: flex; flex-direction: column; align-items: stretch; gap: calc(2px * var(--rplayer-scale, 1)); width: 100%; margin-top: 2px; }
+.wgt-racket-staff-row { display: flex; align-items: center; gap: 3px; width: 100%; }
+.wgt-racket-staff-row .wgt-racket-players-input { flex: 1 1 auto; width: auto; }
+.wgt-racket-staff-row .wgt-racket-position-input { flex: 1 1 auto; opacity: 0.85; }
 .wgt-racket-subs { display: flex; align-items: center; justify-content: center; gap: 3px; flex-wrap: wrap; width: 100%; }
 .wgt-racket-sub-chip {
   display: inline-flex; align-items: center; gap: 3px;

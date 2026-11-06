@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, Fragment } from 'react';
 import { createPortal } from 'react-dom';
 import { useCanvasStore, formatTime } from '../stores/canvasStore';
 import { useVmixStore } from '../stores/vmixStore';
@@ -1555,6 +1555,12 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
               <p className="app-settings-hint" style={{ margin: '4px 0 0' }}>
                 Starters are who's actually on court this match — often different from the Team name above (e.g. Team = "Indonesia", Starters = the doubles pair). Use the roster picker on the scoreboard itself to add from a linked team's own players (jersey number/position included), or type names freely here (separate with "/") — jersey number and position are per-slot fields on the scoreboard itself, not editable from this text field.
               </p>
+              <Field label="Max Subs (vMix slots)">
+                <input className="field-input" type="number" min={1} max={10} value={cfg.maxSubs ?? 5} onChange={e => up({ maxSubs: Math.max(1, Math.min(10, Number(e.target.value) || 5)) })} />
+              </Field>
+              <p className="app-settings-hint" style={{ margin: '4px 0 0' }}>
+                Only affects the vMix Output tab's Sub Name Fields below — how many numbered slots (Sub1, Sub2, …) get reserved/pushed. The Subs list above itself stays free to add as many as you want regardless.
+              </p>
           </CollapsibleSection>
 
           <CollapsibleSection label="Match Info">
@@ -1936,6 +1942,10 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
           fieldTeamA?: string; fieldTeamB?: string;
           fieldTeamAShort?: string; fieldTeamBShort?: string;
           fieldTeamALogo?: string; fieldTeamBLogo?: string;
+          fieldManagerNameA?: string; fieldManagerPositionA?: string;
+          fieldManagerNameB?: string; fieldManagerPositionB?: string;
+          fieldHeadCoachNameA?: string; fieldHeadCoachPositionA?: string;
+          fieldHeadCoachNameB?: string; fieldHeadCoachPositionB?: string;
           fieldGamesWonA?: string; fieldGamesWonB?: string;
           fieldSetLabel?: string; setScorePrefix?: string;
           fieldVenue?: string; fieldDate?: string; fieldTime?: string; fieldCategory?: string; fieldGroup?: string; fieldSport?: string;
@@ -1961,6 +1971,17 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
           playerNameTemplateA?: string; playerJerseyTemplateA?: string; playerPositionTemplateA?: string;
           playerNameTemplateB?: string; playerJerseyTemplateB?: string; playerPositionTemplateB?: string;
           playerTemplateMode?: 'picker' | 'manual';
+          subNameTemplateA?: string; subNameTemplateB?: string;
+          setPointTriggerMode?: 'off' | 'simple' | 'advanced';
+          setPointVisibleFieldA?: string; setPointVisibleTypeA?: 'text' | 'image';
+          setPointVisibleFieldB?: string; setPointVisibleTypeB?: 'text' | 'image';
+          setPointOnActionsA?: ActionItem[]; setPointOffActionsA?: ActionItem[];
+          setPointOnActionsB?: ActionItem[]; setPointOffActionsB?: ActionItem[];
+          matchPointTriggerMode?: 'off' | 'simple' | 'advanced';
+          matchPointVisibleFieldA?: string; matchPointVisibleTypeA?: 'text' | 'image';
+          matchPointVisibleFieldB?: string; matchPointVisibleTypeB?: 'text' | 'image';
+          matchPointOnActionsA?: ActionItem[]; matchPointOffActionsA?: ActionItem[];
+          matchPointOnActionsB?: ActionItem[]; matchPointOffActionsB?: ActionItem[];
         };
         // An existing widget saved before multi-target existed has its
         // fields flat on cfg itself (cfg.vmixInputKey/fieldScoreA/etc) —
@@ -2086,6 +2107,19 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
                           {exactField(t, idx, 'fieldTeamBShort', 'Team B Short Name Field', 'TeamBShort.Text')}
                           {exactField(t, idx, 'fieldTeamALogo', 'Team A Logo Field', 'TeamALogo.Source', (n: string) => n.toLowerCase().endsWith('.source'))}
                           {exactField(t, idx, 'fieldTeamBLogo', 'Team B Logo Field', 'TeamBLogo.Source', (n: string) => n.toLowerCase().endsWith('.source'))}
+                          <CollapsibleSection label="Manager / Head Coach" defaultOpen={false}>
+                            <p className="app-settings-hint" style={{ margin: '0 0 8px' }}>
+                              Pushes the Manager and Head Coach name + position typed on the widget itself (Players settings → "Show Manager/Head Coach" toggle) — one fixed field each, no {'{n}'} templating needed.
+                            </p>
+                            {exactField(t, idx, 'fieldManagerNameA', `${cfg.teamAName || 'Team A'} — Manager Name Field`, 'ManagerA.Text')}
+                            {exactField(t, idx, 'fieldManagerPositionA', `${cfg.teamAName || 'Team A'} — Manager Position Field`, 'ManagerPositionA.Text')}
+                            {exactField(t, idx, 'fieldManagerNameB', `${cfg.teamBName || 'Team B'} — Manager Name Field`, 'ManagerB.Text')}
+                            {exactField(t, idx, 'fieldManagerPositionB', `${cfg.teamBName || 'Team B'} — Manager Position Field`, 'ManagerPositionB.Text')}
+                            {exactField(t, idx, 'fieldHeadCoachNameA', `${cfg.teamAName || 'Team A'} — Head Coach Name Field`, 'HeadCoachA.Text')}
+                            {exactField(t, idx, 'fieldHeadCoachPositionA', `${cfg.teamAName || 'Team A'} — Head Coach Position Field`, 'HeadCoachPositionA.Text')}
+                            {exactField(t, idx, 'fieldHeadCoachNameB', `${cfg.teamBName || 'Team B'} — Head Coach Name Field`, 'HeadCoachB.Text')}
+                            {exactField(t, idx, 'fieldHeadCoachPositionB', `${cfg.teamBName || 'Team B'} — Head Coach Position Field`, 'HeadCoachPositionB.Text')}
+                          </CollapsibleSection>
                           {exactField(t, idx, 'fieldGamesWonA', 'Sets Won A Field', 'SetsWonA.Text')}
                           {exactField(t, idx, 'fieldGamesWonB', 'Sets Won B Field', 'SetsWonB.Text')}
                           {exactField(t, idx, 'fieldSetLabel', 'Set/Game Label Field', 'SetLabel.Text')}
@@ -2235,6 +2269,66 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
                               )}
                             </>
                           )}
+                          {([
+                            ['Set Point Trigger', 'setPointTriggerMode', 'setPointVisibleFieldA', 'setPointVisibleTypeA', 'setPointVisibleFieldB', 'setPointVisibleTypeB',
+                              'setPointOnActionsA', 'setPointOffActionsA', 'setPointOnActionsB', 'setPointOffActionsB',
+                              'set/game point', 'SetPoint.Text', 'SetPoint.Source'],
+                            ['Match Point Trigger', 'matchPointTriggerMode', 'matchPointVisibleFieldA', 'matchPointVisibleTypeA', 'matchPointVisibleFieldB', 'matchPointVisibleTypeB',
+                              'matchPointOnActionsA', 'matchPointOffActionsA', 'matchPointOnActionsB', 'matchPointOffActionsB',
+                              'match point', 'MatchPoint.Text', 'MatchPoint.Source'],
+                          ] as const).map(([sectionLabel, modeKey, fieldKeyA, typeKeyA, fieldKeyB, typeKeyB, onKeyA, offKeyA, onKeyB, offKeyB, noun, textPh, imgPh]) => (
+                            <Fragment key={sectionLabel}>
+                              <Field label={sectionLabel}>
+                                <CardSelect value={t[modeKey] ?? 'off'} onChange={v => updateRacketTarget(idx, { [modeKey]: v } as Partial<RacketVmixTarget>)} columns={3}
+                                  options={[
+                                    { value: 'off', label: 'Off', sub: `Don't fire anything for ${noun}` },
+                                    { value: 'simple', label: 'Show/Hide a field', sub: 'Pick a text or image field — it just toggles visible on/off' },
+                                    { value: 'advanced', label: 'Action list', sub: 'Any vMix or app function, same picker as a Quick Button' },
+                                  ]} />
+                              </Field>
+                              {(t[modeKey] ?? 'off') !== 'off' && (
+                                <>
+                                  <p className="app-settings-hint" style={{ margin: '4px 0 8px' }}>
+                                    Fires the instant a side reaches {noun} — same detection the on-screen badge uses — and fires off again the moment it no longer applies. Both sides are tracked independently, so both, one, or neither can be "on" at once. A completely separate trigger from the other one above/below — point it at a different vMix input/field or a different action list.
+                                  </p>
+                                  {t[modeKey] === 'simple' ? (
+                                    ([
+                                      ['A', cfg.teamAName || 'Team A', fieldKeyA, typeKeyA],
+                                      ['B', cfg.teamBName || 'Team B', fieldKeyB, typeKeyB],
+                                    ] as const).map(([side, name, fieldKey, typeKey]) => (
+                                      <CollapsibleSection key={side} label={`${name}'s ${noun} indicator`} defaultOpen={false}>
+                                        <Field label="Type">
+                                          <CardSelect value={t[typeKey] ?? 'text'} onChange={v => updateRacketTarget(idx, { [typeKey]: v } as Partial<RacketVmixTarget>)} columns={2}
+                                            options={[{ value: 'text', label: 'Text' }, { value: 'image', label: 'Image' }]} />
+                                        </Field>
+                                        <Field label="Field">
+                                          {renderFieldPicker(t.inputKey, (t[fieldKey] as string) ?? '',
+                                            v => updateRacketTarget(idx, { [fieldKey]: v } as Partial<RacketVmixTarget>),
+                                            (t[typeKey] ?? 'text') === 'image' ? imgPh : textPh,
+                                            (t[typeKey] ?? 'text') === 'image' ? (n: string) => n.toLowerCase().endsWith('.source') : undefined)}
+                                        </Field>
+                                      </CollapsibleSection>
+                                    ))
+                                  ) : (
+                                    ([
+                                      [onKeyA, `${cfg.teamAName || 'Team A'} reaches ${noun}`],
+                                      [offKeyA, `${cfg.teamAName || 'Team A'} no longer at ${noun}`],
+                                      [onKeyB, `${cfg.teamBName || 'Team B'} reaches ${noun}`],
+                                      [offKeyB, `${cfg.teamBName || 'Team B'} no longer at ${noun}`],
+                                    ] as const).map(([key, label]) => (
+                                      <CollapsibleSection key={key} label={label} defaultOpen={false}>
+                                        <ActionListEditor actions={(t[key] as ActionItem[]) ?? []} onChange={(next) => updateRacketTarget(idx, { [key]: next } as Partial<RacketVmixTarget>)} sectionKey={`racket-${t.id}-${key}`}
+                                          pages={pages} timerWidgets={pages.flatMap(p => p.widgets.filter(w => w.type === 'timer'))}
+                                          scoreboardWidgets={pages.flatMap(p => p.widgets.filter(w => w.type === 'scoreboard' || w.type === 'racket-scoreboard'))}
+                                          globalVariables={globalVariables} allInputs={allInputs}
+                                          cgTemplateWidgets={[...pages, ...store.libraryPages].flatMap(p => p.widgets.filter(w => w.type === 'cg-template'))} />
+                                      </CollapsibleSection>
+                                    ))
+                                  )}
+                                </>
+                              )}
+                            </Fragment>
+                          ))}
                         </>
                       )}
                     </>
@@ -2254,7 +2348,12 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
         // that target doesn't actually use — and for pushing logos to
         // MULTIPLE such inputs at once, which the main section's single
         // fieldTeamALogo/B pair per target can't do on its own.
-        type RacketLogoTarget = { id: string; inputKey: string; inputTitle?: string; fieldTeamALogo?: string; fieldTeamBLogo?: string };
+        type RacketLogoTarget = {
+          id: string; inputKey: string; inputTitle?: string;
+          fieldTeamALogo?: string; fieldTeamBLogo?: string;
+          fieldTeamAName?: string; fieldTeamBName?: string;
+          fieldTeamAShort?: string; fieldTeamBShort?: string;
+        };
         const logoTargets: RacketLogoTarget[] = cfg.racketLogoTargets ?? [];
         const setLogoTargets = (next: RacketLogoTarget[]) => up({ racketLogoTargets: next });
         const updateLogoTarget = (idx: number, patch: Partial<RacketLogoTarget>) =>
@@ -2262,7 +2361,7 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
         const logoVmixSection = (
           <CollapsibleSection label="Team Logos Only" defaultOpen={false}>
             <p className="app-settings-hint" style={{ margin: '0 0 8px' }}>
-              Push just the team logos to a separate vMix input — nothing else from this match. Use this instead of (or alongside) the full vMix Output section above when a target only ever needs the badges.
+              Push just the team identity — logo, name, short name — to a separate vMix input — nothing else from this match. Use this instead of (or alongside) the full vMix Output section above when a target only ever needs the team badge/name bug.
             </p>
             {logoTargets.map((t, idx) => {
               const collapseKey = `racket-logo-${t.id}`;
@@ -2289,6 +2388,18 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
                           </Field>
                           <Field label={`${cfg.teamBName || 'Team B'} Logo Field`}>
                             {renderFieldPicker(t.inputKey, t.fieldTeamBLogo ?? '', v => updateLogoTarget(idx, { fieldTeamBLogo: v }), 'TeamBLogo.Source', (n: string) => n.toLowerCase().endsWith('.source'))}
+                          </Field>
+                          <Field label={`${cfg.teamAName || 'Team A'} Name Field`}>
+                            {renderFieldPicker(t.inputKey, t.fieldTeamAName ?? '', v => updateLogoTarget(idx, { fieldTeamAName: v }), 'TeamAName.Text')}
+                          </Field>
+                          <Field label={`${cfg.teamBName || 'Team B'} Name Field`}>
+                            {renderFieldPicker(t.inputKey, t.fieldTeamBName ?? '', v => updateLogoTarget(idx, { fieldTeamBName: v }), 'TeamBName.Text')}
+                          </Field>
+                          <Field label={`${cfg.teamAName || 'Team A'} Short Name Field`}>
+                            {renderFieldPicker(t.inputKey, t.fieldTeamAShort ?? '', v => updateLogoTarget(idx, { fieldTeamAShort: v }), 'TeamAShort.Text')}
+                          </Field>
+                          <Field label={`${cfg.teamBName || 'Team B'} Short Name Field`}>
+                            {renderFieldPicker(t.inputKey, t.fieldTeamBShort ?? '', v => updateLogoTarget(idx, { fieldTeamBShort: v }), 'TeamBShort.Text')}
                           </Field>
                         </>
                       )}
@@ -2335,7 +2446,7 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
         // naming scheme is either all-picker or all-manual.
         const playerTemplateField = (
           target: RacketVmixTarget, idx: number,
-          key: 'playerNameTemplateA' | 'playerJerseyTemplateA' | 'playerPositionTemplateA' | 'playerNameTemplateB' | 'playerJerseyTemplateB' | 'playerPositionTemplateB',
+          key: 'playerNameTemplateA' | 'playerJerseyTemplateA' | 'playerPositionTemplateA' | 'playerNameTemplateB' | 'playerJerseyTemplateB' | 'playerPositionTemplateB' | 'subNameTemplateA' | 'subNameTemplateB',
           fieldLabel: string, placeholder: string,
         ) => {
           const mode = target.playerTemplateMode ?? 'picker';
@@ -2395,6 +2506,26 @@ export function WidgetConfigPanel({ widget, onClose, pagesOverride, actionsOverr
                       {playerTemplateField(t, idx, 'playerNameTemplateB', `${cfg.teamBName || 'Team B'} — Name Field`, 'PlayerB{n}Name.Text')}
                       {playerTemplateField(t, idx, 'playerJerseyTemplateB', `${cfg.teamBName || 'Team B'} — Jersey Field`, 'PlayerB{n}Jersey.Text')}
                       {playerTemplateField(t, idx, 'playerPositionTemplateB', `${cfg.teamBName || 'Team B'} — Position Field`, 'PlayerB{n}Position.Text')}
+                    </>
+                  )}
+                </CollapsibleSection>
+              ))}
+              {!racketTargets.length && (
+                <p className="app-settings-hint" style={{ margin: 0 }}>Add a vMix Input on the vMix Output tab first.</p>
+              )}
+            </CollapsibleSection>
+            <CollapsibleSection label="Push Subs to vMix" defaultOpen={false}>
+              <p className="app-settings-hint" style={{ margin: '0 0 8px' }}>
+                Pushes each sub's name to its own field, same {'{n}'}-per-slot convention as Starting Lineup above — slot 1 is the first sub on the bench, and so on up to Max Subs (Scoring Rules tab) slots. Subs are name-only, no jersey/position field.
+              </p>
+              {racketTargets.map((t, idx) => (
+                <CollapsibleSection key={t.id} label={racketTargets.length > 1 ? `vMix Input ${idx + 1}` : 'Fields'} defaultOpen={racketTargets.length === 1}>
+                  {!t.inputKey ? (
+                    <p className="app-settings-hint" style={{ margin: 0 }}>Pick this target's vMix Input on the vMix Output tab first.</p>
+                  ) : (
+                    <>
+                      {playerTemplateField(t, idx, 'subNameTemplateA', `${cfg.teamAName || 'Team A'} — Sub Name Field`, 'SubA{n}.Text')}
+                      {playerTemplateField(t, idx, 'subNameTemplateB', `${cfg.teamBName || 'Team B'} — Sub Name Field`, 'SubB{n}.Text')}
                     </>
                   )}
                 </CollapsibleSection>
